@@ -55,14 +55,14 @@ src/
 ## 开发
 
 ```sh
-npm install
-npm run dev
+yarn install
+yarn dev
 ```
 
 ## 构建
 
 ```sh
-npm run build
+yarn build
 ```
 
 ## 部署
@@ -75,7 +75,7 @@ npm run build
 2. 进入仓库 **Settings → Pages**，Source 选择 **GitHub Actions**
 3. Workflow 会自动构建并部署，完成后访问 `https://<用户名>.github.io/launch-helper/`
 
-> 本地开发时 `base` 为 `/`，CI 环境自动切换为 `/LaunchHelper/`，无需手动修改。
+> 本地开发时 `base` 为 `/`，CI 环境自动切换为 `/launch-helper/`，无需手动修改。
 
 ## 浏览器支持
 
