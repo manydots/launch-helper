@@ -6,7 +6,7 @@ import vue from "@vitejs/plugin-vue";
 
 // https://vite.dev/config/
 export default defineConfig({
-    base: process.env.GITHUB_ACTIONS ? "/LaunchHelper/" : "/",
+    base: process.env.GITHUB_ACTIONS ? "/launch-helper/" : "/",
     server: {
         host: "0.0.0.0"
     },

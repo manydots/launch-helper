@@ -73,7 +73,7 @@ npm run build
 
 1. 将代码推送到 GitHub 仓库的 `main` 分支
 2. 进入仓库 **Settings → Pages**，Source 选择 **GitHub Actions**
-3. Workflow 会自动构建并部署，完成后访问 `https://<用户名>.github.io/LaunchHelper/`
+3. Workflow 会自动构建并部署，完成后访问 `https://<用户名>.github.io/launch-helper/`
 
 > 本地开发时 `base` 为 `/`，CI 环境自动切换为 `/LaunchHelper/`，无需手动修改。
 
