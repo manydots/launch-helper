@@ -1,8 +1,20 @@
 <script setup>
-import { computed } from "vue";
+import { computed, version } from "vue";
 import GameLauncher from "@/components/GameLauncher.vue";
 
 const isWindows = computed(() => /Windows/i.test(navigator.userAgent));
+
+const buildTime = computed(() => {
+    try {
+        const d = new Date(__BUILD_TIME__);
+        const p = n => String(n).padStart(2, "0");
+        return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+    } catch {
+        return "";
+    }
+});
+
+console.log(`Vue.js version is%c ${version}`, "color:red");
 </script>
 
 <template>
@@ -13,6 +25,7 @@ const isWindows = computed(() => /Windows/i.test(navigator.userAgent));
         <p class="unsupported-title">不支持当前系统</p>
         <p class="unsupported-desc">本工具仅支持 Windows 系统，无法在 macOS、Linux 或移动端使用。</p>
     </div>
+    <div class="build-time">更新时间 {{ buildTime }}</div>
 </template>
 
 <style>
@@ -77,6 +90,22 @@ const isWindows = computed(() => /Windows/i.test(navigator.userAgent));
 body {
     margin: 0;
     background: var(--bg);
+}
+.build-time {
+    position: fixed;
+    left: 8px;
+    bottom: 4px;
+    font-size: 11px;
+    line-height: 1.4;
+    color: var(--text-muted);
+    font-family:
+        system-ui,
+        -apple-system,
+        sans-serif;
+    pointer-events: none;
+    user-select: none;
+    z-index: 9999;
+    opacity: 0.7;
 }
 .unsupported {
     max-width: 420px;
