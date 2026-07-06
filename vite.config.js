@@ -8,12 +8,26 @@ import vue from "@vitejs/plugin-vue";
 export default defineConfig({
     base: process.env.GITHUB_ACTIONS ? "/launch-helper/" : "/",
     server: {
-        host: "0.0.0.0"
+        host: "0.0.0.0",
+        port: 5173 // default
     },
     plugins: [vue()],
     resolve: {
         alias: {
             "@": fileURLToPath(new URL("./src", import.meta.url))
+        }
+    },
+    build: {
+        // sourcemap: true,
+        // target: "esnext",
+        modulePreload: false,
+        rollupOptions: {
+            output: {
+                hashCharacters: "base36",
+                manualChunks: {
+                    vendor: ["vue", "pinia", "pinia-plugin-persistedstate"]
+                }
+            }
         }
     }
 });
