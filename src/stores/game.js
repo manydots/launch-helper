@@ -38,10 +38,11 @@ export const useGameStore = defineStore(
             const p = normalizePath((path || gamePath.value || "").trim());
             if (!p) return "";
             const exe = p.replace(/\\/g, "\\\\");
+            const exeName = p.substring(p.lastIndexOf("\\") + 1).replace(/\.exe$/i, "");
             let dir = p.substring(0, p.lastIndexOf("\\"));
             if (/^[A-Za-z]:$/.test(dir)) dir = dir + "\\";
             dir = dir.replace(/\\/g, "\\\\");
-            const cmd = `cmd /v:on /c set \\"url=%1\\"&set \\"p=!url:${PROTO}:=!\\"&start \\"\\" /d \\"${dir}\\" \\"${exe}\\" !p!`;
+            const cmd = `cmd /v:on /c set \\"url=%1\\"&set \\"p=!url:${PROTO}:=!\\"&start \\"${exeName}\\" /d \\"${dir}\\" \\"${exe}\\" !p!`;
             return `Windows Registry Editor Version 5.00
 
 [HKEY_CLASSES_ROOT\\${PROTO}]
