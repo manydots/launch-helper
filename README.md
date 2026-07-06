@@ -2,6 +2,8 @@
 
 通过浏览器自定义协议（`LaunchHelper:`）一键启动 Windows 游戏。
 
+[LaunchHelper 演示地址](https://manydots.github.io/launch-helper/)
+
 ## 使用方式
 
 ### 首次使用
