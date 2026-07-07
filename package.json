@@ -10,9 +10,11 @@
     "format": "prettier --write --experimental-cli src/"
   },
   "dependencies": {
+    "highlight.js": "^11.11.1",
     "pinia": "^3.0.4",
     "pinia-plugin-persistedstate": "^4.7.1",
-    "vue": "^3.5.39"
+    "vue": "^3.5.39",
+    "vue-router": "^4.6.4"
   },
   "devDependencies": {
     "@vitejs/plugin-legacy": "^6.1.1",

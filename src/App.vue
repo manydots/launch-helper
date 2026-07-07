@@ -1,7 +1,9 @@
 <script setup>
 import { computed, version } from "vue";
-import GameLauncher from "@/components/GameLauncher.vue";
+import { useRoute } from "vue-router";
 import ModalHost from "@/components/ModalHost.vue";
+
+const route = useRoute();
 
 const buildTime = computed(() => {
     try {
@@ -13,14 +15,33 @@ const buildTime = computed(() => {
     }
 });
 
+const isGameRoute = computed(() => route.name === "Game");
+
 console.log(`Vue.js version is%c ${version}`, "color:red");
 </script>
 
 <template>
-    <GameLauncher />
+    <router-view />
+
+    <!-- 全局弹窗 -->
     <ModalHost />
-    <div class="build-time">更新时间 {{ buildTime }}</div>
-    <div class="agent-badge">Agent Plan 生成</div>
+
+    <!-- PVF 编辑器入口按钮 -->
+    <button v-if="isGameRoute" class="pvf-entry-btn" @click="$router.push({ name: 'Pvf' })">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+            <polyline points="14 2 14 8 20 8" />
+            <line x1="9" y1="13" x2="15" y2="13" />
+            <line x1="9" y1="17" x2="13" y2="17" />
+        </svg>
+        <span>PVF 编辑</span>
+    </button>
+
+    <!-- 以下信息仅在 Game 路由显示 -->
+    <template v-if="isGameRoute">
+        <div class="build-time">更新时间 {{ buildTime }}</div>
+        <div class="agent-badge">Agent Plan GLM5.2 生成</div>
+    </template>
 </template>
 
 <style>
@@ -117,6 +138,62 @@ body {
     z-index: 9999;
     opacity: 0.5;
 }
+.route-title {
+    position: fixed;
+    right: 8px;
+    bottom: 4px;
+    font-size: 11px;
+    line-height: 1.4;
+    color: var(--text-muted);
+    font-family:
+        system-ui,
+        -apple-system,
+        sans-serif;
+    pointer-events: none;
+    user-select: none;
+    z-index: 9999;
+    opacity: 0.5;
+}
+
+/* ---- PVF 编辑器入口按钮 (右上角) ---- */
+.pvf-entry-btn {
+    position: fixed;
+    top: 12px;
+    right: 12px;
+    z-index: 100;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 16px;
+    border: 1px solid var(--surface-border);
+    border-radius: 10px;
+    background: var(--surface);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    color: var(--text);
+    font-size: 0.82rem;
+    font-weight: 500;
+    cursor: pointer;
+    font-family: system-ui, sans-serif;
+    transition:
+        background 0.2s,
+        border-color 0.2s,
+        transform 0.1s,
+        box-shadow 0.2s;
+}
+.pvf-entry-btn:hover {
+    background: rgba(91, 140, 255, 0.08);
+    border-color: var(--accent);
+    box-shadow: 0 4px 16px var(--accent-shadow);
+}
+.pvf-entry-btn:active {
+    transform: scale(0.97);
+}
+.pvf-entry-btn svg {
+    width: 16px;
+    height: 16px;
+    color: var(--accent);
+}
 
 /* ---- 按钮（全局） ---- */
 .btn {
@@ -198,7 +275,7 @@ body {
     display: flex;
     align-items: center;
     justify-content: center;
-    z-index: 1000;
+    z-index: 3000;
 }
 .modal {
     background: var(--bg-2);

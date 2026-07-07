@@ -45,12 +45,11 @@ export default {
         }
     },
     mounted() {
-        document.title = `Helper ${this.subtitleFull}`;
         this.typeSubtitle();
 
-        if (!this.isWindows) {
-            this.showUnsupportedModal();
-        }
+        // if (!this.isWindows) {
+        //     this.showUnsupportedModal();
+        // }
     },
     watch: {
         "store.gamePath"(val) {
