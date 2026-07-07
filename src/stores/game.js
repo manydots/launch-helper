@@ -1,12 +1,9 @@
 import { ref } from "vue";
 import { defineStore } from "pinia";
+import { PROTO, normalizePath, generateRegistryContent as buildRegistry, generateUninstallRegistryContent as buildUninstallRegistry } from "@/utils/registry";
 
-const PROTO = "LaunchHelper";
+const STORE_KEY = "launch-helper:game";
 const DEFAULT_PARAM = "99?127.0.0.1?7001?10038?de509f65e9ccaae621cb7278fc2b8e6c?01?1?0?0?0?0?1?9n2b1c8r3w7y?0?0?19847";
-
-function normalizePath(p) {
-    return p.replace(/\\+/g, "\\");
-}
 
 function download(filename, content) {
     const blob = new Blob([content], { type: "application/octet-stream" });
@@ -25,6 +22,8 @@ export const useGameStore = defineStore(
     () => {
         const gamePath = ref("");
         const launchParam = ref(DEFAULT_PARAM);
+        const account = ref("");
+        const password = ref("");
 
         function setGamePath(path) {
             gamePath.value = path;
@@ -34,35 +33,20 @@ export const useGameStore = defineStore(
             launchParam.value = param;
         }
 
+        function setAccount(val) {
+            account.value = val;
+        }
+
+        function setPassword(val) {
+            password.value = val;
+        }
+
         function generateRegistryContent(path) {
-            const p = normalizePath((path || gamePath.value || "").trim());
-            if (!p) return "";
-            const exe = p.replace(/\\/g, "\\\\");
-            const exeName = p.substring(p.lastIndexOf("\\") + 1).replace(/\.exe$/i, "");
-            let dir = p.substring(0, p.lastIndexOf("\\"));
-            if (/^[A-Za-z]:$/.test(dir)) dir = dir + "\\";
-            dir = dir.replace(/\\/g, "\\\\");
-            const cmd = `cmd /v:on /c set \\"url=%1\\"&set \\"p=!url:${PROTO}:=!\\"&start \\"${exeName}\\" /d \\"${dir}\\" \\"${exe}\\" !p!`;
-            return `Windows Registry Editor Version 5.00
-
-[HKEY_CLASSES_ROOT\\${PROTO}]
-@="URL:LaunchHelper Protocol"
-"URL Protocol"=""
-
-[HKEY_CLASSES_ROOT\\${PROTO}\\shell]
-
-[HKEY_CLASSES_ROOT\\${PROTO}\\shell\\open]
-
-[HKEY_CLASSES_ROOT\\${PROTO}\\shell\\open\\command]
-@="${cmd}"
-`;
+            return buildRegistry(path || gamePath.value);
         }
 
         function generateUninstallRegistryContent() {
-            return `Windows Registry Editor Version 5.00
-
-[-HKEY_CLASSES_ROOT\\${PROTO}]
-`;
+            return buildUninstallRegistry();
         }
 
         function downloadRegistry(path, param) {
@@ -71,11 +55,11 @@ export const useGameStore = defineStore(
             if (p !== gamePath.value) setGamePath(p);
             const arg = (param !== undefined ? param : launchParam.value).trim();
             if (arg !== launchParam.value) setLaunchParam(arg);
-            download(`register-${PROTO}.reg`, generateRegistryContent(p));
+            download(`register-${PROTO}.reg`, buildRegistry(p));
         }
 
         function downloadUninstallRegistry() {
-            download(`uninstall-${PROTO}.reg`, generateUninstallRegistryContent());
+            download(`uninstall-${PROTO}.reg`, buildUninstallRegistry());
         }
 
         function launchGame(param) {
@@ -87,8 +71,12 @@ export const useGameStore = defineStore(
         return {
             gamePath,
             launchParam,
+            account,
+            password,
             setGamePath,
             setLaunchParam,
+            setAccount,
+            setPassword,
             generateRegistryContent,
             downloadRegistry,
             downloadUninstallRegistry,
@@ -96,9 +84,6 @@ export const useGameStore = defineStore(
         };
     },
     {
-        persist: {
-            key: "launch-helper:game",
-            pick: ["gamePath", "launchParam"]
-        }
+        persist: { key: STORE_KEY, storage: localStorage, pick: ["gamePath", "launchParam", "account", "password"] }
     }
 );
