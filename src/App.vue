@@ -1,8 +1,7 @@
 <script setup>
 import { computed, version } from "vue";
 import GameLauncher from "@/components/GameLauncher.vue";
-
-const isWindows = computed(() => /Windows/i.test(navigator.userAgent));
+import ModalHost from "@/components/ModalHost.vue";
 
 const buildTime = computed(() => {
     try {
@@ -18,78 +17,73 @@ console.log(`Vue.js version is%c ${version}`, "color:red");
 </script>
 
 <template>
-    <GameLauncher v-if="isWindows" />
-    <div v-else class="unsupported">
-        <div class="unsupported-icon">Windows</div>
-        <h1>LaunchHelper</h1>
-        <p class="unsupported-title">不支持当前系统</p>
-        <p class="unsupported-desc">本工具仅支持 Windows 系统，无法在 macOS、Linux 或移动端使用。</p>
-    </div>
+    <GameLauncher />
+    <ModalHost />
     <div class="build-time">更新时间 {{ buildTime }}</div>
+    <div class="agent-badge">Agent Plan 生成</div>
 </template>
 
 <style>
 :root {
-    --bg: #f5f5f5;
-    --surface: #fff;
-    --shadow-card: rgba(0, 0, 0, 0.08);
-    --shadow-modal: rgba(0, 0, 0, 0.2);
-    --overlay: rgba(0, 0, 0, 0.4);
-    --text: #1a1a1a;
-    --text-muted: #999;
-    --text-label: #888;
-    --divider: #eee;
-    --border: #ccc;
-    --input-text: #333;
-    --input-border: #9e9e9e;
-    --autofill-bg: #fff;
-    --accent: #2c3e50;
-    --accent-hover: #1a2733;
-    --accent-shadow: rgba(44, 62, 80, 0.25);
-    --outline-1: #495057;
-    --outline-2: #9aa0a6;
-    --outline-3-text: #666;
-    --outline-3-border: #ccc;
-    --outline-3-hover-bg: #f5f5f5;
-    --outline-3-hover-border: #999;
-    --code-bg: #f0f0f0;
-    --error: #d32f2f;
-    --section-accent: #ccc;
+    --bg: #0a0e1a;
+    --bg-2: #161b2e;
+    --surface: rgba(255, 255, 255, 0.04);
+    --surface-border: rgba(255, 255, 255, 0.08);
+    --shadow-card: 0 8px 32px rgba(0, 0, 0, 0.4);
+    --shadow-modal: 0 12px 48px rgba(0, 0, 0, 0.5);
+    --overlay: rgba(0, 0, 0, 0.6);
+    --text: #e8eaf0;
+    --text-muted: #6b7390;
+    --text-label: #8b92a8;
+    --divider: rgba(255, 255, 255, 0.08);
+    --border: rgba(255, 255, 255, 0.12);
+    --input-text: #e8eaf0;
+    --input-border: rgba(255, 255, 255, 0.15);
+    --autofill-bg: #0a0e1a;
+    --accent: #5b8cff;
+    --accent-hover: #4a7eff;
+    --accent-gradient: linear-gradient(135deg, #4f8cff 0%, #7b5cff 100%);
+    --accent-shadow: rgba(91, 140, 255, 0.35);
+    --outline-1: rgba(255, 255, 255, 0.75);
+    --outline-2: rgba(255, 255, 255, 0.5);
+    --outline-3-text: rgba(255, 255, 255, 0.6);
+    --outline-3-border: rgba(255, 255, 255, 0.15);
+    --outline-3-hover-bg: rgba(255, 255, 255, 0.06);
+    --outline-3-hover-border: rgba(255, 255, 255, 0.3);
+    --code-bg: rgba(255, 255, 255, 0.08);
+    --error: #ff5b6e;
+    --section-accent: #5b8cff;
+    --glow-1: rgba(91, 140, 255, 0.18);
+    --glow-2: rgba(139, 92, 255, 0.14);
 }
 
 @media (prefers-color-scheme: dark) {
     :root {
-        --bg: #0d1117;
-        --surface: #161b22;
-        --shadow-card: rgba(0, 0, 0, 0.4);
-        --shadow-modal: rgba(0, 0, 0, 0.5);
-        --overlay: rgba(1, 4, 9, 0.6);
-        --text: #c9d1d9;
-        --text-muted: #8b949e;
-        --text-label: #8b949e;
-        --divider: #21262d;
-        --border: #30363d;
-        --input-text: #c9d1d9;
-        --input-border: #484f58;
-        --autofill-bg: #161b22;
-        --accent: #58a6ff;
-        --accent-hover: #388bfd;
-        --accent-shadow: rgba(88, 166, 255, 0.3);
-        --outline-1: #8b949e;
-        --outline-2: #6e7681;
-        --outline-3-text: #8b949e;
-        --outline-3-border: #30363d;
-        --outline-3-hover-bg: #21262d;
-        --outline-3-hover-border: #8b949e;
-        --code-bg: #1c2128;
-        --error: #f85149;
-        --section-accent: #30363d;
+        --bg: #060912;
+        --bg-2: #0f1424;
+        --surface: rgba(255, 255, 255, 0.03);
+        --surface-border: rgba(255, 255, 255, 0.06);
+        --shadow-card: 0 8px 32px rgba(0, 0, 0, 0.5);
+        --shadow-modal: 0 12px 48px rgba(0, 0, 0, 0.6);
+        --overlay: rgba(0, 0, 0, 0.7);
+        --glow-1: rgba(91, 140, 255, 0.14);
+        --glow-2: rgba(139, 92, 255, 0.1);
     }
 }
 
 body {
     margin: 0;
+    min-height: 100vh;
     background: var(--bg);
+    background-image: radial-gradient(ellipse at 20% 0%, var(--glow-1), transparent 50%), radial-gradient(ellipse at 80% 100%, var(--glow-2), transparent 50%);
+    background-attachment: fixed;
+    color: var(--text);
+}
+#app {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
 }
 .build-time {
     position: fixed;
@@ -105,39 +99,164 @@ body {
     pointer-events: none;
     user-select: none;
     z-index: 9999;
-    opacity: 0.7;
+    opacity: 0.5;
 }
-.unsupported {
-    max-width: 420px;
-    margin: 120px auto;
-    text-align: center;
-    font-family: system-ui, sans-serif;
-    color: var(--text);
+.agent-badge {
+    position: fixed;
+    right: 8px;
+    bottom: 4px;
+    font-size: 11px;
+    line-height: 1.4;
+    color: var(--text-muted);
+    font-family:
+        system-ui,
+        -apple-system,
+        sans-serif;
+    pointer-events: none;
+    user-select: none;
+    z-index: 9999;
+    opacity: 0.5;
 }
-.unsupported-icon {
-    display: inline-block;
-    padding: 8px 20px;
-    border: 2px solid var(--text);
-    border-radius: 8px;
-    color: var(--text);
-    font-weight: 700;
+
+/* ---- 按钮（全局） ---- */
+.btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 10px 20px;
+    border: none;
+    border-radius: 10px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    font-weight: 500;
+    transition:
+        background 0.2s,
+        color 0.2s,
+        border-color 0.2s,
+        box-shadow 0.2s,
+        transform 0.1s;
+}
+.btn:active:not(:disabled) {
+    transform: scale(0.98);
+}
+.btn-icon {
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+}
+.btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+.btn-primary:disabled {
+    filter: grayscale(0.4);
+}
+.btn-primary {
+    background: var(--accent-gradient);
+    color: #fff;
+    box-shadow: 0 4px 16px var(--accent-shadow);
+}
+.btn-primary:hover:not(:disabled) {
+    box-shadow: 0 6px 20px var(--accent-shadow);
+}
+.btn-outline-primary {
+    background: transparent;
+    color: var(--outline-1);
+    border: 1.5px solid var(--outline-3-border);
+}
+.btn-outline-primary:hover:not(:disabled) {
+    background: var(--outline-3-hover-bg);
+    border-color: var(--outline-3-hover-border);
+}
+.btn-outline-danger {
+    background: transparent;
+    color: var(--outline-2);
+    border: 1.5px solid var(--outline-3-border);
+}
+.btn-outline-danger:hover:not(:disabled) {
+    background: var(--outline-3-hover-bg);
+    border-color: var(--outline-3-hover-border);
+}
+.btn-outline-secondary {
+    background: transparent;
+    color: var(--outline-3-text);
+    border: 1.5px solid var(--outline-3-border);
+}
+.btn-outline-secondary:hover {
+    background: var(--outline-3-hover-bg);
+    border-color: var(--outline-3-hover-border);
+}
+
+/* ---- 弹窗（全局） ---- */
+.modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: var(--overlay);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+}
+.modal {
+    background: var(--bg-2);
+    border: 1px solid var(--surface-border);
+    border-radius: 16px;
+    padding: 32px;
+    max-width: 380px;
+    width: 90%;
+    box-shadow: var(--shadow-modal);
+}
+.modal-title {
+    display: flex;
+    align-items: center;
+    gap: 10px;
     font-size: 1.1rem;
-    margin-bottom: 20px;
-}
-.unsupported h1 {
-    font-size: 2rem;
-    margin: 0 0 16px;
-}
-.unsupported-title {
-    font-size: 1.2rem;
     font-weight: 600;
-    color: var(--error);
-    margin: 0 0 8px;
+    margin: 0 0 14px;
+    color: var(--text);
 }
-.unsupported-desc {
-    font-size: 0.95rem;
+.modal-title::before {
+    content: "";
+    width: 4px;
+    height: 16px;
+    background: var(--accent-gradient);
+    border-radius: 2px;
+    flex-shrink: 0;
+}
+.modal-body {
+    font-size: 0.9rem;
     color: var(--text-muted);
     line-height: 1.6;
-    margin: 0;
+    margin: 0 0 24px;
+}
+.modal-body code {
+    background: var(--code-bg);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 0.85rem;
+}
+.modal-actions {
+    display: flex;
+    gap: 10px;
+    justify-content: flex-end;
+}
+.modal-enter-active,
+.modal-leave-active {
+    transition: opacity 0.2s ease;
+}
+.modal-enter-active .modal,
+.modal-leave-active .modal {
+    transition: transform 0.28s cubic-bezier(0.34, 1.4, 0.64, 1);
+}
+.modal-enter-from,
+.modal-leave-to {
+    opacity: 0;
+}
+.modal-enter-from .modal,
+.modal-leave-to .modal {
+    transform: scale(0.94) translateY(-8px);
 }
 </style>
