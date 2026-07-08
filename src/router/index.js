@@ -1,4 +1,4 @@
-import { createRouter, createWebHistory } from "vue-router";
+import { createRouter, createWebHashHistory } from "vue-router";
 
 const routes = [
     { path: "/", redirect: { name: "Game" } },
@@ -17,8 +17,8 @@ const routes = [
 ];
 
 const router = createRouter({
-    // history 模式；base 取自 vite 配置（本地 / ，GitHub Pages /launch-helper/）
-    history: createWebHistory(import.meta.env.BASE_URL),
+    // hash 模式；GitHub Pages 是纯静态服务器，hash 路由不触发服务端请求，避免 404
+    history: createWebHashHistory(import.meta.env.BASE_URL),
     routes
 });
 
