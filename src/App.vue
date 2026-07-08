@@ -76,6 +76,7 @@ console.log(`Vue.js version is%c ${version}`, "color:red");
     --section-accent: #5b8cff;
     --glow-1: rgba(91, 140, 255, 0.18);
     --glow-2: rgba(139, 92, 255, 0.14);
+    --pvf-tag-color: #ff6b9d;
 }
 
 @media (prefers-color-scheme: dark) {

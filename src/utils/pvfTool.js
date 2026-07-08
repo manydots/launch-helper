@@ -714,13 +714,14 @@ class PvfArchive {
         if (!file || file.isDir) return null;
         const data = await this.getFileData(file);
         if (!data) return null;
+        const filename = sanitizeFilename(file.name || file.fullpath || "export");
         if (file.dataType === 1 || file.dataType === 3) {
             const text = this.decodeContent(file, data);
             const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
-            return { filename: file.name, blob, size: text.length };
+            return { filename, blob, size: text.length };
         }
         const blob = new Blob([data], { type: "application/octet-stream" });
-        return { filename: file.name, blob, size: data.length };
+        return { filename, blob, size: data.length };
     }
 
     isFileModified(fileIndex) {
@@ -1227,13 +1228,21 @@ class PvfArchive {
     }
 }
 
-export { PvfArchive, pvfDecrypt, pvfDecryptGuard, zlibCompress, zlibDecompress, formatBytes, buildFileTree, bytesToHex, detectEncoding };
+export { PvfArchive, pvfDecrypt, pvfDecryptGuard, zlibCompress, zlibDecompress, formatBytes, buildFileTree, bytesToHex, detectEncoding, sanitizeFilename };
 
 function formatBytes(n) {
     if (n < 1024) return n + " B";
     if (n < 1048576) return (n / 1024).toFixed(1) + " KB";
     if (n < 1073741824) return (n / 1048576).toFixed(1) + " MB";
     return (n / 1073741824).toFixed(2) + " GB";
+}
+
+function sanitizeFilename(name) {
+    if (!name) return "export";
+    let base = String(name).replace(/\\/g, "/").split("/").pop() || name;
+    base = base.replace(/^\.+/, "");
+    base = base.replace(/[<>:"|?*]/g, "_");
+    return base || "export";
 }
 
 // ---- Build hierarchical file tree from flat file list ----

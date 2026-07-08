@@ -1,8 +1,8 @@
 <script>
 import hljs from "highlight.js/lib/core";
-import { PvfArchive, formatBytes, buildFileTree, bytesToHex } from "@/utils/pvfTool";
+import { PvfArchive, formatBytes, buildFileTree, bytesToHex, sanitizeFilename } from "@/utils/pvfTool";
 import { registerPvfLanguage } from "@/utils/pvfHighlight";
-import { getTagInfo, parseTagName, renderTagTooltip } from "@/utils/pvfTags";
+import { getTagInfo, parseTagName, renderTagTooltip, PVF_BLOCK_TAGS } from "@/utils/pvfTags";
 import { validatePvfText } from "@/utils/pvfValidator";
 import { alertModal, confirmModal } from "@/hooks/useModal";
 
@@ -63,7 +63,10 @@ export default {
             logs: [],
             sidebarWidth: 280,
             logHeight: 160,
-            drag: null
+            drag: null,
+            folds: [],
+            isFolding: false,
+            tagColor: localStorage.getItem("pvf-tag-color") || "#ff6b9d"
         };
     },
     computed: {
@@ -119,6 +122,47 @@ export default {
         editLines() {
             return this.editText ? this.editText.split("\n") : [];
         },
+        foldableLines() {
+            const lines = this.editLines;
+            const result = new Set();
+            const stack = [];
+            for (let i = 0; i < lines.length; i++) {
+                const openMatch = /^\s*\[([^\]\[`{}]+)\]\s*$/.exec(lines[i]);
+                const closeMatch = /^\s*\[\/([^\]\[`{}]+)\]\s*$/.exec(lines[i]);
+                if (openMatch && PVF_BLOCK_TAGS.has(openMatch[1].toLowerCase())) {
+                    stack.push({ tag: openMatch[1].toLowerCase(), lineIndex: i });
+                }
+                if (closeMatch) {
+                    const closeTagName = closeMatch[1].toLowerCase();
+                    for (let j = stack.length - 1; j >= 0; j--) {
+                        if (stack[j].tag === closeTagName) {
+                            result.add(stack[j].lineIndex);
+                            stack.splice(j, 1);
+                            break;
+                        }
+                    }
+                }
+            }
+            return result;
+        },
+        foldedLineSet() {
+            const lines = this.editLines;
+            const result = new Set();
+            for (let i = 0; i < lines.length; i++) {
+                if (/^\s*\[[^\]]+\]\s*⋯\s*\d+\s+lines?\s*folded\s*⋯\s*\[\/[^\]]+\]\s*$/.test(lines[i])) {
+                    result.add(i);
+                }
+            }
+            return result;
+        },
+        gutterHtml() {
+            const lines = this.editLines;
+            const parts = [];
+            for (let i = 0; i < lines.length; i++) {
+                parts.push(String(i + 1));
+            }
+            return parts.join("\n");
+        },
         fileTree() {
             this.refreshKey;
             if (!this.archive) return null;
@@ -170,7 +214,9 @@ export default {
     },
     watch: {
         editText() {
-            this.textDirty = true;
+            if (!this.isFolding) {
+                this.textDirty = this.editText !== this.originalText;
+            }
             this.scheduleHighlight();
             this.scheduleValidation();
         },
@@ -248,12 +294,215 @@ export default {
             }
         },
         onNodeClick(node) {
+            const now = Date.now();
+            if (this._lastClickNode === node && now - (this._lastClickTime || 0) < 350) return;
+            this._lastClickNode = node;
+            this._lastClickTime = now;
             this.selectedPath = node.path;
             if (node.isDir) {
                 this.toggleFolder(node);
             } else {
                 this.switchToFile(node.file);
             }
+        },
+        // ---- Tag color ----
+        onTagColorChange(e) {
+            this.tagColor = e.target.value;
+            localStorage.setItem("pvf-tag-color", this.tagColor);
+        },
+        // ---- PVF text formatting (indent for nested block tags) ----
+        applyFormatting(text) {
+            if (!text || !this.currentFile || this.currentFile.dataType !== 1) return text;
+            return this.formatPvfText(text);
+        },
+        formatPvfText(text) {
+            const indentUnit = "    ";
+            const lines = text.split("\n");
+            const result = [];
+            let depth = 0;
+            let inBacktick = false;
+
+            for (const line of lines) {
+                const trimmed = line.trim();
+                let lineStartInBacktick = inBacktick;
+                for (let j = 0; j < line.length; j++) {
+                    if (line[j] === "`") {
+                        if (inBacktick && j + 1 < line.length && line[j + 1] === "`") {
+                            j++;
+                            continue;
+                        }
+                        inBacktick = !inBacktick;
+                    }
+                }
+                if (lineStartInBacktick || (inBacktick && trimmed.startsWith("`"))) {
+                    result.push(lineStartInBacktick ? line : indentUnit.repeat(depth) + trimmed);
+                    continue;
+                }
+                const openMatch = /^\[([^\]\[`{}]+)\]$/.exec(trimmed);
+                const closeMatch = /^\[\/([^\]\[`{}]+)\]$/.exec(trimmed);
+                const isTag = /^\[\/?[^\]\[`{}]+\]$/.test(trimmed);
+                const isMarker = /^\{[0-9]+=/.test(trimmed);
+
+                if (openMatch && PVF_BLOCK_TAGS.has(openMatch[1].toLowerCase())) {
+                    result.push(indentUnit.repeat(depth) + trimmed);
+                    depth++;
+                } else if (closeMatch) {
+                    depth = Math.max(0, depth - 1);
+                    result.push(indentUnit.repeat(depth) + trimmed);
+                } else if (isTag || isMarker) {
+                    result.push(indentUnit.repeat(depth) + trimmed);
+                } else if (trimmed === "" || trimmed.startsWith("#")) {
+                    result.push(line);
+                } else {
+                    result.push(indentUnit.repeat(depth) + trimmed);
+                }
+            }
+            return result.join("\n");
+        },
+        // ---- Block tag folding ----
+        onEditorMouseDown(e) {
+            if (!this.editText) return;
+            const ta = this.$refs.editorEl;
+            if (!ta) return;
+            const m = this.getEditorMetrics();
+            if (!m) return;
+            const rect = ta.getBoundingClientRect();
+            const relY = e.clientY - rect.top;
+            const row = Math.floor((relY + ta.scrollTop - m.paddingTop) / m.lineHeight);
+            if (row < 0 || row >= this.editLines.length) return;
+            if (this.foldableLines.has(row) || this.foldedLineSet.has(row)) {
+                e.preventDefault();
+                this.toggleFold(row);
+            }
+        },
+        onEditorBeforeInput(e) {
+            if (this.foldedLineSet.size === 0) return;
+            const ta = e.target;
+            const start = ta.selectionStart;
+            const end = ta.selectionEnd;
+            const before = this.editText.substring(0, start);
+            const startLine = before.split("\n").length - 1;
+            if (start !== end) {
+                const selected = this.editText.substring(start, end);
+                const lineCount = selected.split("\n").length;
+                for (let i = 0; i < lineCount; i++) {
+                    if (this.foldedLineSet.has(startLine + i)) {
+                        e.preventDefault();
+                        return;
+                    }
+                }
+            } else {
+                if (this.foldedLineSet.has(startLine)) {
+                    e.preventDefault();
+                    return;
+                }
+                if (e.inputType === "deleteContentBackward" && start > 0 && before.endsWith("\n")) {
+                    if (this.foldedLineSet.has(startLine - 1)) {
+                        e.preventDefault();
+                        return;
+                    }
+                }
+                if (e.inputType === "deleteContentForward") {
+                    const after = this.editText.substring(end);
+                    if (after.startsWith("\n")) {
+                        const nextLine = startLine + 1;
+                        if (this.foldedLineSet.has(nextLine)) {
+                            e.preventDefault();
+                            return;
+                        }
+                    }
+                }
+            }
+        },
+        toggleFold(lineIndex) {
+            const lines = this.editLines;
+            if (lineIndex < 0 || lineIndex >= lines.length) return;
+            if (this.foldedLineSet.has(lineIndex)) {
+                this.unfoldLine(lineIndex);
+            } else if (this.foldableLines.has(lineIndex)) {
+                this.foldBlock(lineIndex);
+            }
+        },
+        foldBlock(openLineIndex) {
+            const lines = this.editLines;
+            const openLine = lines[openLineIndex];
+            const tagMatch = /^\s*(\[([^\]\[`{}]+)\])\s*$/.exec(openLine);
+            if (!tagMatch) return;
+            const tagName = tagMatch[2];
+            const closeTag = `[/${tagName}]`;
+            let closeLineIndex = -1;
+            let depth = 0;
+            for (let i = openLineIndex + 1; i < lines.length; i++) {
+                const m = /^\s*(\[\/?[^\]\[`{}]+\])\s*$/.exec(lines[i]);
+                if (!m) continue;
+                const t = m[1];
+                if (t === closeTag) {
+                    if (depth === 0) {
+                        closeLineIndex = i;
+                        break;
+                    }
+                    depth--;
+                } else if (t === tagMatch[1]) {
+                    depth++;
+                }
+            }
+            if (closeLineIndex < 0 || closeLineIndex <= openLineIndex + 1) return;
+            const lineCount = closeLineIndex - openLineIndex + 1;
+            const content = lines.slice(openLineIndex, closeLineIndex + 1).join("\n");
+            const indent = (openLine.match(/^\s*/) || [""])[0];
+            const placeholder = `${indent}${tagMatch[1]} ⋯ ${lineCount} lines folded ⋯ ${closeTag}`;
+            const wasDirty = this.textDirty;
+            this.isFolding = true;
+            const newLines = [...lines];
+            newLines.splice(openLineIndex, lineCount, placeholder);
+            this.editText = newLines.join("\n");
+            this.isFolding = false;
+            if (!wasDirty) {
+                this.originalText = this.editText;
+                this.textDirty = false;
+            }
+            this.folds.push({ tag: tagName.toLowerCase(), content, placeholder: placeholder.trim() });
+            this.$nextTick(() => this.syncScroll());
+        },
+        unfoldLine(lineIndex) {
+            const lines = this.editLines;
+            const line = lines[lineIndex].trim();
+            const foldIdx = this.folds.findIndex(f => f.placeholder === line);
+            if (foldIdx < 0) return;
+            const fold = this.folds[foldIdx];
+            const wasDirty = this.textDirty;
+            this.isFolding = true;
+            const newLines = [...lines];
+            newLines.splice(lineIndex, 1, fold.content);
+            this.editText = newLines.join("\n");
+            this.isFolding = false;
+            if (!wasDirty) {
+                this.originalText = this.editText;
+                this.textDirty = false;
+            }
+            this.folds.splice(foldIdx, 1);
+            this.$nextTick(() => this.syncScroll());
+        },
+        unfoldAll() {
+            if (this.folds.length === 0) return;
+            const wasDirty = this.textDirty;
+            this.isFolding = true;
+            let text = this.editText;
+            for (let i = this.folds.length - 1; i >= 0; i--) {
+                const fold = this.folds[i];
+                const idx = text.lastIndexOf(fold.placeholder);
+                if (idx >= 0) {
+                    text = text.substring(0, idx) + fold.content + text.substring(idx + fold.placeholder.length);
+                }
+            }
+            this.editText = text;
+            this.isFolding = false;
+            if (!wasDirty) {
+                this.originalText = this.editText;
+                this.textDirty = false;
+            }
+            this.folds = [];
+            this.$nextTick(() => this.syncScroll());
         },
         switchToFile(file) {
             // Deferred check: compare only when switching
@@ -288,6 +537,8 @@ export default {
         },
         // ---- File content loading ----
         async loadFileContent(file) {
+            if (this._loadingFileIndex === file.index) return;
+            this._loadingFileIndex = file.index;
             this.currentFile = file;
             this.editText = "";
             this.originalText = "";
@@ -295,10 +546,14 @@ export default {
             this.viewMode = "text";
             this.highlightedHtml = "";
             this.textDirty = false;
+            this._editorMetrics = null;
+            this._hlCache = null;
+            this.folds = [];
 
             if (file.isDir) {
                 this.originalText = "[目录标记]";
                 this.editText = "[目录标记]";
+                this._loadingFileIndex = null;
                 return;
             }
 
@@ -306,17 +561,24 @@ export default {
             this.loadingMessage = "加载文件内容...";
             try {
                 const data = await this.archive.getFileData(file);
+                if (this._loadingFileIndex !== file.index) {
+                    this._loadingFileIndex = null;
+                    return;
+                }
                 if (!data) {
                     this.originalText = "[无法读取文件数据]";
                     this.editText = this.originalText;
                     this.loading = false;
+                    this._loadingFileIndex = null;
                     return;
                 }
                 const text = this.archive.decodeContent(file, data);
-                this.originalText = text;
-                this.editText = text;
+                const formatted = this.applyFormatting(text);
+                this.originalText = formatted;
+                this.editText = formatted;
                 this.hexViewText = bytesToHex(data);
                 this.loading = false;
+                this._loadingFileIndex = null;
                 this.$nextTick(() => {
                     if (this.$refs.editorEl) this.$refs.editorEl.scrollTop = 0;
                     this.syncScroll();
@@ -326,12 +588,15 @@ export default {
                 });
             } catch (err) {
                 this.loading = false;
+                this._loadingFileIndex = null;
                 alertModal({ title: "加载失败", message: err.message });
             }
         },
         // ---- Editing ----
         async stageChange() {
             if (!this.currentFile || !this.textDirty) return;
+            if (this.folds.length > 0) this.unfoldAll();
+            if (!this.textDirty) return;
             if (this.currentFile.isDir || (this.currentFile.dataType !== 1 && this.currentFile.dataType !== 3)) {
                 alertModal({ title: "无法编辑", message: "仅支持编辑 Type 1 (脚本) 和 Type 3 (文本) 文件。" });
                 return;
@@ -547,9 +812,11 @@ export default {
                     const text = await file.text();
                     arch.setFileContent(target.fileIndex, text);
                     if (this.currentFile && this.currentFile.index === target.fileIndex) {
-                        this.originalText = text;
-                        this.editText = text;
+                        const formatted = this.applyFormatting(text);
+                        this.originalText = formatted;
+                        this.editText = formatted;
                         this.textDirty = false;
+                        this.folds = [];
                         const data = await arch.getFileData(targetFile);
                         this.hexViewText = bytesToHex(data);
                         this.updateHighlight();
@@ -561,9 +828,11 @@ export default {
                         const data = await arch.getFileData(targetFile);
                         this.hexViewText = bytesToHex(data);
                         const text = arch.decodeContent(targetFile, data);
-                        this.originalText = text;
-                        this.editText = text;
+                        const formatted = this.applyFormatting(text);
+                        this.originalText = formatted;
+                        this.editText = formatted;
                         this.textDirty = false;
+                        this.folds = [];
                         this.updateHighlight();
                     }
                 }
@@ -594,10 +863,12 @@ export default {
                             const data = await this.archive.getFileData(file);
                             if (data) {
                                 const text = this.archive.decodeContent(file, data);
-                                this.originalText = text;
-                                this.editText = text;
+                                const formatted = this.applyFormatting(text);
+                                this.originalText = formatted;
+                                this.editText = formatted;
                                 this.hexViewText = bytesToHex(data);
                                 this.textDirty = false;
+                                this.folds = [];
                                 this.selectedPath = file.fullpath;
                                 this._editorMetrics = null;
                                 this.$nextTick(() => {
@@ -630,6 +901,7 @@ export default {
         // ---- Save PVF ----
         async downloadPvf() {
             if (!this.archive) return;
+            if (this.folds.length > 0) this.unfoldAll();
             // 自动暂存当前文件的未保存编辑
             if (this.textDirty && this.isEditable) {
                 if (this.highlightMode === "pvf" && !this.ensureValid("保存")) return;
@@ -669,7 +941,7 @@ export default {
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement("a");
                 a.href = url;
-                a.download = this.fileName.replace(/\.pvf$/i, "") + ".modified.pvf";
+                a.download = sanitizeFilename(this.fileName.replace(/\.pvf$/i, "") + ".modified.pvf");
                 document.body.appendChild(a);
                 a.click();
                 document.body.removeChild(a);
@@ -761,6 +1033,9 @@ export default {
                 this.$refs.highlightEl.scrollTop = this.$refs.editorEl.scrollTop;
                 this.$refs.highlightEl.scrollLeft = this.$refs.editorEl.scrollLeft;
             }
+            if (this.$refs.gutterEl && this.$refs.editorEl) {
+                this.$refs.gutterEl.scrollTop = this.$refs.editorEl.scrollTop;
+            }
         },
         onEditorKeydown(e) {
             if (e.key === "Tab") {
@@ -797,30 +1072,42 @@ export default {
             }
             let html;
             if (!text || text.length > 500000) {
-                html = this.annotateTagSpans(this.escapeHtml(text)) + "\n";
+                html = this.annotateTagSpans(this.escapeHtml(text));
             } else if (mode !== "pvf") {
                 // Only PVF script (Type 1) has a registered language; Type 3 falls back to escaped text
-                html = this.annotateTagSpans(this.escapeHtml(text)) + "\n";
+                html = this.annotateTagSpans(this.escapeHtml(text));
             } else {
                 try {
                     const result = hljs.highlight(text, { language: "pvf" });
-                    html = this.annotateTagSpans(result.value) + "\n";
+                    html = this.annotateTagSpans(result.value);
                 } catch (e) {
-                    html = this.annotateTagSpans(this.escapeHtml(text)) + "\n";
+                    html = this.annotateTagSpans(this.escapeHtml(text));
                 }
             }
+            if (this.folds.length > 0) {
+                const textLines = text.split("\n");
+                const htmlLines = html.split("\n");
+                for (let i = 0; i < textLines.length && i < htmlLines.length; i++) {
+                    if (/^\s*\[[^\]]+\]\s*⋯\s*\d+\s+lines?\s*folded\s*⋯\s*\[\/[^\]]+\]\s*$/.test(textLines[i])) {
+                        htmlLines[i] = `<span class="pvf-folded-line">${htmlLines[i]}</span>`;
+                    }
+                }
+                html = htmlLines.join("\n");
+            }
+            html += "\n";
             this._hlCache = { text, mode, html };
             this.highlightedHtml = html;
         },
         // 为 [xxx] 标签的 hljs-type span 注入 data-tag 属性，便于浮窗解析
         annotateTagSpans(html) {
             if (!html) return html;
-            return html.replace(/<span class="hljs-type">(\[[^\]<]*\])<\/span>/g, (m, tag) => {
+            return html.replace(/<span class="hljs-type">(\[\/?[^\]<]*\])<\/span>/g, (m, tag) => {
                 const name = parseTagName(tag);
                 const info = getTagInfo(name);
                 const known = info && info.category !== "other" ? " known" : "";
                 const block = info && info.block ? " block" : "";
-                return `<span class="hljs-type pvf-tag${known}${block}" data-tag="${this.escapeAttr(name)}">${tag}</span>`;
+                const closing = tag.startsWith("[/") ? " closing" : "";
+                return `<span class="hljs-type pvf-tag${known}${block}${closing}" data-tag="${this.escapeAttr(name)}">${tag}</span>`;
             });
         },
         escapeAttr(s) {
@@ -831,7 +1118,7 @@ export default {
         // PVF 中每个 [xxx] 标签独占一行（解码器将每个 type-3 token 输出为单独一行），
         // 因此在 textarea 上按行命中即可，避免坐标→字符偏移的复杂换算。
         onEditorMouseMove(e) {
-            if (!this.editText || this.highlightMode !== "pvf") {
+            if (!this.editText) {
                 if (this.tooltip.show) this.tooltip.show = false;
                 return;
             }
@@ -849,12 +1136,32 @@ export default {
             const relY = e.clientY - rect.top;
             const row = Math.floor((relY + ta.scrollTop - m.paddingTop) / m.lineHeight);
             if (row < 0) {
+                ta.style.cursor = "text";
                 this.tooltip.show = false;
                 return;
             }
             const lines = this.editLines;
             if (row >= lines.length) {
+                ta.style.cursor = "text";
                 this.tooltip.show = false;
+                return;
+            }
+            const isFoldable = this.foldableLines.has(row) || this.foldedLineSet.has(row);
+            ta.style.cursor = isFoldable ? "pointer" : "text";
+            const line = lines[row];
+            const foldedMatch = /^\s*\[([^\]]+)\]\s*⋯\s*(\d+)\s+lines?\s*folded\s*⋯\s*\[\/[^\]]+\]\s*$/.exec(line);
+            if (foldedMatch) {
+                const fold = this.folds.find(f => f.placeholder === line.trim());
+                if (fold) {
+                    const preview = fold.content.length > 2000 ? fold.content.substring(0, 2000) + "\n⋯" : fold.content;
+                    this.tooltip.show = true;
+                    this.tooltip.html = `<div class="pvf-tip-name">[${foldedMatch[1]}] ⋯ ${foldedMatch[2]} lines</div><pre class="pvf-fold-preview">${this.escapeHtml(preview)}</pre>`;
+                    this.positionTooltip(e);
+                    return;
+                }
+            }
+            if (this.highlightMode !== "pvf") {
+                if (this.tooltip.show) this.tooltip.show = false;
                 return;
             }
             const mm = /^\s*(\[\/?[^\]\[`{}]+\])\s*$/.exec(lines[row]);
@@ -905,7 +1212,6 @@ export default {
                 return;
             }
             const text = this.editText;
-            // 缓存命中：文本未变化则复用上次结果
             if (this._valCache && this._valCache.text === text) {
                 return;
             }
@@ -982,11 +1288,13 @@ export default {
 
 <template>
     <Teleport to="body">
-        <div class="pvf-overlay" @contextmenu.prevent>
+        <div class="pvf-overlay" :style="{ '--pvf-tag-color': tagColor }" @contextmenu.prevent>
             <!-- Loading overlay -->
             <div v-if="loading" class="pvf-modal-loading">
                 <div class="spinner-lg"></div>
-                <p class="pvf-loading-text">{{ loadingMessage }}<span class="pvf-loading-dots"><span>.</span><span>.</span><span>.</span></span></p>
+                <p class="pvf-loading-text">
+                    {{ loadingMessage }}<span class="pvf-loading-dots"><span>.</span><span>.</span><span>.</span></span>
+                </p>
             </div>
 
             <!-- Saving overlay -->
@@ -1133,6 +1441,10 @@ export default {
                         </div>
                     </div>
                     <div class="pvf-topbar-right">
+                        <label v-if="archive" class="pvf-tag-color-picker" title="标签颜色">
+                            <span class="pvf-tag-color-label">标签色</span>
+                            <input type="color" :value="tagColor" @input="onTagColorChange" />
+                        </label>
                         <select v-if="archive" class="pvf-encoding-select" :value="strEncoding" title="字符串编码（影响 Type 1 脚本内容与文件名解析）" @change="changeEncoding($event.target.value)">
                             <option v-for="enc in ENCODINGS" :key="enc.value" :value="enc.value">{{ enc.label }}</option>
                         </select>
@@ -1144,20 +1456,6 @@ export default {
                             <span v-if="renamedCount > 0">{{ renamedCount }} 重命名</span>
                         </span>
                         <button v-if="hasChanges" class="btn btn-sm btn-outline-secondary" @click="revertAll">全部撤销</button>
-                        <button class="pvf-icon-btn" @click="exportNode(currentFile ? { file: currentFile, isDir: false } : null)" :disabled="!currentFile" data-tip="导出当前文件">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                                <polyline points="7 10 12 15 17 10" />
-                                <line x1="12" y1="15" x2="12" y2="3" />
-                            </svg>
-                        </button>
-                        <button class="pvf-icon-btn" @click="triggerImport(currentFile ? { file: currentFile, isDir: false } : null)" :disabled="!currentFile" data-tip="导入文件到当前目录">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                                <polyline points="17 8 12 3 7 8" />
-                                <line x1="12" y1="3" x2="12" y2="15" />
-                            </svg>
-                        </button>
                         <button class="pvf-icon-btn" :disabled="!hasChanges" @click="downloadPvf" data-tip="导出 PVF">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
@@ -1199,19 +1497,43 @@ export default {
                                         <svg v-if="item.node.isDir" class="pvf-tree-ico pvf-ico-folder" viewBox="0 0 24 24" fill="currentColor">
                                             <path d="M10 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-2z" />
                                         </svg>
-                                        <svg v-else-if="item.node.file.dataType === 1" class="pvf-tree-ico pvf-ico-script" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                        <svg
+                                            v-else-if="item.node.file.dataType === 1"
+                                            class="pvf-tree-ico pvf-ico-script"
+                                            viewBox="0 0 24 24"
+                                            fill="none"
+                                            stroke="currentColor"
+                                            stroke-width="2"
+                                            stroke-linecap="round"
+                                            stroke-linejoin="round">
                                             <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
                                             <polyline points="14 2 14 8 20 8" />
                                             <line x1="9" y1="13" x2="15" y2="13" />
                                             <line x1="9" y1="17" x2="13" y2="17" />
                                         </svg>
-                                        <svg v-else-if="item.node.file.dataType === 3" class="pvf-tree-ico pvf-ico-text" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                        <svg
+                                            v-else-if="item.node.file.dataType === 3"
+                                            class="pvf-tree-ico pvf-ico-text"
+                                            viewBox="0 0 24 24"
+                                            fill="none"
+                                            stroke="currentColor"
+                                            stroke-width="2"
+                                            stroke-linecap="round"
+                                            stroke-linejoin="round">
                                             <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
                                             <polyline points="14 2 14 8 20 8" />
                                             <line x1="9" y1="13" x2="15" y2="13" />
                                             <line x1="9" y1="17" x2="13" y2="17" />
                                         </svg>
-                                        <svg v-else class="pvf-tree-ico pvf-ico-binary" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                        <svg
+                                            v-else
+                                            class="pvf-tree-ico pvf-ico-binary"
+                                            viewBox="0 0 24 24"
+                                            fill="none"
+                                            stroke="currentColor"
+                                            stroke-width="2"
+                                            stroke-linecap="round"
+                                            stroke-linejoin="round">
                                             <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
                                             <polyline points="14 2 14 8 20 8" />
                                             <line x1="9" y1="13" x2="15" y2="13" />
@@ -1247,17 +1569,24 @@ export default {
                             </div>
                             <div v-if="currentFile && isEditable && viewMode === 'text'" class="pvf-editor-area">
                                 <div class="pvf-code-editor">
-                                    <pre ref="highlightEl" class="pvf-code-highlight" aria-hidden="true" v-html="highlightedHtml"></pre>
-                                    <textarea
-                                        ref="editorEl"
-                                        v-model="editText"
-                                        class="pvf-code-textarea"
-                                        spellcheck="false"
-                                        @scroll="syncScroll"
-                                        @keydown="onEditorKeydown"
-                                        @mousemove="onEditorMouseMove"
-                                        @mouseleave="onEditorMouseLeave"
-                                        placeholder="编辑文件内容..."></textarea>
+                                    <div ref="gutterEl" class="pvf-code-gutter" @mousemove="onEditorMouseMove">
+                                        <pre class="pvf-gutter-pre" v-html="gutterHtml"></pre>
+                                    </div>
+                                    <div class="pvf-code-main">
+                                        <pre ref="highlightEl" class="pvf-code-highlight" aria-hidden="true" v-html="highlightedHtml"></pre>
+                                        <textarea
+                                            ref="editorEl"
+                                            v-model="editText"
+                                            class="pvf-code-textarea"
+                                            spellcheck="false"
+                                            @scroll="syncScroll"
+                                            @keydown="onEditorKeydown"
+                                            @mousedown="onEditorMouseDown"
+                                            @beforeinput="onEditorBeforeInput"
+                                            @mousemove="onEditorMouseMove"
+                                            @mouseleave="onEditorMouseLeave"
+                                            placeholder="编辑文件内容..."></textarea>
+                                    </div>
                                 </div>
                                 <!-- 语法错误面板 -->
                                 <Transition name="ctx">
@@ -1362,7 +1691,8 @@ export default {
     height: 100%;
 }
 @keyframes pvf-pulse {
-    0%, 100% {
+    0%,
+    100% {
         transform: scale(1);
         opacity: 0.6;
     }
@@ -1389,7 +1719,9 @@ export default {
     animation-delay: 0.4s;
 }
 @keyframes pvf-dots {
-    0%, 60%, 100% {
+    0%,
+    60%,
+    100% {
         opacity: 0;
     }
     30% {
@@ -2036,6 +2368,35 @@ export default {
     flex-shrink: 0;
     font-family: "SF Mono", monospace;
 }
+.pvf-tag-color-picker {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    flex-shrink: 0;
+    cursor: pointer;
+}
+.pvf-tag-color-label {
+    font-size: 0.68rem;
+    color: var(--text-muted);
+    font-family: "SF Mono", monospace;
+    white-space: nowrap;
+}
+.pvf-tag-color-picker input[type="color"] {
+    width: 22px;
+    height: 22px;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    cursor: pointer;
+    padding: 0;
+    background: transparent;
+}
+.pvf-tag-color-picker input[type="color"]::-webkit-color-swatch-wrapper {
+    padding: 2px;
+}
+.pvf-tag-color-picker input[type="color"]::-webkit-color-swatch {
+    border: none;
+    border-radius: 3px;
+}
 .pvf-encoding-select {
     background: var(--bg);
     border: 1px solid var(--border);
@@ -2105,6 +2466,31 @@ export default {
 }
 /* ---- Overlay code editor (highlighted pre + transparent textarea) ---- */
 .pvf-code-editor {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+}
+.pvf-code-gutter {
+    flex-shrink: 0;
+    overflow: hidden;
+    background: var(--bg-2);
+    border-right: 1px solid var(--surface-border);
+    user-select: none;
+    cursor: default;
+    box-sizing: border-box;
+}
+.pvf-gutter-pre {
+    margin: 0;
+    padding: 14px 8px 14px 10px;
+    font-family: "SF Mono", "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+    font-size: 0.8rem;
+    line-height: 1.6;
+    white-space: pre;
+    text-align: right;
+    color: var(--text-muted);
+    box-sizing: border-box;
+}
+.pvf-code-main {
     position: relative;
     flex: 1;
     overflow: hidden;
@@ -2158,7 +2544,7 @@ export default {
     font-weight: 500;
 }
 .pvf-code-highlight :deep(.hljs-type) {
-    color: #4ec9b0;
+    color: var(--pvf-tag-color);
 }
 .pvf-code-highlight :deep(.hljs-number) {
     color: #b5cea8;
@@ -2239,7 +2625,7 @@ export default {
     font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
     font-size: 0.82rem;
     font-weight: 600;
-    color: #4ec9b0;
+    color: var(--pvf-tag-color);
     margin-bottom: 2px;
 }
 .pvf-tip-cat {
@@ -2327,6 +2713,20 @@ export default {
     color: var(--text-muted);
     font-style: italic;
 }
+.pvf-fold-preview {
+    margin: 6px 0 0;
+    padding: 8px 10px;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 6px;
+    font-family: "SF Mono", "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+    font-size: 0.7rem;
+    line-height: 1.5;
+    color: var(--text);
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 400px;
+    overflow-y: auto;
+}
 .tip-enter-active,
 .tip-leave-active {
     transition: opacity 0.12s ease;
@@ -2343,6 +2743,16 @@ export default {
 }
 .pvf-code-highlight :deep(.pvf-tag) {
     cursor: help;
+}
+/* 可折叠块标签样式 */
+.pvf-code-highlight :deep(.pvf-tag.block:not(.closing)) {
+    border-bottom: 1px dashed rgba(91, 140, 255, 0.45);
+}
+/* 折叠占位行样式 */
+.pvf-code-highlight :deep(.pvf-folded-line) {
+    background: rgba(224, 175, 104, 0.08);
+    border-radius: 3px;
+    padding: 0 2px;
 }
 
 /* ---- 语法状态徽章 ---- */
