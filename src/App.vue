@@ -40,7 +40,7 @@ console.log(`Vue.js version is%c ${version}`, "color:red");
     <!-- 以下信息仅在 Game 路由显示 -->
     <template v-if="isGameRoute">
         <div class="build-time">更新时间 {{ buildTime }}</div>
-        <div class="agent-badge">Agent Plan GLM5.2 生成</div>
+        <div class="agent-badge">Agent Plan GLM-5.2 生成</div>
     </template>
 </template>
 

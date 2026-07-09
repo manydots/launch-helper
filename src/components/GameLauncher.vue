@@ -1,6 +1,7 @@
 <script>
 import { useGameStore } from "@/stores/game";
 import { openModal, alertModal } from "@/hooks/useModal";
+import { api } from "@/utils/http";
 import MaterialTextField from "@/components/MaterialTextField.vue";
 
 export default {
@@ -17,7 +18,19 @@ export default {
             loading: false,
             showConfig: !this.store.gamePath,
             subtitleFull: "游戏快速启动工具",
-            typedSubtitle: ""
+            typedSubtitle: "",
+            mode: "login",
+            gatewayEnabled: import.meta.env.VITE_GATEWAY_ENABLED === "true",
+            platformCheck: import.meta.env.VITE_PLATFORM_CHECK === "true",
+            regMid: this.store.account || "",
+            regPassword: "",
+            regConfirm: "",
+            regErrors: { mid: "", password: "", confirm: "" },
+            pwdMid: this.store.account || "",
+            pwdOld: "",
+            pwdNew: "",
+            pwdConfirm: "",
+            pwdErrors: { mid: "", old: "", neo: "", confirm: "" }
         };
     },
     computed: {
@@ -82,19 +95,108 @@ export default {
             });
         },
         handleRegister() {
-            alertModal({
-                title: "注册账号",
-                message: "请前往游戏官网完成账号注册。"
-            });
+            if (!this.gatewayEnabled) {
+                alertModal({
+                    title: "注册账号",
+                    message: "请前往游戏官网完成账号注册。"
+                });
+                return;
+            }
+            this.regMid = this.store.account || this.regMid;
+            this.regPassword = "";
+            this.regConfirm = "";
+            this.regErrors = { mid: "", password: "", confirm: "" };
+            this.mode = "register";
         },
         handleChangePassword() {
-            alertModal({
-                title: "修改密码",
-                message: "请前往游戏官网修改密码。"
-            });
+            if (!this.gatewayEnabled) {
+                alertModal({
+                    title: "修改密码",
+                    message: "请前往游戏官网修改密码。"
+                });
+                return;
+            }
+            this.pwdMid = this.store.account || this.pwdMid;
+            this.pwdOld = "";
+            this.pwdNew = "";
+            this.pwdConfirm = "";
+            this.pwdErrors = { mid: "", old: "", neo: "", confirm: "" };
+            this.mode = "password";
+        },
+        backToLogin() {
+            this.mode = "login";
+        },
+        validateRegister() {
+            const e = { mid: "", password: "", confirm: "" };
+            const mid = this.regMid.trim();
+            if (!mid) e.mid = "账号不能为空";
+            else if (!/^[a-zA-Z0-9]{3,20}$/.test(mid)) e.mid = "账号仅限字母数字，3-20 位";
+            const pwd = this.regPassword;
+            if (!pwd) e.password = "密码不能为空";
+            else if (pwd.length < 6 || pwd.length > 32) e.password = "密码长度 6-32 位";
+            if (this.regConfirm !== pwd) e.confirm = "两次密码输入不一致";
+            this.regErrors = e;
+            return !e.mid && !e.password && !e.confirm;
+        },
+        async doRegister() {
+            if (!this.validateRegister()) return;
+            this.loading = true;
+            const data = await this.callApi(
+                api.register(this.regMid.trim(), this.regPassword, this.regConfirm),
+                { errorTitle: "注册失败" }
+            );
+            this.loading = false;
+            if (!data) return;
+            this.account = this.regMid.trim();
+            this.password = "";
+            await alertModal({ title: "注册成功", message: `账号 ${data.m_id} 已创建，请使用该账号登录。` });
+            this.mode = "login";
+        },
+        validateChangePassword() {
+            const e = { mid: "", old: "", neo: "", confirm: "" };
+            const mid = this.pwdMid.trim();
+            if (!mid) e.mid = "账号不能为空";
+            if (!this.pwdOld) e.old = "旧密码不能为空";
+            const neo = this.pwdNew;
+            if (!neo) e.neo = "新密码不能为空";
+            else if (neo.length < 6 || neo.length > 32) e.neo = "新密码长度 6-32 位";
+            else if (neo === this.pwdOld) e.neo = "新密码不能与旧密码相同";
+            if (this.pwdConfirm !== neo) e.confirm = "两次密码输入不一致";
+            this.pwdErrors = e;
+            return !e.mid && !e.old && !e.neo && !e.confirm;
+        },
+        async doChangePassword() {
+            if (!this.validateChangePassword()) return;
+            this.loading = true;
+            const data = await this.callApi(
+                api.changePassword(this.pwdMid.trim(), this.pwdOld, this.pwdNew, this.pwdConfirm),
+                { errorTitle: "修改失败" }
+            );
+            this.loading = false;
+            if (!data) return;
+            this.account = this.pwdMid.trim();
+            this.password = "";
+            await alertModal({ title: "修改成功", message: "密码已更新，请使用新密码登录。" });
+            this.mode = "login";
+        },
+        async callApi(promise, { errorTitle = "操作失败" } = {}) {
+            try {
+                const data = await promise;
+                if (!data || !data.success) {
+                    await alertModal({ title: errorTitle, message: (data && data.message) || "操作失败" });
+                    return null;
+                }
+                return data;
+            } catch (err) {
+                await alertModal({
+                    title: errorTitle,
+                    message: "网络错误，请确认本地开发代理已启用（仅开发环境可访问网关）。"
+                });
+                return null;
+            }
         },
         generateRegistry() {
-            if (!this.isWindows) {
+            if (this.platformCheck && !this.isWindows) {
                 this.showUnsupportedModal();
                 return;
             }
@@ -116,7 +218,7 @@ export default {
             this.store.downloadRegistry(path, this.inputParam.trim());
         },
         handleLogin() {
-            if (!this.isWindows) {
+            if (this.platformCheck && !this.isWindows) {
                 this.showUnsupportedModal();
                 return;
             }
@@ -143,7 +245,26 @@ export default {
                 return;
             }
 
+            if (this.gatewayEnabled) {
+                this.loginViaGateway();
+            } else {
+                this.loading = true;
+                this.launchWithDetect();
+            }
+        },
+        async loginViaGateway() {
             this.loading = true;
+            const data = await this.callApi(api.login(this.account.trim(), this.password), {
+                errorTitle: "登录失败"
+            });
+            if (!data) {
+                this.loading = false;
+                return;
+            }
+            if (data.launch_args) {
+                this.store.setLaunchParam(data.launch_args);
+                this.inputParam = data.launch_args;
+            }
             this.launchWithDetect();
         },
         launchWithDetect() {
@@ -193,7 +314,7 @@ export default {
 <template>
     <div class="launcher">
         <div class="launcher-card">
-            <button class="config-toggle" :class="{ active: showConfig }" @click="showConfig = !showConfig">
+            <button v-if="mode === 'login'" class="config-toggle" :class="{ active: showConfig }" @click="showConfig = !showConfig">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <circle cx="12" cy="12" r="3" />
                     <path
@@ -206,48 +327,87 @@ export default {
             </div>
 
             <div class="form">
-                <MaterialTextField v-model="account" label="账号" />
-                <MaterialTextField v-model="password" label="密码" type="password" />
+                <template v-if="mode === 'login'">
+                    <MaterialTextField v-model="account" label="账号" />
+                    <MaterialTextField v-model="password" label="密码" type="password" />
 
-                <Transition name="config">
-                    <div v-if="showConfig" class="config-section">
-                        <div class="section-divider"><span>游戏配置</span></div>
+                    <Transition name="config">
+                        <div v-if="showConfig" class="config-section">
+                            <div class="section-divider"><span>游戏配置</span></div>
 
-                        <MaterialTextField v-model="inputPath" label="游戏 exe 路径" />
-                        <MaterialTextField v-model="inputParam" label="启动 bat 参数" />
+                            <MaterialTextField v-model="inputPath" label="游戏 exe 路径" />
+                            <MaterialTextField v-model="inputParam" label="启动 bat 参数" />
 
-                        <div class="actions registry-actions">
-                            <button class="btn btn-sm btn-outline-primary" :disabled="!isPathValid" @click="generateRegistry">
-                                <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                                    <polyline points="7 10 12 15 17 10" />
-                                    <line x1="12" y1="15" x2="12" y2="3" />
-                                </svg>
-                                生成
-                            </button>
-                            <button class="btn btn-sm btn-outline-danger" @click="store.downloadUninstallRegistry">
-                                <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                    <polyline points="3 6 5 6 21 6" />
-                                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-                                </svg>
-                                卸载
-                            </button>
+                            <div class="actions registry-actions">
+                                <button class="btn btn-sm btn-outline-primary" :disabled="!isPathValid" @click="generateRegistry">
+                                    <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                                        <polyline points="7 10 12 15 17 10" />
+                                        <line x1="12" y1="15" x2="12" y2="3" />
+                                    </svg>
+                                    生成
+                                </button>
+                                <button class="btn btn-sm btn-outline-danger" @click="store.downloadUninstallRegistry">
+                                    <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                        <polyline points="3 6 5 6 21 6" />
+                                        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                                    </svg>
+                                    卸载
+                                </button>
+                            </div>
                         </div>
+                    </Transition>
+
+                    <div class="actions login-actions">
+                        <button class="btn btn-primary btn-login" :disabled="loading" @click="handleLogin">
+                            <span v-if="loading" class="spinner"></span>
+                            {{ loading ? "启动中..." : "登录并启动" }}
+                        </button>
                     </div>
-                </Transition>
 
-                <div class="actions login-actions">
-                    <button class="btn btn-primary btn-login" :disabled="loading" @click="handleLogin">
-                        <span v-if="loading" class="spinner"></span>
-                        {{ loading ? "启动中..." : "登录并启动" }}
-                    </button>
-                </div>
+                    <div class="auth-links">
+                        <a href="#" @click.prevent="handleRegister">注册账号</a>
+                        <span class="link-divider">·</span>
+                        <a href="#" @click.prevent="handleChangePassword">修改密码</a>
+                    </div>
+                </template>
 
-                <div class="auth-links">
-                    <a href="#" @click.prevent="handleRegister">注册账号</a>
-                    <span class="link-divider">·</span>
-                    <a href="#" @click.prevent="handleChangePassword">修改密码</a>
-                </div>
+                <template v-else-if="mode === 'register'">
+                    <div class="section-divider"><span>注册账号</span></div>
+                    <MaterialTextField v-model="regMid" label="账号（字母数字 3-20）" :error="regErrors.mid" />
+                    <MaterialTextField v-model="regPassword" label="密码（6-32）" type="password" :error="regErrors.password" />
+                    <MaterialTextField v-model="regConfirm" label="确认密码" type="password" :error="regErrors.confirm" />
+
+                    <div class="actions login-actions">
+                        <button class="btn btn-primary btn-login" :disabled="loading" @click="doRegister">
+                            <span v-if="loading" class="spinner"></span>
+                            {{ loading ? "注册中..." : "注册" }}
+                        </button>
+                    </div>
+
+                    <div class="auth-links">
+                        <a href="#" @click.prevent="backToLogin">返回登录</a>
+                    </div>
+                </template>
+
+                <template v-else-if="mode === 'password'">
+                    <div class="section-divider"><span>修改密码</span></div>
+                    <MaterialTextField v-model="pwdMid" label="账号" :error="pwdErrors.mid" />
+                    <MaterialTextField v-model="pwdOld" label="旧密码" type="password" :error="pwdErrors.old" />
+                    <MaterialTextField v-model="pwdNew" label="新密码（6-32）" type="password" :error="pwdErrors.neo" />
+                    <MaterialTextField v-model="pwdConfirm" label="确认新密码" type="password" :error="pwdErrors.confirm" />
+
+                    <div class="actions login-actions">
+                        <button class="btn btn-primary btn-login" :disabled="loading" @click="doChangePassword">
+                            <span v-if="loading" class="spinner"></span>
+                            {{ loading ? "提交中..." : "确认修改" }}
+                        </button>
+                    </div>
+
+                    <div class="auth-links">
+                        <a href="#" @click.prevent="backToLogin">返回登录</a>
+                    </div>
+                </template>
             </div>
         </div>
     </div>
@@ -383,6 +543,9 @@ export default {
     font-size: 0.78rem;
     font-weight: 600;
     letter-spacing: 1px;
+}
+.section-divider:first-child {
+    margin-top: 0;
 }
 .section-divider::before,
 .section-divider::after {
