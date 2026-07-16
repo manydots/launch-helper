@@ -54,6 +54,32 @@ powershell -NoProfile -WindowStyle Hidden -Command "$u='%1';$p=$u.Substring($u.I
 
 使用 `LaunchHelper:参数`（不带 `//`），避免 Windows 对 URL 规范化时在路径中插入多余的 `/`。
 
+### 网关集成
+
+集成后端认证网关，可选启用，通过环境变量控制：
+
+| 变量 | 说明 | 默认值 |
+|---|---|---|
+| `VITE_GATEWAY_ENABLED` | 是否启用网关认证 | `false` |
+| `VITE_GATEWAY_TARGET` | 网关地址（开发代理目标） | `http://127.0.0.1:8080` |
+| `VITE_APP_BASEURL` | API 基础路径 | `/` |
+
+#### API 端点
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| `POST` | `/api/auth/register` | 注册账号（`m_id`, `password`, `password_confirm`） |
+| `POST` | `/api/auth/login` | 登录（`m_id`, `password`），返回 `launch_args` 用于游戏启动 |
+| `PUT` | `/api/account/password` | 修改密码（`m_id`, `old_password`, `new_password`, `new_password_confirm`） |
+
+所有 API 统一返回 JSON 格式：`{ success: bool, code: int, message: string, ...data }`。
+
+#### 登录启动流程
+
+1. 前端调用 `POST /api/auth/login` 提交账号密码
+2. 网关验证身份，返回 `launch_args`（格式：`99?{game_ip}?{port}?{m_id}?{password_hash}?01?1?0?0?0?0?1?9n2b1c8r3w7y?0?0?19847`）
+3. 前端将 `launch_args` 设置为启动参数，通过 `LaunchHelper:` 协议拉起游戏
+
 ### 数据持久化
 
 使用 Pinia + `pinia-plugin-persistedstate`，将以下状态写入 `localStorage`（key：`launch-helper:game`）：
@@ -78,6 +104,7 @@ src/
 ├── stores/
 │   └── game.js                   # 游戏状态（路径、参数、账号、密码、注册表生成与下载）
 └── utils/
+    ├── http.js                   # Axios API 客户端（网关认证接口）
     └── registry.js               # 注册表与 PowerShell 命令生成工具
 ```
 

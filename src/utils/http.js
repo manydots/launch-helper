@@ -20,9 +20,7 @@ async function handle(request) {
 }
 
 export const api = {
-    health: () => handle(client.get("/api/health")),
-    register: (m_id, password, password_confirm) => handle(client.post("/api/register", { m_id, password, password_confirm })),
-    login: (m_id, password) => handle(client.post("/api/login", { m_id, password })),
-    accountInfo: (key, m_id) => handle(client.get("/api/account/info", { params: { key, m_id } })),
-    changePassword: (m_id, old_password, new_password, new_password_confirm) => handle(client.post("/api/account/password", { m_id, old_password, new_password, new_password_confirm }))
+    register: (m_id, password, password_confirm) => handle(client.post("/api/auth/register", { m_id, password, password_confirm })),
+    login: (m_id, password) => handle(client.post("/api/auth/login", { m_id, password })),
+    changePassword: (m_id, old_password, new_password, new_password_confirm) => handle(client.put("/api/account/password", { m_id, old_password, new_password, new_password_confirm }))
 };
