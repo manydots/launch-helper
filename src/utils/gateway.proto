@@ -1,0 +1,104 @@
+syntax = "proto3";
+
+package gateway;
+
+option go_package = "gateway/internal/proto;gatewaypb";
+
+// 命令枚举
+enum Command {
+  CMD_UNSPECIFIED     = 0;
+  CMD_HEALTH          = 1;
+  CMD_REGISTER        = 2;
+  CMD_LOGIN           = 3;
+  CMD_CHANGE_PASSWORD = 4;
+  CMD_ACCOUNT_INFO    = 5;
+  CMD_ADMIN_RESET     = 6;
+}
+
+// 通用请求头（TCP + UDP + WebSocket 共用）
+message Request {
+  uint32 sequence  = 1;
+  int64  timestamp = 2;
+  uint32 command   = 3;
+  bytes  body      = 4;
+  string auth_key  = 5;
+}
+
+// 通用响应头
+message Response {
+  uint32 sequence  = 1;
+  bool   success   = 2;
+  int32  code      = 3;
+  string message   = 4;
+  bytes  body      = 5;
+}
+
+// --- CMD_HEALTH ---
+message HealthResponse {
+  string status       = 1;
+  string service      = 2;
+  bool   channel_port = 3;
+  bool   game_port    = 4;
+}
+
+// --- CMD_REGISTER ---
+message RegisterRequest {
+  string m_id             = 1;
+  string password         = 2;
+  string password_confirm = 3;
+}
+message RegisterResponse {
+  int64  account_id = 1;
+  string m_id       = 2;
+}
+
+// --- CMD_LOGIN ---
+message LoginRequest {
+  string m_id      = 1;
+  string password  = 2;
+}
+message LoginResponse {
+  int64  account_id    = 1;
+  string m_id          = 2;
+  int64  cera          = 3;
+  string password_hash = 4;
+  string launch_args   = 5;
+}
+
+// --- CMD_CHANGE_PASSWORD ---
+message ChangePasswordRequest {
+  string m_id                 = 1;
+  string old_password         = 2;
+  string new_password         = 3;
+  string new_password_confirm = 4;
+}
+
+// --- CMD_ACCOUNT_INFO ---
+message AccountInfoRequest {
+  string m_id = 1;
+}
+message AccountInfoResponse {
+  int64  account_id        = 1;
+  string m_id              = 2;
+  int64  cera              = 3;
+  int64  token_cera        = 4;
+  int64  happy_token_cera  = 5;
+  int64  lucky_star        = 6;
+  int64  seria_luck_value  = 7;
+  int64  cube_black        = 8;
+  int64  cube_white        = 9;
+  int64  cube_red          = 10;
+  int64  cube_blue         = 11;
+  int64  cube_clear        = 12;
+  int64  cube_gold         = 13;
+  string created_at        = 14;
+  string last_login_at     = 15;
+  string last_login_ip     = 16;
+}
+
+// --- CMD_ADMIN_RESET ---
+message AdminResetPasswordRequest {
+  string m_id                 = 1;
+  string new_password         = 2;
+  string new_password_confirm = 3;
+}

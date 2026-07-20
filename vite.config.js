@@ -4,13 +4,15 @@ import { defineConfig, loadEnv } from "vite";
 import vue from "@vitejs/plugin-vue";
 import legacy from "@vitejs/plugin-legacy";
 // import vueDevTools from "vite-plugin-vue-devtools";
+import gatewayBridge from "./vite-plugin-gateway-bridge.js";
 
 // https://vite.dev/config/
 export default defineConfig(({ mode }) => {
     const env = loadEnv(mode, process.cwd());
-    const gatewayTarget = env.VITE_GATEWAY_TARGET || "http://127.0.0.1:8080";
-    const baseURL = env.VITE_APP_BASEURL;
-    // console.log("baseURL", baseURL);
+    const gatewayHost = env.VITE_GATEWAY_TARGET || "127.0.0.1";
+    const gatewayPort = env.VITE_GATEWAY_PORT || "80";
+    const gatewayPath = env.VITE_GATEWAY_PATH || "/gateway";
+    const gatewayTarget = `${gatewayHost}:${gatewayPort}`;
 
     return {
         base: process.env.GITHUB_ACTIONS ? "/launch-helper/" : "/",
@@ -19,25 +21,14 @@ export default defineConfig(({ mode }) => {
         },
         server: {
             host: "0.0.0.0",
-            port: 5173, // default
-            proxy: {
-                [`^${baseURL}`]: {
-                    target: gatewayTarget,
-                    changeOrigin: true,
-                    rewrite: path => {
-                        const target = path.replace(new RegExp(`^${baseURL}`), "");
-                        // console.log("target", target);
-                        return target;
-                    }
-                }
-            }
+            port: 5173
         },
         plugins: [
             vue(),
             legacy({
                 targets: ["defaults", "not IE 11"]
-                // modernPolyfills: true // polyfill
-            })
+            }),
+            gatewayBridge({ target: gatewayTarget, path: gatewayPath })
         ],
         resolve: {
             alias: {

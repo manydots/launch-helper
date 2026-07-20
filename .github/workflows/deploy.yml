@@ -24,7 +24,7 @@ jobs:
           node-version: 18
           cache: yarn
       - run: yarn install --frozen-lockfile
-      - run: yarn build
+      - run: yarn workflow
       - uses: actions/upload-pages-artifact@v4
         with:
           path: dist

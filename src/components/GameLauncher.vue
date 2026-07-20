@@ -1,7 +1,7 @@
 <script>
 import { useGameStore } from "@/stores/game";
 import { openModal, alertModal } from "@/hooks/useModal";
-import { api } from "@/utils/http";
+import { api } from "@/utils/gateway";
 import MaterialTextField from "@/components/MaterialTextField.vue";
 
 export default {
@@ -22,6 +22,7 @@ export default {
             mode: "login",
             gatewayEnabled: import.meta.env.VITE_GATEWAY_ENABLED === "true",
             platformCheck: import.meta.env.VITE_PLATFORM_CHECK === "true",
+            healthInterval: (Number(import.meta.env.VITE_HEALTH_INTERVAL) || 5) * 1000,
             regMid: this.store.account || "",
             regPassword: "",
             regConfirm: "",
@@ -30,7 +31,8 @@ export default {
             pwdOld: "",
             pwdNew: "",
             pwdConfirm: "",
-            pwdErrors: { mid: "", old: "", neo: "", confirm: "" }
+            pwdErrors: { mid: "", old: "", neo: "", confirm: "" },
+            serviceStatus: "checking"
         };
     },
     computed: {
@@ -55,6 +57,16 @@ export default {
         },
         isPathValid() {
             return /^[A-Za-z]:\\+.+\.exe$/i.test(this.inputPath.trim());
+        },
+        statusInfo() {
+            switch (this.serviceStatus) {
+                case "online":
+                    return { text: "服务在线", cls: "online" };
+                case "offline":
+                    return { text: "服务离线", cls: "offline" };
+                default:
+                    return { text: "检测中", cls: "checking" };
+            }
         }
     },
     mounted() {
@@ -63,6 +75,11 @@ export default {
         // if (!this.isWindows) {
         //     this.showUnsupportedModal();
         // }
+
+        if (this.gatewayEnabled) {
+            this.checkHealth();
+            this.healthTimer = setInterval(() => this.checkHealth(), this.healthInterval);
+        }
     },
     watch: {
         "store.gamePath"(val) {
@@ -74,6 +91,7 @@ export default {
     },
     beforeUnmount() {
         clearInterval(this.subtitleTimer);
+        if (this.healthTimer) clearInterval(this.healthTimer);
     },
     methods: {
         typeSubtitle() {
@@ -93,6 +111,16 @@ export default {
                 title: "不支持当前系统",
                 message: "本工具仅支持 Windows 系统，无法在 macOS、Linux 或移动端使用。"
             });
+        },
+        async checkHealth() {
+            if (!this.gatewayEnabled) return;
+            if (this.serviceStatus !== "online") this.serviceStatus = "checking";
+            try {
+                const data = await api.health();
+                this.serviceStatus = data && data.success && data.status === "ok" ? "online" : "offline";
+            } catch {
+                this.serviceStatus = "offline";
+            }
         },
         handleRegister() {
             if (!this.gatewayEnabled) {
@@ -141,10 +169,7 @@ export default {
         async doRegister() {
             if (!this.validateRegister()) return;
             this.loading = true;
-            const data = await this.callApi(
-                api.register(this.regMid.trim(), this.regPassword, this.regConfirm),
-                { errorTitle: "注册失败" }
-            );
+            const data = await this.callApi(api.register(this.regMid.trim(), this.regPassword, this.regConfirm), { errorTitle: "注册失败" });
             this.loading = false;
             if (!data) return;
             this.account = this.regMid.trim();
@@ -168,10 +193,7 @@ export default {
         async doChangePassword() {
             if (!this.validateChangePassword()) return;
             this.loading = true;
-            const data = await this.callApi(
-                api.changePassword(this.pwdMid.trim(), this.pwdOld, this.pwdNew, this.pwdConfirm),
-                { errorTitle: "修改失败" }
-            );
+            const data = await this.callApi(api.changePassword(this.pwdMid.trim(), this.pwdOld, this.pwdNew, this.pwdConfirm), { errorTitle: "修改失败" });
             this.loading = false;
             if (!data) return;
             this.account = this.pwdMid.trim();
@@ -314,6 +336,10 @@ export default {
 <template>
     <div class="launcher">
         <div class="launcher-card">
+            <div v-if="gatewayEnabled" class="service-status" :class="statusInfo.cls" :title="statusInfo.text">
+                <span class="status-dot"></span>
+                <span class="status-text">{{ statusInfo.text }}</span>
+            </div>
             <button v-if="mode === 'login'" class="config-toggle" :class="{ active: showConfig }" @click="showConfig = !showConfig">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <circle cx="12" cy="12" r="3" />
@@ -460,6 +486,65 @@ export default {
 .config-toggle svg {
     width: 18px;
     height: 18px;
+}
+.service-status {
+    position: absolute;
+    top: 16px;
+    left: 16px;
+    z-index: 2;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px 4px 8px;
+    border-radius: 20px;
+    background: var(--outline-3-hover-bg);
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    user-select: none;
+}
+.status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--text-muted);
+    flex-shrink: 0;
+    transition: background 0.3s;
+}
+.service-status.online .status-dot {
+    background: #3ddc84;
+    animation: statusPulse 2s infinite;
+}
+.service-status.online .status-text {
+    color: #3ddc84;
+}
+.service-status.offline .status-dot {
+    background: var(--error);
+}
+.service-status.offline .status-text {
+    color: var(--error);
+}
+.service-status.checking .status-dot {
+    animation: statusBlink 1s infinite;
+}
+@keyframes statusPulse {
+    0% {
+        box-shadow: 0 0 0 0 rgba(61, 220, 132, 0.5);
+    }
+    70% {
+        box-shadow: 0 0 0 6px rgba(61, 220, 132, 0);
+    }
+    100% {
+        box-shadow: 0 0 0 0 rgba(61, 220, 132, 0);
+    }
+}
+@keyframes statusBlink {
+    0%,
+    100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.3;
+    }
 }
 .launcher-header {
     text-align: center;
