@@ -14,7 +14,6 @@ export default {
     data() {
         return {
             inputPath: this.store.gamePath || "",
-            inputParam: this.store.launchParam || "",
             loading: false,
             showConfig: !this.store.gamePath,
             subtitleFull: "游戏快速启动工具",
@@ -84,9 +83,6 @@ export default {
     watch: {
         "store.gamePath"(val) {
             this.inputPath = val || "";
-        },
-        "store.launchParam"(val) {
-            this.inputParam = val || "";
         }
     },
     beforeUnmount() {
@@ -237,7 +233,7 @@ export default {
                 });
                 return;
             }
-            this.store.downloadRegistry(path, this.inputParam.trim());
+            this.store.downloadRegistry(path);
         },
         handleLogin() {
             if (this.platformCheck && !this.isWindows) {
@@ -285,7 +281,10 @@ export default {
             }
             if (data.launch_args) {
                 this.store.setLaunchParam(data.launch_args);
-                this.inputParam = data.launch_args;
+            }
+            const path = this.inputPath.trim();
+            if (path) {
+                this.store.setGamePath(path);
             }
             this.launchWithDetect();
         },
@@ -327,7 +326,7 @@ export default {
                 clearTimeout(timer);
             }
             window.addEventListener("blur", onBlur);
-            this.store.launchGame(this.inputParam.trim());
+            this.store.launchGame();
         }
     }
 };
@@ -362,7 +361,6 @@ export default {
                             <div class="section-divider"><span>游戏配置</span></div>
 
                             <MaterialTextField v-model="inputPath" label="游戏 exe 路径" />
-                            <MaterialTextField v-model="inputParam" label="启动 bat 参数" />
 
                             <div class="actions registry-actions">
                                 <button class="btn btn-sm btn-outline-primary" :disabled="!isPathValid" @click="generateRegistry">

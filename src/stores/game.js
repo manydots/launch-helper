@@ -84,6 +84,6 @@ export const useGameStore = defineStore(
         };
     },
     {
-        persist: { key: STORE_KEY, storage: localStorage, pick: ["gamePath", "launchParam", "account", "password"] }
+        persist: { key: STORE_KEY, storage: localStorage, pick: ["gamePath", "account", "password"] }
     }
 );
