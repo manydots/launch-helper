@@ -114,7 +114,7 @@ class GatewayClient {
         const seq = ++this.sequence;
         const requestMsg = Request.create({
             command: command,
-            timestamp: Date.now(),
+            timestamp: Math.floor(Date.now() / 1000),
             authKey: authKey,
             body: bodyBytes,
             sequence: seq
