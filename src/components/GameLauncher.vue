@@ -1,6 +1,6 @@
 <script>
 import { useGameStore } from "@/stores/game";
-import { openModal, alertModal } from "@/hooks/useModal";
+import { openModal, alertModal, useModal } from "@/hooks/useModal";
 import { api } from "@/utils/gateway";
 import MaterialTextField from "@/components/MaterialTextField.vue";
 
@@ -31,7 +31,8 @@ export default {
             pwdNew: "",
             pwdConfirm: "",
             pwdErrors: { mid: "", old: "", neo: "", confirm: "" },
-            serviceStatus: "checking"
+            serviceStatus: this.store.gatewayStatus || "checking",
+            notifiedStatus: null
         };
     },
     computed: {
@@ -61,8 +62,10 @@ export default {
             switch (this.serviceStatus) {
                 case "online":
                     return { text: "服务在线", cls: "online" };
-                case "offline":
-                    return { text: "服务离线", cls: "offline" };
+                case "service-down":
+                    return { text: "服务未启动", cls: "offline" };
+                case "gateway-down":
+                    return { text: "网关未启动", cls: "offline" };
                 default:
                     return { text: "检测中", cls: "checking" };
             }
@@ -108,17 +111,68 @@ export default {
                 message: "本工具仅支持 Windows 系统，无法在 macOS、Linux 或移动端使用。"
             });
         },
-        async checkHealth() {
+        async checkHealth(silent = false) {
             if (!this.gatewayEnabled) return;
             if (this.serviceStatus !== "online") this.serviceStatus = "checking";
+            let next;
             try {
                 const data = await api.health();
-                this.serviceStatus = data && data.success && data.status === "ok" ? "online" : "offline";
+                if (!data || !data.success) {
+                    next = "gateway-down";
+                } else if (data.status === "ok") {
+                    next = "online";
+                } else {
+                    next = "service-down";
+                }
             } catch {
-                this.serviceStatus = "offline";
+                next = "gateway-down";
+            }
+            this.serviceStatus = next;
+            this.store.setGatewayStatus(next);
+            if (next === "online") {
+                this.notifiedStatus = null;
+            } else if (next !== "checking" && this.notifiedStatus !== next) {
+                this.notifiedStatus = next;
+                if (!silent) this.notifyStatus(next);
             }
         },
-        handleRegister() {
+        notifyStatus(status) {
+            if (useModal().state.show) return;
+            const messages = {
+                "gateway-down": {
+                    title: "网关异常",
+                    message: "网关服务未启动或无法连接，请确认网关已正常运行。"
+                },
+                "service-down": {
+                    title: "服务异常",
+                    message: "游戏服务未启动，相关操作暂不可用，请稍后再试。"
+                }
+            };
+            const cfg = messages[status];
+            if (cfg) alertModal(cfg);
+        },
+        async ensureGatewayOnline() {
+            if (!this.gatewayEnabled) return true;
+            await this.checkHealth(true);
+            if (this.serviceStatus === "online") return true;
+            const messages = {
+                "gateway-down": {
+                    title: "网关不可用",
+                    message: "网关服务未启动或无法连接，请确认网关已正常运行。"
+                },
+                "service-down": {
+                    title: "服务不可用",
+                    message: "游戏服务未启动，请稍后再试。"
+                }
+            };
+            const cfg = messages[this.serviceStatus] || {
+                title: "服务不可用",
+                message: "网关服务当前不可用，请检查网络或稍后再试。"
+            };
+            await alertModal(cfg);
+            return false;
+        },
+        async handleRegister() {
             if (!this.gatewayEnabled) {
                 alertModal({
                     title: "注册账号",
@@ -126,13 +180,14 @@ export default {
                 });
                 return;
             }
+            if (!(await this.ensureGatewayOnline())) return;
             this.regMid = this.store.account || this.regMid;
             this.regPassword = "";
             this.regConfirm = "";
             this.regErrors = { mid: "", password: "", confirm: "" };
             this.mode = "register";
         },
-        handleChangePassword() {
+        async handleChangePassword() {
             if (!this.gatewayEnabled) {
                 alertModal({
                     title: "修改密码",
@@ -140,6 +195,7 @@ export default {
                 });
                 return;
             }
+            if (!(await this.ensureGatewayOnline())) return;
             this.pwdMid = this.store.account || this.pwdMid;
             this.pwdOld = "";
             this.pwdNew = "";
@@ -164,6 +220,7 @@ export default {
         },
         async doRegister() {
             if (!this.validateRegister()) return;
+            if (!(await this.ensureGatewayOnline())) return;
             this.loading = true;
             const data = await this.callApi(api.register(this.regMid.trim(), this.regPassword, this.regConfirm), { errorTitle: "注册失败" });
             this.loading = false;
@@ -188,6 +245,7 @@ export default {
         },
         async doChangePassword() {
             if (!this.validateChangePassword()) return;
+            if (!(await this.ensureGatewayOnline())) return;
             this.loading = true;
             const data = await this.callApi(api.changePassword(this.pwdMid.trim(), this.pwdOld, this.pwdNew, this.pwdConfirm), { errorTitle: "修改失败" });
             this.loading = false;
@@ -235,11 +293,12 @@ export default {
             }
             this.store.downloadRegistry(path);
         },
-        handleLogin() {
+        async handleLogin() {
             if (this.platformCheck && !this.isWindows) {
                 this.showUnsupportedModal();
                 return;
             }
+            if (!(await this.ensureGatewayOnline())) return;
             const missing = [];
             if (!this.account.trim()) missing.push("账号");
             if (!this.password.trim()) missing.push("密码");

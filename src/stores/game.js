@@ -24,6 +24,7 @@ export const useGameStore = defineStore(
         const launchParam = ref(DEFAULT_PARAM);
         const account = ref("");
         const password = ref("");
+        const gatewayStatus = ref("checking");
 
         function setGamePath(path) {
             gamePath.value = path;
@@ -39,6 +40,10 @@ export const useGameStore = defineStore(
 
         function setPassword(val) {
             password.value = val;
+        }
+
+        function setGatewayStatus(status) {
+            gatewayStatus.value = status;
         }
 
         function generateRegistryContent(path) {
@@ -73,10 +78,12 @@ export const useGameStore = defineStore(
             launchParam,
             account,
             password,
+            gatewayStatus,
             setGamePath,
             setLaunchParam,
             setAccount,
             setPassword,
+            setGatewayStatus,
             generateRegistryContent,
             downloadRegistry,
             downloadUninstallRegistry,
@@ -84,6 +91,6 @@ export const useGameStore = defineStore(
         };
     },
     {
-        persist: { key: STORE_KEY, storage: localStorage, pick: ["gamePath", "account", "password"] }
+        persist: { key: STORE_KEY, storage: localStorage, pick: ["gamePath", "account", "password", "gatewayStatus"] }
     }
 );
