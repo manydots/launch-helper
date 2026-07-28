@@ -12,33 +12,38 @@ const RegisterResponse = root.lookupType("gateway.RegisterResponse");
 const LoginRequest = root.lookupType("gateway.LoginRequest");
 const LoginResponse = root.lookupType("gateway.LoginResponse");
 const ChangePasswordRequest = root.lookupType("gateway.ChangePasswordRequest");
+const AdminResetPasswordRequest = root.lookupType("gateway.AdminResetPasswordRequest");
 
 const CMD = {
     HEALTH: 1,
     REGISTER: 2,
     LOGIN: 3,
-    CHANGE_PASSWORD: 4
+    CHANGE_PASSWORD: 4,
+    ADMIN_RESET: 6
 };
 
 const RESPONSE_TYPES = {
     [CMD.HEALTH]: HealthResponse,
     [CMD.REGISTER]: RegisterResponse,
     [CMD.LOGIN]: LoginResponse,
-    [CMD.CHANGE_PASSWORD]: null
+    [CMD.CHANGE_PASSWORD]: null,
+    [CMD.ADMIN_RESET]: null
 };
 
 const CMD_NAMES = {
     [CMD.HEALTH]: "HEALTH",
     [CMD.REGISTER]: "REGISTER",
     [CMD.LOGIN]: "LOGIN",
-    [CMD.CHANGE_PASSWORD]: "CHANGE_PASSWORD"
+    [CMD.CHANGE_PASSWORD]: "CHANGE_PASSWORD",
+    [CMD.ADMIN_RESET]: "ADMIN_RESET"
 };
 
 const REQUEST_TYPES = {
     [CMD.HEALTH]: null,
     [CMD.REGISTER]: RegisterRequest,
     [CMD.LOGIN]: LoginRequest,
-    [CMD.CHANGE_PASSWORD]: ChangePasswordRequest
+    [CMD.CHANGE_PASSWORD]: ChangePasswordRequest,
+    [CMD.ADMIN_RESET]: AdminResetPasswordRequest
 };
 
 const TIMEOUT_MS = 15000;
@@ -115,7 +120,7 @@ class GatewayClient {
         const requestMsg = Request.create({
             command: command,
             timestamp: Math.floor(Date.now() / 1000),
-            authKey: authKey,
+            auth_key: authKey,
             body: bodyBytes,
             sequence: seq
         });
@@ -129,7 +134,8 @@ class GatewayClient {
                 reqBody = reqType.toObject(reqType.decode(bodyBytes), { longs: String });
             } catch {}
         }
-        console.log(`%c[gateway ->] ${cmdName} seq=${seq}`, "color:#5b8cff", reqBody);
+        const keyLen = authKey ? authKey.length : 0;
+        console.log(`%c[gateway ->] ${cmdName} seq=${seq} auth_key[len=${keyLen}]="${authKey || ""}"`, "color:#5b8cff", reqBody);
 
         return new Promise(resolve => {
             const timer = setTimeout(() => {
@@ -200,6 +206,17 @@ class GatewayClient {
         ).finish();
         return this.send(CMD.CHANGE_PASSWORD, body);
     }
+
+    async adminResetPassword(m_id, new_password, new_password_confirm, authKey) {
+        const body = AdminResetPasswordRequest.encode(
+            AdminResetPasswordRequest.create({
+                m_id,
+                new_password,
+                new_password_confirm
+            })
+        ).finish();
+        return this.send(CMD.ADMIN_RESET, body, authKey);
+    }
 }
 
 const client = new GatewayClient();
@@ -208,5 +225,6 @@ export const api = {
     health: () => client.health(),
     register: (m_id, password, password_confirm) => client.register(m_id, password, password_confirm),
     login: (m_id, password) => client.login(m_id, password),
-    changePassword: (m_id, old_password, new_password, new_password_confirm) => client.changePassword(m_id, old_password, new_password, new_password_confirm)
+    changePassword: (m_id, old_password, new_password, new_password_confirm) => client.changePassword(m_id, old_password, new_password, new_password_confirm),
+    adminResetPassword: (m_id, new_password, new_password_confirm, authKey) => client.adminResetPassword(m_id, new_password, new_password_confirm, authKey)
 };

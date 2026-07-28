@@ -31,6 +31,11 @@ export default {
             pwdNew: "",
             pwdConfirm: "",
             pwdErrors: { mid: "", old: "", neo: "", confirm: "" },
+            resetMid: this.store.account || "",
+            resetKey: "",
+            resetNew: "",
+            resetConfirm: "",
+            resetErrors: { mid: "", key: "", neo: "", confirm: "" },
             serviceStatus: this.store.gatewayStatus || "checking",
             notifiedStatus: null
         };
@@ -203,6 +208,22 @@ export default {
             this.pwdErrors = { mid: "", old: "", neo: "", confirm: "" };
             this.mode = "password";
         },
+        async handleResetPassword() {
+            if (!this.gatewayEnabled) {
+                alertModal({
+                    title: "重置密码",
+                    message: "请前往游戏官网重置密码。"
+                });
+                return;
+            }
+            if (!(await this.ensureGatewayOnline())) return;
+            this.resetMid = this.store.account || this.resetMid;
+            this.resetKey = "";
+            this.resetNew = "";
+            this.resetConfirm = "";
+            this.resetErrors = { mid: "", key: "", neo: "", confirm: "" };
+            this.mode = "reset";
+        },
         backToLogin() {
             this.mode = "login";
         },
@@ -253,6 +274,30 @@ export default {
             this.account = this.pwdMid.trim();
             this.password = "";
             await alertModal({ title: "修改成功", message: "密码已更新，请使用新密码登录。" });
+            this.mode = "login";
+        },
+        validateResetPassword() {
+            const e = { mid: "", key: "", neo: "", confirm: "" };
+            const mid = this.resetMid.trim();
+            if (!mid) e.mid = "账号不能为空";
+            if (!this.resetKey) e.key = "管理密钥不能为空";
+            const neo = this.resetNew;
+            if (!neo) e.neo = "新密码不能为空";
+            else if (neo.length < 6 || neo.length > 32) e.neo = "新密码长度 6-32 位";
+            if (this.resetConfirm !== neo) e.confirm = "两次密码输入不一致";
+            this.resetErrors = e;
+            return !e.mid && !e.key && !e.neo && !e.confirm;
+        },
+        async doResetPassword() {
+            if (!this.validateResetPassword()) return;
+            if (!(await this.ensureGatewayOnline())) return;
+            this.loading = true;
+            const data = await this.callApi(api.adminResetPassword(this.resetMid.trim(), this.resetNew, this.resetConfirm, this.resetKey.trim()), { errorTitle: "重置失败" });
+            this.loading = false;
+            if (!data) return;
+            this.account = this.resetMid.trim();
+            this.password = "";
+            await alertModal({ title: "重置成功", message: "密码已重置，请使用新密码登录。" });
             this.mode = "login";
         },
         async callApi(promise, { errorTitle = "操作失败" } = {}) {
@@ -452,6 +497,8 @@ export default {
                         <a href="#" @click.prevent="handleRegister">注册账号</a>
                         <span class="link-divider">·</span>
                         <a href="#" @click.prevent="handleChangePassword">修改密码</a>
+                        <span class="link-divider">·</span>
+                        <a href="#" @click.prevent="handleResetPassword">重置密码</a>
                     </div>
                 </template>
 
@@ -484,6 +531,25 @@ export default {
                         <button class="btn btn-primary btn-login" :disabled="loading" @click="doChangePassword">
                             <span v-if="loading" class="spinner"></span>
                             {{ loading ? "提交中..." : "确认修改" }}
+                        </button>
+                    </div>
+
+                    <div class="auth-links">
+                        <a href="#" @click.prevent="backToLogin">返回登录</a>
+                    </div>
+                </template>
+
+                <template v-else-if="mode === 'reset'">
+                    <div class="section-divider"><span>重置密码</span></div>
+                    <MaterialTextField v-model="resetMid" label="账号" :error="resetErrors.mid" />
+                    <MaterialTextField v-model="resetKey" label="管理密钥" type="password" :error="resetErrors.key" />
+                    <MaterialTextField v-model="resetNew" label="新密码（6-32）" type="password" :error="resetErrors.neo" />
+                    <MaterialTextField v-model="resetConfirm" label="确认新密码" type="password" :error="resetErrors.confirm" />
+
+                    <div class="actions login-actions">
+                        <button class="btn btn-primary btn-login" :disabled="loading" @click="doResetPassword">
+                            <span v-if="loading" class="spinner"></span>
+                            {{ loading ? "提交中..." : "确认重置" }}
                         </button>
                     </div>
 
