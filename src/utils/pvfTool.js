@@ -19,6 +19,9 @@ function writeInt32LE(buf, off, val) {
     buf[off + 2] = (val >> 16) & 0xff;
     buf[off + 3] = (val >> 24) & 0xff;
 }
+function escapeRegExp(s) {
+    return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 // ---- PVF Decryption (PvfDecryptor.cs) ----
 const MAGIC_DECRYPT = 0x269ec3;
@@ -137,6 +140,22 @@ function float32ToString(bits) {
 }
 
 // ---- PvfArchive ----
+// 解析文件类型登记表（dataType -> 扩展名 -> 解析方法，方法名为 PvfArchive 上的成员）。
+// 当前已登记专用解析方法的文件类型：
+//   dataType=1  token 流（5 字节 token：1 字节类型 + 4 字节小端 int32）
+//     "*"    -> decodeToken   通用 token 流解析（默认；.str / .aic / .ani / .etc 等未登记后缀均走此）
+//     "lst"  -> decodeLst     *.lst：数字+反引号字符串同行，每条独占一行
+//     "dat"  -> decodeDat     *.dat：纯数字定长记录表，按连续 ID 探测记录宽度后分组换行
+//   dataType=3  UTF-16 文本
+//     "*"    -> decodeUTF16   UTF-16 文本解析（默认）
+// 内层键 "*" 为该 dataType 的默认方法；未登记的后缀一律走该 dataType 的 "*" 方法。
+// 档案中实际存在的全部后缀（含 .ani / .etc 等任意后缀）可在运行时通过 listFileTypes()
+// 汇总查看，据此按需为高频后缀在此登记专用 decodeXxx 方法，实现差异化解析。
+const CONTENT_DECODERS = {
+    1: { "*": "decodeToken", lst: "decodeLst", dat: "decodeDat" },
+    3: { "*": "decodeUTF16" }
+};
+
 class PvfArchive {
     constructor(buffer) {
         this.buf = new Uint8Array(buffer);
@@ -215,7 +234,7 @@ class PvfArchive {
         this.rawNameHeader = nameBytes.slice(0, 8);
         await this._parseNameTable(nameBytes);
 
-        // sTrA 是文件名/路径与 Type1 文本解析的基础，缺失则后续全部为空——必须报错
+        // sTrA 是文件名/路径与 token 文本解析的基础，缺失则后续全部为空——必须报错
         if (!this.strABuf || this.strABuf.length === 0) {
             throw new Error("字符串表 (sTrA) 解析失败，文件可能已损坏或为不支持的 PVF 版本。");
         }
@@ -236,6 +255,10 @@ class PvfArchive {
         const grpiBytes = buf.slice(grpiOffset, grpiOffset + grpiSize);
         pvfDecrypt("GRPI", grpiBytes, MAGIC_DECRYPT);
         this._parseGroups(grpiBytes, this.header.groupCount);
+
+        // Pre-build the string-offset cache (used by renames/edits) during load so
+        // the first rename doesn't synchronously decode the whole string table.
+        await this._buildStringOffsetCacheAsync();
 
         return this.header;
     }
@@ -321,6 +344,44 @@ class PvfArchive {
             const value = end > pos ? decodeUtf16LE(this.strWBuf.subarray(pos, end)) : "";
             if (!this._strWOffsetCache.has(value)) this._strWOffsetCache.set(value, ((pos >> 1) << 1) | 1);
             pos = end + 2;
+        }
+    }
+
+    // Async, yielding variant of _ensureStringOffsetCache. Called from parse() so
+    // the string table is decoded once during load (under the loading spinner)
+    // instead of synchronously freezing the UI on the first rename/edit.
+    async _buildStringOffsetCacheAsync() {
+        if (this._strAOffsetCache && this._strWOffsetCache) return;
+        this._strAOffsetCache = new Map();
+        this._strWOffsetCache = new Map();
+        if (!this.strABuf) this.strABuf = new Uint8Array([0]);
+        if (!this.strWBuf) this.strWBuf = new Uint8Array([0, 0]);
+
+        let lastYield = Date.now();
+        let pos = 0;
+        while (pos < this.strABuf.length) {
+            let end = pos;
+            while (end < this.strABuf.length && this.strABuf[end] !== 0) end++;
+            const value = end > pos ? decodeText(this.strABuf.subarray(pos, end), this.strEncoding) : "";
+            if (!this._strAOffsetCache.has(value)) this._strAOffsetCache.set(value, pos << 1);
+            pos = end + 1;
+            if (Date.now() - lastYield > 50) {
+                await new Promise(r => setTimeout(r, 0));
+                lastYield = Date.now();
+            }
+        }
+
+        pos = 0;
+        while (pos + 1 < this.strWBuf.length) {
+            let end = pos;
+            while (end + 1 < this.strWBuf.length && !(this.strWBuf[end] === 0 && this.strWBuf[end + 1] === 0)) end += 2;
+            const value = end > pos ? decodeUtf16LE(this.strWBuf.subarray(pos, end)) : "";
+            if (!this._strWOffsetCache.has(value)) this._strWOffsetCache.set(value, ((pos >> 1) << 1) | 1);
+            pos = end + 2;
+            if (Date.now() - lastYield > 50) {
+                await new Promise(r => setTimeout(r, 0));
+                lastYield = Date.now();
+            }
         }
     }
 
@@ -453,103 +514,237 @@ class PvfArchive {
     }
 
     // ---- Content decode ----
-    decodeType1(data) {
-        const lineCount = Math.floor(data.length / 5);
-        if (lineCount === 0) return "";
-        const parts = [];
-        for (let i = 0; i < lineCount; i++) {
+    // 通用：读取 token 流（dataType=1），每 5 字节一个 token (1 字节类型 + 4 字节小端 int32)
+    _readTokens(data) {
+        const count = Math.floor(data.length / 5);
+        const tokens = new Array(count);
+        for (let i = 0; i < count; i++) {
             const off = i * 5;
-            const type = data[off];
-            const value = readInt32LE(data, off + 1);
-            switch (type) {
-                case 0:
-                case 2: {
-                    // 连续的数字 token（整数/浮点）合并到同一行展示，便于阅读。
-                    // 编码器按空白拆分 token，单行或多行写法等价，可安全合并。
-                    let row = type === 0 ? String(value) : float32ToString(value);
-                    let j = i + 1;
-                    while (j < lineCount) {
-                        const jOff = j * 5;
-                        const jType = data[jOff];
-                        if (jType === 0) {
-                            row += " " + String(readInt32LE(data, jOff + 1));
-                            j++;
-                        } else if (jType === 2) {
-                            row += " " + float32ToString(readInt32LE(data, jOff + 1));
-                            j++;
-                        } else {
-                            break;
-                        }
-                    }
-                    parts.push(row + "\n");
-                    i = j - 1;
-                    break;
-                }
-                case 3:
-                    parts.push("\n" + this.resolveString(value) + "\n");
-                    break;
-                case 5:
-                    parts.push("\n{5=`" + this._escapeBacktick(this.resolveString(value)) + "`}\n");
-                    break;
-                case 6: {
-                    // 反引号字符串与其后连续的数字 (type 0/2) 合并到同一行展示，
-                    // 便于阅读「名称 + 一组数值」这类结构（如 .lst 名称/索引、.aic 角色信息）。
-                    // 编码器按空白拆分 token，单行或多行写法等价，故可安全合并。
-                    let row = "`" + this._escapeBacktick(this.resolveString(value)) + "`";
-                    let j = i + 1;
-                    while (j < lineCount) {
-                        const jOff = j * 5;
-                        const jType = data[jOff];
-                        if (jType === 0) {
-                            row += " " + String(readInt32LE(data, jOff + 1));
-                            j++;
-                        } else if (jType === 2) {
-                            row += " " + float32ToString(readInt32LE(data, jOff + 1));
-                            j++;
-                        } else {
-                            break;
-                        }
-                    }
-                    parts.push(row + "\n");
-                    i = j - 1;
-                    break;
-                }
-                case 7:
-                    parts.push("\n{7=`" + this._escapeBacktick(this.resolveString(value)) + "`}\n");
-                    break;
-                default:
-                    parts.push("?(" + type + "," + value + ")\n");
-                    break;
-            }
+            tokens[i] = { type: data[off], value: readInt32LE(data, off + 1) };
         }
-        // Normalize \r\n and lone \r to \n (fixes .lst / text display)
-        return parts.join("").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+        return tokens;
     }
 
+    // 是否数字 token（type 0=整数，2=浮点）
+    _isNumType(t) {
+        return t === 0 || t === 2;
+    }
+
+    // 格式化数字 token 为文本：整数直接转字符串，浮点用 float32ToString
+    _fmtNum(type, value) {
+        return type === 0 ? String(value) : float32ToString(value);
+    }
+
+    // 格式化为反引号字符串：解析字符串表偏移并转义内部 `
+    _fmtBacktickStr(value) {
+        return "`" + this._escapeBacktick(this.resolveString(value)) + "`";
+    }
+
+    // 从索引 j 起合并连续数字 token 到 row，返回新的 { row, j }
+    _appendNumRun(tokens, j, row) {
+        while (j < tokens.length && this._isNumType(tokens[j].type)) {
+            row += " " + this._fmtNum(tokens[j].type, tokens[j].value);
+            j++;
+        }
+        return { row, j };
+    }
+
+    // 统一换行：\r\n 与单独 \r 转为 \n
+    _normalizeLines(text) {
+        return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+    }
+
+    // 转义反引号：` -> ``（PVF 反引号串的转义规则）
     _escapeBacktick(s) {
         return s ? s.replace(/`/g, "``") : s;
     }
 
-    decodeType3(data) {
-        let text = decodeUtf16LE(data);
-        // Normalize \r\n and lone \r to \n
-        return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+    // 文件类型: dataType=1 通用 token 流（默认：未登记扩展名的文件，如 .str / .aic / .ani / .etc）
+    decodeToken(data) {
+        const tokens = this._readTokens(data);
+        if (tokens.length === 0) return "";
+        const parts = [];
+        let i = 0;
+        while (i < tokens.length) {
+            const { type, value } = tokens[i];
+            switch (type) {
+                case 0:
+                case 2: {
+                    // 连续数字 token 合并到同一行展示；编码器按空白拆分，单行/多行写法等价。
+                    let row = this._fmtNum(type, value);
+                    let j;
+                    ({ row, j } = this._appendNumRun(tokens, i + 1, row));
+                    parts.push(row + "\n");
+                    i = j;
+                    break;
+                }
+                case 3:
+                    parts.push("\n" + this.resolveString(value) + "\n");
+                    i++;
+                    break;
+                case 5:
+                    parts.push("\n{5=`" + this._escapeBacktick(this.resolveString(value)) + "`}\n");
+                    i++;
+                    break;
+                case 6: {
+                    // 反引号字符串与其后连续数字合并到同一行（如 .lst 名称/索引、.aic 角色信息）。
+                    let row = this._fmtBacktickStr(value);
+                    let j;
+                    ({ row, j } = this._appendNumRun(tokens, i + 1, row));
+                    parts.push(row + "\n");
+                    i = j;
+                    break;
+                }
+                case 7:
+                    parts.push("\n{7=`" + this._escapeBacktick(this.resolveString(value)) + "`}\n");
+                    i++;
+                    break;
+                default:
+                    parts.push("?(" + type + "," + value + ")\n");
+                    i++;
+                    break;
+            }
+        }
+        return this._normalizeLines(parts.join(""));
     }
 
+    // 文件类型: *.lst（dataType=1）
+    // 「数字 + 反引号字符串」或「反引号字符串 + 数字」合并到同一行，每条独占一行。
+    //   0  `Character/Character.chn.str`
+    //   `G.S.D` 7
+    decodeLst(data) {
+        const tokens = this._readTokens(data);
+        if (tokens.length === 0) return "";
+        const parts = [];
+        let i = 0;
+        while (i < tokens.length) {
+            const { type, value } = tokens[i];
+            if (this._isNumType(type)) {
+                // 数字（含连续数字）与紧随其后的反引号字符串合并：`数字 `字符``
+                let row = this._fmtNum(type, value);
+                let j;
+                ({ row, j } = this._appendNumRun(tokens, i + 1, row));
+                if (j < tokens.length && tokens[j].type === 6) {
+                    row += " " + this._fmtBacktickStr(tokens[j].value);
+                    j++;
+                }
+                parts.push(row + "\n");
+                i = j;
+            } else if (type === 6) {
+                // 反引号字符串与紧随其后的连续数字合并：`字符` 数字
+                let row = this._fmtBacktickStr(value);
+                let j;
+                ({ row, j } = this._appendNumRun(tokens, i + 1, row));
+                parts.push(row + "\n");
+                i = j;
+            } else {
+                switch (type) {
+                    case 3:
+                        parts.push(this.resolveString(value) + "\n");
+                        break;
+                    case 5:
+                        parts.push("{5=`" + this._escapeBacktick(this.resolveString(value)) + "`}\n");
+                        break;
+                    case 7:
+                        parts.push("{7=`" + this._escapeBacktick(this.resolveString(value)) + "`}\n");
+                        break;
+                    default:
+                        parts.push("?(" + type + "," + value + ")\n");
+                        break;
+                }
+                i++;
+            }
+        }
+        return this._normalizeLines(parts.join(""));
+    }
+
+    // 文件类型: dataType=3 UTF-16 文本
+    decodeUTF16(data) {
+        return this._normalizeLines(decodeUtf16LE(data));
+    }
+
+    // 文件类型: *.dat（dataType=1）等纯数字定长记录表
+    // 通用 decodeToken 会把所有连续数字合并到同一行（_appendNumRun），对定长记录表不可读。
+    // 这里按"连续 ID"自动探测每条记录的字段数：首字段为 ID，下一条记录 ID = 首条 ID + 1，
+    // 再用第三条记录 ID（首条 ID + 2）校验宽度稳定，之后按记录分行输出：
+    //   10000 0 0 0 ... 0
+    //   10001 0 0 0 ... 0
+    // 探测失败（含非数字 token 或 ID 不连续）则回退到 decodeToken。
+    decodeDat(data) {
+        const tokens = this._readTokens(data);
+        if (tokens.length === 0) return "";
+        for (let i = 0; i < tokens.length; i++) {
+            if (tokens[i].type !== 0 && tokens[i].type !== 2) return this.decodeToken(data);
+        }
+        const firstId = tokens[0].value;
+        let recordSize = -1;
+        const limit = Math.floor(tokens.length / 2);
+        for (let i = 1; i <= limit; i++) {
+            if (tokens[i].value === firstId + 1 && tokens[i * 2] && tokens[i * 2].value === firstId + 2) {
+                recordSize = i;
+                break;
+            }
+        }
+        if (recordSize <= 1) return this.decodeToken(data);
+        const lines = [];
+        for (let i = 0; i < tokens.length; i += recordSize) {
+            const row = [];
+            for (let j = 0; j < recordSize && i + j < tokens.length; j++) {
+                row.push(this._fmtNum(tokens[i + j].type, tokens[i + j].value));
+            }
+            lines.push(row.join(" "));
+        }
+        return this._normalizeLines(lines.join("\n"));
+    }
+
+    // 取文件名扩展名（小写，不含 '.'）；无扩展名返回空串
+    _extOf(name) {
+        if (!name) return "";
+        const i = name.lastIndexOf(".");
+        return i >= 0 ? name.slice(i + 1).toLowerCase() : "";
+    }
+
+    // 原始字节 -> 文本的总入口：按 (dataType, 扩展名) 查 CONTENT_DECODERS 选解析方法，
+    // 未登记扩展名回退到该 dataType 的 "*" 默认方法；未知 dataType 返回空串。
     decodeContent(file, data) {
         if (!data || data.length === 0) return "";
-        switch (file.dataType) {
-            case 1:
-                return this.decodeType1(data);
-            case 3:
-                return this.decodeType3(data);
-            default:
-                return "";
+        const byExt = CONTENT_DECODERS[file.dataType];
+        if (!byExt) return "";
+        const fn = byExt[this._extOf(file.name)] || byExt["*"];
+        return fn ? this[fn](data) : "";
+    }
+
+    // 汇总当前档案中所有文件后缀，按 dataType 分组，标注是否已登记专用解析方法，
+    // 方便后期按扩展名做差异化解析。返回 { [dataType]: [{ ext, count, registered }] }，
+    // 按 count 降序；registered=false 的即为当前走默认解析、可差异化的候选后缀。
+    listFileTypes() {
+        const tally = {};
+        for (const file of this.files) {
+            if (file.isDir) continue;
+            const dt = file.dataType;
+            if (!tally[dt]) tally[dt] = {};
+            const key = this._extOf(file.name) || "(无后缀)";
+            tally[dt][key] = (tally[dt][key] || 0) + 1;
         }
+        const result = {};
+        for (const dt of Object.keys(tally).sort((a, b) => Number(a) - Number(b))) {
+            const byExt = CONTENT_DECODERS[dt] || {};
+            result[dt] = Object.entries(tally[dt])
+                .map(([ext, count]) => ({
+                    ext,
+                    count,
+                    registered: ext !== "(无后缀)" && Boolean(byExt[ext])
+                }))
+                .sort((a, b) => b.count - a.count || a.ext.localeCompare(b.ext));
+        }
+        return result;
     }
 
     // ---- Content encode (text -> raw bytes) ----
-    encodeType1Text(text) {
+    // 文件类型: dataType=1 token 流文本 -> 5 字节 token 序列
+    // 与 decodeToken 互逆：按空白拆分文本为 token（反引号字符串 / {N=...} 标记 / [标签] / 数字 / 裸串），
+    // 每个 token 写为 1 字节类型 + 4 字节小端 int32。# 为行注释。
+    encodeTokenText(text) {
         const tokens = [];
         let i = 0;
         while (i < text.length) {
@@ -631,6 +826,8 @@ class PvfArchive {
         return raw;
     }
 
+    // 读取反引号字符串：从 start 处的 ` 开始，到下一个未转义的 ` 结束；`` 转义为字面 `。
+    // 可跨多行。返回 { value, nextIndex }，不是反引号串则返回 null。
     _tryReadBacktickString(text, start) {
         if (start < 0 || start >= text.length || text[start] !== "`") return null;
         let i = start + 1;
@@ -650,6 +847,7 @@ class PvfArchive {
         return { value: result, nextIndex: i };
     }
 
+    // 定位 {N=...} 标记的闭合 }，跳过反引号字符串内的 }。返回 } 的索引，未找到返回 -1。
     _findMarkerEnd(text, start) {
         let inBacktick = false;
         for (let i = start; i < text.length; i++) {
@@ -666,6 +864,7 @@ class PvfArchive {
         return -1;
     }
 
+    // 解析 {5=...} / {7=...} 特殊标记为 token：内部若为纯数字则用整数值，否则写入字符串表用其偏移。
     _tryParseSpecialMarker(marker) {
         if (!marker || marker.length < 4 || marker[0] !== "{" || marker[marker.length - 1] !== "}") return null;
         let type;
@@ -681,16 +880,19 @@ class PvfArchive {
         return { type, value };
     }
 
-    encodeType3Text(text) {
+    // 文件类型: dataType=3 UTF-16 文本 -> UTF-16 LE 字节序列（与 decodeUTF16 互逆）
+    encodeUTF16Text(text) {
         return encodeUtf16LE(text);
     }
 
+    // 文本 -> 原始字节的总入口（与 decodeContent 对应）。按 dataType 选择编码器；
+    // 其他类型按 UTF-8 落盘。dataType=1 目前统一走 encodeTokenText，不按扩展名差异化。
     encodeContent(file, text) {
         switch (file.dataType) {
             case 1:
-                return this.encodeType1Text(text);
+                return this.encodeTokenText(text);
             case 3:
-                return this.encodeType3Text(text);
+                return this.encodeUTF16Text(text);
             default:
                 return encodeText(text, "utf-8");
         }
@@ -834,52 +1036,124 @@ class PvfArchive {
     }
 
     // ---- Full reference search: find all files referencing any of the given paths ----
+    // Token files (dataType 1) reference path strings through string-table
+    // offsets, so we avoid decoding every file: collect the string-table offsets
+    // whose value contains any search path, then raw-scan each token file's
+    // bytes for a reference to one of those offsets. Only inline-text files
+    // (dataType 3) need to be decoded. This keeps renames responsive instead of
+    // scanning the whole archive once per search path per file.
     async findReferencesMulti(searchPaths) {
         const refs = new Map();
+        const paths = searchPaths.filter(Boolean);
+        if (paths.length === 0) return [];
+        const pattern = new RegExp(paths.map(escapeRegExp).join("|"));
+
+        this._ensureStringOffsetCache();
+        const targetOffsets = new Set();
+        let lastYield = Date.now();
+        for (const [value, off] of this._strAOffsetCache) {
+            if (pattern.test(value)) targetOffsets.add(off);
+            if (Date.now() - lastYield > 50) {
+                await new Promise(r => setTimeout(r, 0));
+                lastYield = Date.now();
+            }
+        }
+        for (const [value, off] of this._strWOffsetCache) {
+            if (pattern.test(value)) targetOffsets.add(off);
+            if (Date.now() - lastYield > 50) {
+                await new Promise(r => setTimeout(r, 0));
+                lastYield = Date.now();
+            }
+        }
+
         for (let i = 0; i < this.files.length; i++) {
             if (this._deleted.has(i)) continue;
             const file = this.files[i];
             if (file.dataType !== 1 && file.dataType !== 3) continue;
             try {
                 const data = await this.getFileData(file);
-                if (!data) continue;
-                const text = this.decodeContent(file, data);
-                const matched = [];
-                for (const sp of searchPaths) {
-                    if (sp && text.includes(sp)) matched.push(sp);
+                if (!data || data.length === 0) continue;
+                let matched = null;
+                if (file.dataType === 1) {
+                    matched = this._findTokenRefs(data, targetOffsets, paths);
+                } else {
+                    const text = this.decodeContent(file, data);
+                    if (pattern.test(text)) matched = paths.filter(sp => text.includes(sp));
                 }
-                if (matched.length > 0) {
+                if (matched && matched.length > 0) {
                     refs.set(i, { fileIndex: i, fullpath: file.fullpath, matches: matched });
                 }
             } catch (e) {
                 /* skip unreadable files */
             }
+            // Yield on a time basis so neither the token scan nor dataType-3
+            // decode can lock the UI for long stretches. getFileData resolves on
+            // a microtask when its chunk is cached, so without this the loop
+            // would run back-to-back and freeze the browser.
+            if (Date.now() - lastYield > 50) {
+                await new Promise(r => setTimeout(r, 0));
+                lastYield = Date.now();
+            }
         }
         return Array.from(refs.values());
+    }
+
+    // Raw-scan a token stream (5-byte records: 1 type + 4 LE int32 value) for
+    // string-bearing tokens (types 3/5/6/7) whose value is a string-table offset
+    // already known to contain a search path. Returns the matched search paths,
+    // or null if none. Avoids decoding the whole file to text.
+    _findTokenRefs(data, targetOffsets, paths) {
+        if (targetOffsets.size === 0) return null;
+        const len = data.length - (data.length % 5);
+        const hitOffsets = new Set();
+        for (let off = 0; off < len; off += 5) {
+            const type = data[off];
+            if (type !== 3 && type !== 5 && type !== 6 && type !== 7) continue;
+            const value = readInt32LE(data, off + 1);
+            if (targetOffsets.has(value)) hitOffsets.add(value);
+        }
+        if (hitOffsets.size === 0) return null;
+        const matched = new Set();
+        for (const off of hitOffsets) {
+            const s = this.resolveString(off);
+            for (const sp of paths) {
+                if (s.includes(sp)) matched.add(sp);
+            }
+        }
+        return matched.size > 0 ? Array.from(matched) : null;
     }
 
     // ---- Fix references: replace old paths with new paths in all referenced files ----
     async fixReferences(mappings, refs) {
         let fixed = 0;
+        // One pass per file instead of one split/join per mapping: folder renames
+        // can produce thousands of mappings, and split/join rescans the whole
+        // text for each. Sort longest-old-first so overlapping paths (e.g. a
+        // directory prefix vs. a file path under it) resolve to the longer match.
+        const active = mappings.filter(m => m.old && m.new && m.old !== m.new);
+        if (active.length === 0) return 0;
+        active.sort((a, b) => b.old.length - a.old.length);
+        const replaceRe = new RegExp(active.map(m => escapeRegExp(m.old)).join("|"), "g");
+        const replaceMap = new Map(active.map(m => [m.old, m.new]));
+
+        let lastYield = Date.now();
         for (const ref of refs) {
             const file = this.files[ref.fileIndex];
             try {
                 const data = await this.getFileData(file);
                 if (!data) continue;
-                let text = this.decodeContent(file, data);
-                let changed = false;
-                for (const mapping of mappings) {
-                    if (text.includes(mapping.old)) {
-                        text = text.split(mapping.old).join(mapping.new);
-                        changed = true;
-                    }
-                }
-                if (changed) {
-                    this.setFileContent(ref.fileIndex, text);
+                const text = this.decodeContent(file, data);
+                const newText = text.replace(replaceRe, m => replaceMap.get(m));
+                if (newText !== text) {
+                    this.setFileContent(ref.fileIndex, newText);
                     fixed++;
                 }
             } catch (e) {
                 /* skip */
+            }
+            if (Date.now() - lastYield > 50) {
+                await new Promise(r => setTimeout(r, 0));
+                lastYield = Date.now();
             }
         }
         return fixed;
@@ -1224,11 +1498,30 @@ class PvfArchive {
         pos += grpiBytes.length;
         result.set(bodyBytes, pos);
 
+        // 自校验：重开导出字节，回读每个 overlay 文件的原始字节并逐字节比对，
+        // 端到端验证分块重建/文件表/压缩/加密正确。任一不一致即抛错，避免产出坏档。
+        if (onProgress) onProgress(0, 0, "verify");
+        const verify = new PvfArchive(result.buffer);
+        await verify.parse();
+        for (const [fi, overlayData] of this._overlay) {
+            const newIdx = oldToNewIndex.get(fi);
+            if (newIdx == null || newIdx < 0 || newIdx >= verify.files.length) continue;
+            const actual = await verify.getFileData(verify.files[newIdx]);
+            if (!actual || actual.length !== overlayData.length) {
+                throw new Error(`导出自校验失败：${this.files[fi].fullpath || this.files[fi].name}（索引 ${fi}）回读长度不一致（期望 ${overlayData.length}，实际 ${actual ? actual.length : -1}）`);
+            }
+            for (let k = 0; k < overlayData.length; k++) {
+                if (actual[k] !== overlayData[k]) {
+                    throw new Error(`导出自校验失败：${this.files[fi].fullpath || this.files[fi].name}（索引 ${fi}）回读字节在偏移 ${k} 处不一致`);
+                }
+            }
+        }
+
         return result;
     }
 }
 
-export { PvfArchive, pvfDecrypt, pvfDecryptGuard, zlibCompress, zlibDecompress, formatBytes, buildFileTree, bytesToHex, detectEncoding, sanitizeFilename };
+export { PvfArchive, pvfDecrypt, pvfDecryptGuard, zlibCompress, zlibDecompress, formatBytes, buildFileTree, detectEncoding, sanitizeFilename };
 
 function formatBytes(n) {
     if (n < 1024) return n + " B";
@@ -1251,7 +1544,10 @@ function buildFileTree(files) {
     const folderMap = new Map();
     folderMap.set("", root);
 
-    const sorted = [...files].sort((a, b) => a.fullpath.localeCompare(b.fullpath));
+    // Code-unit comparison instead of localeCompare: paths are ASCII, and this
+    // is ~10x faster -- buildFileTree runs on every refreshKey bump (e.g. after
+    // a rename) and the localeCompare sort was a noticeable synchronous freeze.
+    const sorted = [...files].sort((a, b) => (a.fullpath > b.fullpath) - (a.fullpath < b.fullpath));
 
     for (const file of sorted) {
         const fp = file.fullpath || file.name;
@@ -1294,34 +1590,12 @@ function buildFileTree(files) {
     function sortTree(node) {
         node.children.sort((a, b) => {
             if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
-            return a.name.localeCompare(b.name);
+            return (a.name > b.name) - (a.name < b.name);
         });
         for (const child of node.children) sortTree(child);
     }
     sortTree(root);
     return root;
-}
-
-// ---- Hex dump for binary files ----
-function bytesToHex(data, maxBytes = 8192) {
-    if (!data || data.length === 0) return "(空文件)";
-    const len = Math.min(data.length, maxBytes);
-    const lines = [];
-    for (let i = 0; i < len; i += 16) {
-        const slice = data.subarray(i, Math.min(i + 16, len));
-        const hex = Array.from(slice)
-            .map(b => b.toString(16).padStart(2, "0"))
-            .join(" ");
-        const ascii = Array.from(slice)
-            .map(b => (b >= 32 && b < 127 ? String.fromCharCode(b) : "."))
-            .join("");
-        const offset = i.toString(16).padStart(8, "0");
-        lines.push(`${offset}  ${hex.padEnd(47)}  ${ascii}`);
-    }
-    if (data.length > maxBytes) {
-        lines.push(`\n... (仅显示前 ${maxBytes} 字节，共 ${data.length} 字节)`);
-    }
-    return lines.join("\n");
 }
 
 // ---- Encoding detection ----

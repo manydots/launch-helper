@@ -1,12 +1,19 @@
 <script>
 import hljs from "highlight.js/lib/core";
-import { PvfArchive, formatBytes, buildFileTree, bytesToHex, sanitizeFilename } from "@/utils/pvfTool";
+import xmlLang from "highlight.js/lib/languages/xml";
+import { PvfArchive, formatBytes, buildFileTree, sanitizeFilename } from "@/utils/pvfTool";
 import { registerPvfLanguage } from "@/utils/pvfHighlight";
 import { getTagInfo, parseTagName, renderTagTooltip, PVF_BLOCK_TAGS } from "@/utils/pvfTags";
 import { validatePvfText } from "@/utils/pvfValidator";
 import { alertModal, confirmModal } from "@/hooks/useModal";
 
 registerPvfLanguage(hljs);
+hljs.registerLanguage("xml", xmlLang);
+
+// 超过此大小的文件不再进入可编辑编辑器（textarea/高亮/校验都是 O(行数) 且非虚拟化，
+// 10w 行级文件会卡死界面），改为只读预览前 N 行。
+const LARGE_FILE_CHAR_LIMIT = 500000;
+const LARGE_FILE_PREVIEW_LINES = 2000;
 
 const ENCODINGS = [
     { value: "utf-8", label: "UTF-8" },
@@ -35,11 +42,10 @@ export default {
             loading: false,
             loadingMessage: "",
             searchQuery: "",
+            effectiveQuery: "",
             currentFile: null,
             editText: "",
             originalText: "",
-            hexViewText: "",
-            viewMode: "text",
             isStaging: false,
             saving: false,
             saveProgress: 0,
@@ -54,6 +60,10 @@ export default {
             textDirty: false,
             highlightedHtml: "",
             highlightTimer: null,
+            isLargeFile: false,
+            largeFilePreviewHtml: "",
+            largeFileLineCount: 0,
+            largeFilePreviewLines: LARGE_FILE_PREVIEW_LINES,
             refreshKey: 0,
             rowHeight: 24,
             ENCODINGS,
@@ -106,11 +116,15 @@ export default {
             };
         },
         isEditable() {
-            return this.currentFile && (this.currentFile.dataType === 1 || this.currentFile.dataType === 3);
+            return !this.isLargeFile && this.currentFile && (this.currentFile.dataType === 1 || this.currentFile.dataType === 3);
         },
         highlightMode() {
-            if (!this.currentFile) return "pvf";
-            return this.currentFile.dataType === 1 ? "pvf" : "plaintext";
+            const f = this.currentFile;
+            if (!f) return "pvf";
+            if (f.dataType === 1) return "pvf";
+            // .xui 为 XML 文本，按 XML 高亮
+            if (f.name && /\.xui$/i.test(f.name)) return "xml";
+            return "plaintext";
         },
         dataTypeLabel() {
             if (!this.currentFile) return "";
@@ -170,20 +184,50 @@ export default {
             return buildFileTree(files);
         },
         isSearching() {
-            return this.searchQuery.toLowerCase().trim().length > 0;
+            return this.effectiveQuery.toLowerCase().trim().length > 0;
         },
         visibleNodes() {
             const tree = this.fileTree;
             if (!tree) return [];
             const result = [];
-            const searching = this.isSearching;
-            const expanded = this.expandedPaths;
+            const q = this.effectiveQuery.toLowerCase().trim();
+            const searching = q.length > 0;
+
+            if (!searching) {
+                const expanded = this.expandedPaths;
+                function walk(node, depth) {
+                    for (const child of node.children) {
+                        result.push({ node: child, depth });
+                        if (child.isDir && expanded.has(child.path)) {
+                            walk(child, depth + 1);
+                        }
+                    }
+                }
+                walk(tree, 0);
+                return result;
+            }
+
+            // 搜索：路径子串包含，命中文件 + 祖先目录链，命中目录自动展开
+            const visiblePaths = new Set();
+            function mark(node) {
+                let has = false;
+                if (!node.isDir) {
+                    has = node.path.toLowerCase().includes(q);
+                    if (has) visiblePaths.add(node.path);
+                } else {
+                    for (const child of node.children) {
+                        if (mark(child)) has = true;
+                    }
+                    if (has) visiblePaths.add(node.path);
+                }
+                return has;
+            }
+            mark(tree);
             function walk(node, depth) {
                 for (const child of node.children) {
+                    if (!visiblePaths.has(child.path)) continue;
                     result.push({ node: child, depth });
-                    if (child.isDir && (searching || expanded.has(child.path))) {
-                        walk(child, depth + 1);
-                    }
+                    if (child.isDir) walk(child, depth + 1);
                 }
             }
             walk(tree, 0);
@@ -224,6 +268,16 @@ export default {
             this.textDirty = false;
             this.validationErrors = [];
             this.validationVisible = false;
+        },
+        searchQuery(v) {
+            clearTimeout(this._searchTimer);
+            if (!v) {
+                this.effectiveQuery = "";
+                return;
+            }
+            this._searchTimer = setTimeout(() => {
+                this.effectiveQuery = v;
+            }, 150);
         }
     },
     mounted() {
@@ -239,6 +293,7 @@ export default {
         document.removeEventListener("mouseup", this.onDragEnd);
         if (this.highlightTimer) clearTimeout(this.highlightTimer);
         if (this.validationTimer) clearTimeout(this.validationTimer);
+        if (this._searchTimer) clearTimeout(this._searchTimer);
         this.archive = null;
     },
     methods: {
@@ -266,8 +321,10 @@ export default {
                 this.currentFile = null;
                 this.editText = "";
                 this.originalText = "";
-                this.hexViewText = "";
                 this.textDirty = false;
+                this.isLargeFile = false;
+                this.largeFilePreviewHtml = "";
+                this.largeFileLineCount = 0;
                 this.loading = false;
                 this.$nextTick(() => this.updateContainerHeight());
                 this.addLog(`加载 ${file.name} 成功：${arch.header.fileCount} 文件，${arch.header.groupCount} 分块`, "success");
@@ -542,13 +599,14 @@ export default {
             this.currentFile = file;
             this.editText = "";
             this.originalText = "";
-            this.hexViewText = "";
-            this.viewMode = "text";
             this.highlightedHtml = "";
             this.textDirty = false;
             this._editorMetrics = null;
             this._hlCache = null;
             this.folds = [];
+            this.isLargeFile = false;
+            this.largeFilePreviewHtml = "";
+            this.largeFileLineCount = 0;
 
             if (file.isDir) {
                 this.originalText = "[目录标记]";
@@ -573,10 +631,23 @@ export default {
                     return;
                 }
                 const text = this.archive.decodeContent(file, data);
+                // 超大文件：跳过格式化/高亮/校验/全量 textarea 渲染，只读预览前 N 行
+                if (text.length > LARGE_FILE_CHAR_LIMIT) {
+                    const lines = text.split("\n");
+                    const previewText = lines.slice(0, LARGE_FILE_PREVIEW_LINES).join("\n");
+                    const formatted = this.applyFormatting(previewText);
+                    this.isLargeFile = true;
+                    this.largeFileLineCount = lines.length;
+                    this.largeFilePreviewHtml = this._renderHighlighted(formatted) + "\n";
+                    this.originalText = "";
+                    this.editText = "";
+                    this.loading = false;
+                    this._loadingFileIndex = null;
+                    return;
+                }
                 const formatted = this.applyFormatting(text);
                 this.originalText = formatted;
                 this.editText = formatted;
-                this.hexViewText = bytesToHex(data);
                 this.loading = false;
                 this._loadingFileIndex = null;
                 this.$nextTick(() => {
@@ -611,8 +682,6 @@ export default {
                 this.archive.setFileContent(this.currentFile.index, this.editText);
                 this.originalText = this.editText;
                 this.textDirty = false;
-                const data = await this.archive.getFileData(this.currentFile);
-                this.hexViewText = bytesToHex(data);
             } catch (err) {
                 alertModal({ title: "编码失败", message: err.message });
             }
@@ -676,7 +745,6 @@ export default {
                             this.currentFile = null;
                             this.editText = "";
                             this.originalText = "";
-                            this.hexViewText = "";
                         }
                         this.refreshKey++;
                     }
@@ -705,18 +773,22 @@ export default {
                     renameMappings = [{ old: result.oldFullpath, new: result.newFullpath }];
                 }
 
-                // Build thorough search mappings (with and without extension)
+                // Build thorough replace mappings (with and without extension)
                 const searchMappings = this.archive.buildPathMappings(renameMappings);
-                const searchPaths = searchMappings.map(m => m.old);
 
-                // Full reference search across all files
-                const refs = await this.archive.findReferencesMulti(searchPaths);
+                // Reference DETECTION: every path renamed as part of a folder
+                // rename shares the old folder prefix, so searching just that one
+                // prefix is a sound pre-filter (no false negatives) and turns an
+                // O(files * paths) scan into O(files * 1). fixReferences below
+                // still rewrites each specific old->new path within matched files.
+                const detectPaths = isFolder ? [node.path + "/"] : searchMappings.map(m => m.old);
+                const refs = await this.archive.findReferencesMulti(detectPaths);
 
                 let fixedCount = 0;
                 if (refs.length > 0) {
                     const proceed = await confirmModal({
                         title: "发现引用",
-                        message: `在 ${refs.length} 个文件中发现 ${searchPaths.length} 个路径的引用，是否全量修复这些引用？`,
+                        message: `在 ${refs.length} 个文件中发现指向该${isFolder ? "目录" : "文件"}的引用，是否全量修复？`,
                         confirmText: "全量修复",
                         cancelText: "仅重命名"
                     });
@@ -817,8 +889,6 @@ export default {
                         this.editText = formatted;
                         this.textDirty = false;
                         this.folds = [];
-                        const data = await arch.getFileData(targetFile);
-                        this.hexViewText = bytesToHex(data);
                         this.updateHighlight();
                     }
                 } else {
@@ -826,7 +896,6 @@ export default {
                     arch.setFileRawData(target.fileIndex, buf);
                     if (this.currentFile && this.currentFile.index === target.fileIndex) {
                         const data = await arch.getFileData(targetFile);
-                        this.hexViewText = bytesToHex(data);
                         const text = arch.decodeContent(targetFile, data);
                         const formatted = this.applyFormatting(text);
                         this.originalText = formatted;
@@ -866,7 +935,6 @@ export default {
                                 const formatted = this.applyFormatting(text);
                                 this.originalText = formatted;
                                 this.editText = formatted;
-                                this.hexViewText = bytesToHex(data);
                                 this.textDirty = false;
                                 this.folds = [];
                                 this.selectedPath = file.fullpath;
@@ -911,8 +979,6 @@ export default {
                     this.archive.setFileContent(this.currentFile.index, this.editText);
                     this.originalText = this.editText;
                     this.textDirty = false;
-                    const data = await this.archive.getFileData(this.currentFile);
-                    this.hexViewText = bytesToHex(data);
                     this.addLog(`已暂存：${this.currentFile.fullpath}`, "info");
                 } catch (err) {
                     alertModal({ title: "编码失败", message: err.message });
@@ -931,7 +997,12 @@ export default {
             this.saveProgressText = "准备重建 PVF...";
 
             try {
-                const result = await this.archive.saveAs((curr, total) => {
+                const result = await this.archive.saveAs((curr, total, phase) => {
+                    if (phase === "verify") {
+                        this.saveProgress = 100;
+                        this.saveProgressText = "自校验中...";
+                        return;
+                    }
                     this.saveProgress = Math.round((curr / total) * 100);
                     this.saveProgressText = `重建分块 ${curr} / ${total}...`;
                 });
@@ -1073,16 +1144,23 @@ export default {
             let html;
             if (!text || text.length > 500000) {
                 html = this.annotateTagSpans(this.escapeHtml(text));
-            } else if (mode !== "pvf") {
-                // Only PVF script (Type 1) has a registered language; Type 3 falls back to escaped text
-                html = this.annotateTagSpans(this.escapeHtml(text));
-            } else {
+            } else if (mode === "pvf") {
                 try {
                     const result = hljs.highlight(text, { language: "pvf" });
                     html = this.annotateTagSpans(result.value);
                 } catch (e) {
                     html = this.annotateTagSpans(this.escapeHtml(text));
                 }
+            } else if (mode === "xml") {
+                try {
+                    const result = hljs.highlight(text, { language: "xml" });
+                    html = this.annotateTagSpans(result.value);
+                } catch (e) {
+                    html = this.annotateTagSpans(this.escapeHtml(text));
+                }
+            } else {
+                // 其余类型（如 Type 3 纯文本）无注册语言，回退转义文本
+                html = this.annotateTagSpans(this.escapeHtml(text));
             }
             if (this.folds.length > 0) {
                 const textLines = text.split("\n");
@@ -1097,6 +1175,18 @@ export default {
             html += "\n";
             this._hlCache = { text, mode, html };
             this.highlightedHtml = html;
+        },
+        // 高亮文本 -> HTML（用于超大文件只读预览，不带折叠处理）
+        _renderHighlighted(text) {
+            if (!text) return "";
+            const mode = this.highlightMode;
+            try {
+                if (mode === "pvf") return this.annotateTagSpans(hljs.highlight(text, { language: "pvf" }).value);
+                if (mode === "xml") return this.annotateTagSpans(hljs.highlight(text, { language: "xml" }).value);
+            } catch (e) {
+                /* fall through to escaped text */
+            }
+            return this.annotateTagSpans(this.escapeHtml(text));
         },
         // 为 [xxx] 标签的 hljs-type span 注入 data-tag 属性，便于浮窗解析
         annotateTagSpans(html) {
@@ -1438,6 +1528,12 @@ export default {
                                 <line x1="21" y1="21" x2="16.65" y2="16.65" />
                             </svg>
                             <input v-model="searchQuery" type="text" class="pvf-search" placeholder="搜索文件路径..." />
+                            <button v-if="searchQuery" type="button" class="pvf-search-clear" title="清除" @click="searchQuery = ''">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+                                    <line x1="6" y1="6" x2="18" y2="18" />
+                                    <line x1="18" y1="6" x2="6" y2="18" />
+                                </svg>
+                            </button>
                         </div>
                     </div>
                     <div class="pvf-topbar-right">
@@ -1562,12 +1658,8 @@ export default {
                                 <span class="pvf-editor-meta">{{ formatBytes(currentFile.dataSize) }}</span>
                                 <span v-if="textDirty || isCurrentModified" class="pvf-mod-badge dirty">已修改</span>
                                 <div class="pvf-editor-spacer"></div>
-                                <div v-if="isEditable" class="pvf-view-switch">
-                                    <button :class="{ active: viewMode === 'text' }" @click="viewMode = 'text'">文本</button>
-                                    <button :class="{ active: viewMode === 'hex' }" @click="viewMode = 'hex'">十六进制</button>
-                                </div>
                             </div>
-                            <div v-if="currentFile && isEditable && viewMode === 'text'" class="pvf-editor-area">
+                            <div v-if="currentFile && isEditable" class="pvf-editor-area">
                                 <div class="pvf-code-editor">
                                     <div ref="gutterEl" class="pvf-code-gutter" @mousemove="onEditorMouseMove">
                                         <pre class="pvf-gutter-pre" v-html="gutterHtml"></pre>
@@ -1608,14 +1700,16 @@ export default {
                                     <div v-if="tooltip.show" class="pvf-tooltip" :style="{ left: tooltip.x + 'px', top: tooltip.y + 'px' }" v-html="tooltip.html"></div>
                                 </Transition>
                             </div>
-                            <div v-else-if="currentFile && viewMode === 'hex'" class="pvf-editor-area">
-                                <pre class="pvf-hexview">{{ hexViewText }}</pre>
+                            <div v-else-if="currentFile && isLargeFile" class="pvf-editor-area pvf-largefile">
+                                <div class="pvf-largefile-banner">
+                                    文件过大（{{ largeFileLineCount.toLocaleString() }} 行），仅预览前 {{ largeFilePreviewLines.toLocaleString() }} 行。完整内容请使用右键导出。
+                                </div>
+                                <pre class="pvf-largefile-preview" v-html="largeFilePreviewHtml"></pre>
                             </div>
                             <div v-else-if="currentFile" class="pvf-editor-area">
                                 <div class="pvf-readonly">
                                     <p>该文件类型 (Type {{ currentFile.dataType }}) 不支持文本编辑。</p>
-                                    <p class="pvf-readonly-hint">可切换至十六进制视图查看，或使用右键导出原始字节。</p>
-                                    <button class="btn btn-sm btn-outline-secondary" @click="viewMode = 'hex'">查看十六进制</button>
+                                    <p class="pvf-readonly-hint">可使用右键导出原始字节。</p>
                                 </div>
                             </div>
                             <div v-else class="pvf-empty">
@@ -1912,7 +2006,7 @@ export default {
 .pvf-topbar-search .pvf-search {
     width: 220px;
     height: 30px;
-    padding: 0 12px 0 30px;
+    padding: 0 28px 0 30px;
     box-sizing: border-box;
     border-radius: 6px;
 }
@@ -2103,6 +2197,31 @@ export default {
 .pvf-search:focus {
     border-color: var(--accent);
 }
+.pvf-search-clear {
+    position: absolute;
+    right: 6px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 16px;
+    height: 16px;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+}
+.pvf-search-clear:hover {
+    color: var(--text);
+    background: var(--border);
+}
+.pvf-search-clear svg {
+    width: 12px;
+    height: 12px;
+}
 .pvf-list {
     flex: 1;
     overflow-y: auto;
@@ -2130,7 +2249,6 @@ export default {
 .pvf-list::-webkit-scrollbar,
 .pvf-code-highlight::-webkit-scrollbar,
 .pvf-code-textarea::-webkit-scrollbar,
-.pvf-hexview::-webkit-scrollbar,
 .pvf-syntax-panel::-webkit-scrollbar,
 .pvf-syntax-list::-webkit-scrollbar {
     width: 8px;
@@ -2139,7 +2257,6 @@ export default {
 .pvf-list::-webkit-scrollbar-track,
 .pvf-code-highlight::-webkit-scrollbar-track,
 .pvf-code-textarea::-webkit-scrollbar-track,
-.pvf-hexview::-webkit-scrollbar-track,
 .pvf-syntax-panel::-webkit-scrollbar-track,
 .pvf-syntax-list::-webkit-scrollbar-track {
     background: transparent;
@@ -2147,7 +2264,6 @@ export default {
 .pvf-list::-webkit-scrollbar-thumb,
 .pvf-code-highlight::-webkit-scrollbar-thumb,
 .pvf-code-textarea::-webkit-scrollbar-thumb,
-.pvf-hexview::-webkit-scrollbar-thumb,
 .pvf-syntax-panel::-webkit-scrollbar-thumb,
 .pvf-syntax-list::-webkit-scrollbar-thumb {
     background: rgba(255, 255, 255, 0.12);
@@ -2156,7 +2272,6 @@ export default {
 .pvf-list::-webkit-scrollbar-thumb:hover,
 .pvf-code-highlight::-webkit-scrollbar-thumb:hover,
 .pvf-code-textarea::-webkit-scrollbar-thumb:hover,
-.pvf-hexview::-webkit-scrollbar-thumb:hover,
 .pvf-syntax-panel::-webkit-scrollbar-thumb:hover,
 .pvf-syntax-list::-webkit-scrollbar-thumb:hover {
     background: rgba(255, 255, 255, 0.2);
@@ -2436,28 +2551,6 @@ export default {
     font-weight: 500;
     flex-shrink: 0;
 }
-.pvf-view-switch {
-    display: flex;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 1px;
-    flex-shrink: 0;
-}
-.pvf-view-switch button {
-    border: none;
-    background: transparent;
-    color: var(--text-muted);
-    font-size: 0.7rem;
-    padding: 3px 10px;
-    border-radius: 5px;
-    cursor: pointer;
-    transition: all 0.15s;
-}
-.pvf-view-switch button.active {
-    background: rgba(91, 140, 255, 0.18);
-    color: var(--accent);
-}
 .pvf-editor-area {
     flex: 1;
     display: flex;
@@ -2532,41 +2625,57 @@ export default {
     background: rgba(91, 140, 255, 0.3);
 }
 /* ---- highlight.js token colors (VS Code Dark+ inspired) ---- */
-.pvf-code-highlight :deep(.hljs-comment) {
+.pvf-code-highlight :deep(.hljs-comment),
+.pvf-largefile-preview :deep(.hljs-comment) {
     color: #6a9955;
     font-style: italic;
 }
-.pvf-code-highlight :deep(.hljs-string) {
+.pvf-code-highlight :deep(.hljs-string),
+.pvf-largefile-preview :deep(.hljs-string) {
     color: #ce9178;
 }
-.pvf-code-highlight :deep(.hljs-keyword) {
+.pvf-code-highlight :deep(.hljs-keyword),
+.pvf-largefile-preview :deep(.hljs-keyword) {
     color: #c586c0;
     font-weight: 500;
 }
-.pvf-code-highlight :deep(.hljs-type) {
+.pvf-code-highlight :deep(.hljs-type),
+.pvf-largefile-preview :deep(.hljs-type) {
     color: var(--pvf-tag-color);
 }
-.pvf-code-highlight :deep(.hljs-number) {
+.pvf-code-highlight :deep(.hljs-number),
+.pvf-largefile-preview :deep(.hljs-number) {
     color: #b5cea8;
 }
-.pvf-code-highlight :deep(.hljs-title) {
+.pvf-code-highlight :deep(.hljs-title),
+.pvf-largefile-preview :deep(.hljs-title) {
     color: #9cdcfe;
 }
-.pvf-code-highlight :deep(.hljs-char.escape) {
+.pvf-code-highlight :deep(.hljs-char.escape),
+.pvf-largefile-preview :deep(.hljs-char.escape) {
     color: #d7ba7d;
 }
-.pvf-hexview {
-    flex: 1;
-    margin: 0;
-    padding: 14px 18px;
-    background: var(--bg);
-    color: var(--text);
-    font-family: "SF Mono", "Cascadia Code", "JetBrains Mono", Consolas, monospace;
-    font-size: 0.74rem;
-    line-height: 1.55;
-    overflow: auto;
-    white-space: pre;
-    user-select: text;
+/* ---- XML (.xui) token colors ---- */
+.pvf-code-highlight :deep(.hljs-meta),
+.pvf-largefile-preview :deep(.hljs-meta) {
+    color: #808080;
+    font-style: italic;
+}
+.pvf-code-highlight :deep(.hljs-tag),
+.pvf-largefile-preview :deep(.hljs-tag) {
+    color: #808080;
+}
+.pvf-code-highlight :deep(.hljs-tag .hljs-name),
+.pvf-largefile-preview :deep(.hljs-tag .hljs-name) {
+    color: #569cd6;
+}
+.pvf-code-highlight :deep(.hljs-tag .hljs-attr),
+.pvf-largefile-preview :deep(.hljs-tag .hljs-attr) {
+    color: #9cdcfe;
+}
+.pvf-code-highlight :deep(.hljs-tag .hljs-string),
+.pvf-largefile-preview :deep(.hljs-tag .hljs-string) {
+    color: #ce9178;
 }
 .pvf-readonly {
     flex: 1;
@@ -2581,6 +2690,30 @@ export default {
 .pvf-readonly-hint {
     font-size: 0.72rem;
     opacity: 0.7;
+}
+.pvf-largefile {
+    overflow: hidden;
+}
+.pvf-largefile-banner {
+    flex-shrink: 0;
+    padding: 8px 14px;
+    background: rgba(91, 140, 255, 0.1);
+    color: var(--accent);
+    font-size: 0.75rem;
+    border-bottom: 1px solid var(--border);
+}
+.pvf-largefile-preview {
+    flex: 1;
+    margin: 0;
+    padding: 14px 18px;
+    background: var(--bg);
+    color: var(--text);
+    font-family: "SF Mono", "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+    font-size: 0.74rem;
+    line-height: 1.55;
+    overflow: auto;
+    white-space: pre;
+    user-select: text;
 }
 .pvf-empty {
     flex: 1;
