@@ -1,14 +1,14 @@
 # LaunchHelper
 
-通过浏览器自定义协议（`LaunchHelper:`）一键启动 Windows 游戏，可选集成网关认证。
+通过浏览器自定义协议（`LaunchHelper:`）启动 Windows 游戏，可选集成网关认证。
 
 [LaunchHelper 演示地址](https://manydots.github.io/launch-helper/)
 
 ## 功能特性
 
-- 自定义协议一键拉起 Windows 游戏，无需手动开 cmd
+- 自定义协议启动 Windows 游戏，无需手动执行命令
 - 账号、密码、游戏路径、启动参数本地持久化（localStorage），刷新不丢失
-- 网关认证（注册 / 登录 / 改密），WebSocket + Protobuf 二进制协议
+- 网关认证（注册 / 登录 / 修改密码），WebSocket + Protobuf 二进制协议
 - 服务状态实时探测：网关启用时登录框左上角圆点显示在线 / 离线 / 检测中
 - Material 风格输入框，聚焦时支持一键清空
 - 打字机动效副标题、毛玻璃卡片界面
@@ -25,9 +25,9 @@
 1. 填写游戏 exe 完整路径（如 `D:\Games\Game.exe`）
 2. 填写启动参数（如 `99?127.0.0.1?7001?...`）
 3. 点击「生成注册表」，下载 `register-LaunchHelper.reg` 并双击运行
-4. 点击「登录并启动」，浏览器拉起游戏
+4. 点击「登录并启动」，浏览器启动游戏
 
-> 账号、路径、参数在首次输入后会自动保存到本地，下次打开无需重填。
+> 账号、路径、参数在首次输入后会自动保存到本地，下次打开无需重新填写。
 
 ### 网关启用
 
@@ -85,7 +85,7 @@ yarn dev
 - `VITE_GATEWAY_ENABLED=true`，`VITE_GATEWAY_TARGET=127.0.0.1`，`VITE_GATEWAY_PORT=8000`，`VITE_GATEWAY_PATH=/gateway`
 - `vite-plugin-gateway-bridge.js` 在 dev server 挂载 `VITE_GATEWAY_PATH`（默认 `/gateway`），将浏览器 WebSocket 桥接到后端 TCP `127.0.0.1:8000`（4 字节大端长度前缀帧）
 - 需要后端网关监听 `127.0.0.1:8000`
-- `VITE_PLATFORM_CHECK=false`，方便在非 Windows 上调试界面
+- `VITE_PLATFORM_CHECK=false`，便于在非 Windows 环境调试界面
 
 ### 二、配合网关部署
 
@@ -136,7 +136,7 @@ powershell -NoProfile -WindowStyle Hidden -Command "$u='%1';$p=$u.Substring($u.I
 - `-WindowStyle Hidden` 避免闪现 PowerShell 窗口
 - `$u.Substring($u.IndexOf(':')+1)` 按第一个 `:` 剥离协议前缀，精确无误
 - `Start-Process -WorkingDirectory` 设置工作目录为游戏所在目录，确保游戏能找到自身资源文件
-- `Start-Process -ArgumentList` 将参数作为数据传递给目标进程，免疫 `&` `%` `^` 等 cmd 元字符的注入风险
+- `Start-Process -ArgumentList` 将参数作为数据传递给目标进程，规避 `&` `%` `^` 等 cmd 元字符的注入风险
 
 ### 协议 URL 格式
 
