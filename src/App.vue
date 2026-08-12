@@ -26,16 +26,25 @@ console.log(`Vue.js version is%c ${version}`, "color:red");
     <!-- 全局弹窗 -->
     <ModalHost />
 
-    <!-- PVF 编辑器入口按钮 -->
-    <button v-if="isGameRoute" class="pvf-entry-btn" @click="$router.push({ name: 'Pvf' })">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-            <polyline points="14 2 14 8 20 8" />
-            <line x1="9" y1="13" x2="15" y2="13" />
-            <line x1="9" y1="17" x2="13" y2="17" />
-        </svg>
-        <span>PVF 编辑</span>
-    </button>
+    <!-- PVF 编辑器 / 物品编码入口按钮 -->
+    <div class="pvf-entry-group">
+        <button v-if="isGameRoute" class="pvf-entry-btn" @click="$router.push({ name: 'ItemCode' })">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.83z" />
+                <line x1="7" y1="7" x2="7.01" y2="7" />
+            </svg>
+            <span>Stackable 物品编码</span>
+        </button>
+        <button v-if="isGameRoute" class="pvf-entry-btn" @click="$router.push({ name: 'Pvf' })">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                <polyline points="14 2 14 8 20 8" />
+                <line x1="9" y1="13" x2="15" y2="13" />
+                <line x1="9" y1="17" x2="13" y2="17" />
+            </svg>
+            <span>PVF 编辑</span>
+        </button>
+    </div>
 
     <!-- 以下信息仅在 Game 路由显示 -->
     <template v-if="isGameRoute">
@@ -157,11 +166,15 @@ body {
 }
 
 /* ---- PVF 编辑器入口按钮 (右上角) ---- */
-.pvf-entry-btn {
+.pvf-entry-group {
     position: fixed;
     top: 12px;
     right: 12px;
     z-index: 100;
+    display: flex;
+    gap: 10px;
+}
+.pvf-entry-btn {
     display: inline-flex;
     align-items: center;
     gap: 6px;

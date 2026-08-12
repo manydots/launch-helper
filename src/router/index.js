@@ -13,6 +13,12 @@ const routes = [
         name: "Pvf",
         component: () => import("@/components/PvfEditor.vue"),
         meta: { title: "PVF编辑" }
+    },
+    {
+        path: "/ItemCode",
+        name: "ItemCode",
+        component: () => import("@/components/ItemCodeViewer.vue"),
+        meta: { title: "物品编码" }
     }
 ];
 

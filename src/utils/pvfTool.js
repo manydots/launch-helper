@@ -840,6 +840,20 @@ class PvfArchive {
         return map ? map.get(ref) || null : null;
     }
 
+    // 结构化解析 .lst：返回 [{ code, ref, name }] 条目列表。
+    // 复用 decodeLstWithNames（引用文件的 [name] 标签追加到行尾），再按「数字 `路径` [名称]」拆分；
+    // 编码即每行首个数字，名称缺省为空串（保留 ref 便于核对）。
+    async listLstItems(file) {
+        const text = await this.decodeLstWithNames(file);
+        const items = [];
+        for (const raw of text.split("\n")) {
+            const m = /^(\d+)\s+`((?:[^`]|``)*)`(?:\s+(.*))?$/.exec(raw.trim());
+            if (!m) continue;
+            items.push({ code: m[1], ref: m[2].replace(/``/g, "`"), name: m[3] ? m[3].trim() : "" });
+        }
+        return items;
+    }
+
     // 文件类型: *.dat（dataType=1）等纯数字定长记录表
     // 通用 decodeToken 会把所有连续数字合并到同一行（_appendNumRun），对定长记录表不可读。
     // 这里按"连续 ID"自动探测每条记录的字段数：首字段为 ID，下一条记录 ID = 首条 ID + 1，
