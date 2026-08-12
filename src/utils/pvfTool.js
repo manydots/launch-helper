@@ -176,6 +176,22 @@ class PvfArchive {
         this._renamed = new Set(); // fileIndex -> true (renamed)
         this._originalMeta = new Map(); // fileIndex -> { nameOff, name, fullpath }
         this.strEncoding = "utf-8"; // encoding for sTrA (single-byte) string table
+        this._headerUsesGuard = false; // true 表示头部采用 Guard（0x55 XOR）加密（工具自定义格式），false 为原版 PVF 包头
+        this._nameTagCache = new Map(); // fileIndex -> [name] 标签值缓存（.lst 名称展示）
+        this._lstTextCache = new Map(); // fileIndex -> decodeLstWithNames 结果缓存（.lst 展示文本）
+        this._lstRefMap = new Map(); // fileIndex -> Map<引用路径, file>（.lst 引用快捷跳转）
+        this._pathIndex = null; // fullpath -> file 索引（懒构建，重命名后失效）
+        this._nameIndex = null; // name -> [file] 索引（懒构建，重命名后失效）
+    }
+
+    // 当前文件标识：guard=工具自定义（Guard 包头） original=原版（无 Guard）
+    get headerFormat() {
+        return this._headerUsesGuard ? "guard" : "original";
+    }
+
+    // 当前文件标识的可读文案（用于界面与日志打印）
+    get headerFormatLabel() {
+        return this._headerUsesGuard ? "Guard格式" : "原版格式";
     }
 
     async parse() {
@@ -183,33 +199,25 @@ class PvfArchive {
         if (buf.length < 0x30) throw new Error("数据不足以包含 PVF 头部");
 
         // Header
-        const hdr = buf.slice(0, 0x30);
-        pvfDecryptGuard(hdr);
-        if (pvfDecrypt("HeaD", hdr, MAGIC_DECRYPT) !== 0) throw new Error("PVF 头部解密失败");
-
-        const signature = readUInt32LE(hdr, 0);
-        if (signature !== 0x69706b6e) {
-            throw new Error("该文件不是有效的 PVF 文件（签名 0x" + (signature >>> 0).toString(16) + "，应为 0x69706b6e）。请确认选择的是游戏的 Script.pvf。");
+        // 依次尝试 Guard 加密（工具自定义）与原版两种包头：解密后校验签名与分区布局，
+        // 仅当布局合法才判定该候选有效，避免把 Guard 误判为原版（或反之）。
+        this.header = null;
+        let lastHeaderError = null;
+        for (const usesGuard of [true, false]) {
+            try {
+                this.header = this._decodeHeaderCandidate(buf, usesGuard);
+                this._headerUsesGuard = usesGuard;
+                break;
+            } catch (e) {
+                lastHeaderError = e;
+            }
         }
-
-        this.header = {
-            signature,
-            guid: hdr.slice(4, 24),
-            fileCount: readInt32LE(hdr, 24),
-            padding: readInt32LE(hdr, 28),
-            bodySize: readInt32LE(hdr, 32),
-            groupCount: readInt32LE(hdr, 36),
-            hashTableSize: readInt32LE(hdr, 40),
-            nameTableSize: readInt32LE(hdr, 44)
-        };
-
-        // 头部字段合法性（损坏的文件可能给出负值或越界尺寸，导致后续静默解析出垃圾）
-        const h = this.header;
-        if (h.fileCount <= 0 || h.groupCount < 0 || h.nameTableSize < 0 || h.hashTableSize < 0) {
-            throw new Error(`PVF 头部字段异常（fileCount=${h.fileCount}, groupCount=${h.groupCount}），文件可能已损坏。`);
+        if (!this.header) {
+            throw lastHeaderError || new Error("PVF 头部解密失败");
         }
 
         // Section offsets
+        const h = this.header;
         let pos = 0x30;
         const tableOffset = pos;
         const tableSize = h.fileCount * 0x18;
@@ -261,6 +269,43 @@ class PvfArchive {
         await this._buildStringOffsetCacheAsync();
 
         return this.header;
+    }
+
+    // 解密并校验一个头部候选（usesGuard 决定是否先做 Guard 解密），失败抛错由调用方回退到另一种格式。
+    _decodeHeaderCandidate(allBytes, usesGuard) {
+        const headerBytes = allBytes.slice(0, 0x30);
+        if (usesGuard) pvfDecryptGuard(headerBytes);
+        if (pvfDecrypt("HeaD", headerBytes, MAGIC_DECRYPT) !== 0) throw new Error("PVF 头部解密失败");
+
+        const signature = readUInt32LE(headerBytes, 0);
+        if (signature !== 0x69706b6e) {
+            throw new Error("该文件不是有效的 PVF 文件（签名 0x" + (signature >>> 0).toString(16) + "，应为 0x69706b6e）。请确认选择的是游戏的 Script.pvf。");
+        }
+
+        const header = {
+            signature,
+            guid: headerBytes.slice(4, 24),
+            fileCount: readInt32LE(headerBytes, 24),
+            padding: readInt32LE(headerBytes, 28),
+            bodySize: readInt32LE(headerBytes, 32),
+            groupCount: readInt32LE(headerBytes, 36),
+            hashTableSize: readInt32LE(headerBytes, 40),
+            nameTableSize: readInt32LE(headerBytes, 44)
+        };
+        this._validateHeaderLayout(header, allBytes.length);
+        return header;
+    }
+
+    // 头部字段合法性：损坏的文件可能给出负值或越界尺寸，导致后续静默解析出垃圾。
+    _validateHeaderLayout(header, dataLength) {
+        const { fileCount, groupCount, hashTableSize, nameTableSize, bodySize } = header;
+        if (fileCount < 0 || groupCount < 0 || hashTableSize < 0 || nameTableSize < 0 || bodySize < 0) {
+            throw new Error(`PVF 头部包含负的分区尺寸（fileCount=${fileCount}, groupCount=${groupCount}），文件可能已损坏。`);
+        }
+        const declaredLength = 0x30 + fileCount * 0x18 + hashTableSize + nameTableSize + groupCount * 8 + bodySize;
+        if (declaredLength > dataLength) {
+            throw new Error("PVF 结构异常：声明的数据区超出文件实际大小，文件可能已损坏或被截断。");
+        }
     }
 
     async _parseNameTable(nameBytes) {
@@ -663,6 +708,137 @@ class PvfArchive {
         return this._normalizeLines(decodeUtf16LE(data));
     }
 
+    // 是否为 .lst 列表文件（其解码文本中会追加引用文件的 [name] 名称展示）
+    isLstFile(file) {
+        return !!(file && file.name && /\.lst$/i.test(file.name));
+    }
+
+    // fullpath -> file 索引（懒构建；重命名/路径变更后置空重建）
+    _buildPathIndex() {
+        if (this._pathIndex) return this._pathIndex;
+        const idx = new Map();
+        const nameIdx = new Map();
+        for (const f of this.files) {
+            if (f.isDir || !f.fullpath) continue;
+            idx.set(f.fullpath, f);
+            const key = f.name.toLowerCase();
+            if (!nameIdx.has(key)) nameIdx.set(key, []);
+            nameIdx.get(key).push(f);
+        }
+        this._pathIndex = idx;
+        this._nameIndex = nameIdx;
+        return idx;
+    }
+
+    // 提取指定文件的 [name] 标签值（异步读取 + 缓存）。常用于 .lst 列表展示引用文件的缩略名称。
+    async extractNameTag(file) {
+        if (!file || file.isDir) return "";
+        if (this._nameTagCache.has(file.index)) return this._nameTagCache.get(file.index);
+        let name = "";
+        try {
+            const data = await this.getFileData(file);
+            if (data && data.length > 0) {
+                name = extractNameFromText(this.decodeContent(file, data));
+            }
+        } catch (e) {
+            name = "";
+        }
+        this._nameTagCache.set(file.index, name);
+        return name;
+    }
+
+    // .lst 增强解码：在「数字 `引用路径`」行尾追加引用文件的 [name] 标签值，便于识别物品名称。
+    // 引用路径优先相对 .lst 所在目录解析（如 stackable.lst 中的 cash/store_basic.stk -> stackable/cash/store_basic.stk），
+    // 失败时依次尝试原始引用路径、按文件名（忽略目录、大小写不敏感）回退匹配。
+    async decodeLstWithNames(file) {
+        const cached = this._lstTextCache.get(file.index);
+        if (cached != null) return cached;
+        const t0 = Date.now();
+        const data = await this.getFileData(file);
+        if (!data || data.length === 0) return "";
+        const baseText = this.decodeLst(data);
+        const lines = baseText.split("\n");
+        const baseDir = String(file.fullpath || file.name || "")
+            .replace(/\\/g, "/")
+            .split("/")
+            .slice(0, -1)
+            .join("/");
+        const idx = this._buildPathIndex();
+        const nameIdx = this._nameIndex || new Map();
+        const rows = [];
+        const pending = new Map();
+        const missed = [];
+        for (const line of lines) {
+            const m = /^(\d+)\s+`([^`]*)`$/.exec(line.trim());
+            if (!m) {
+                rows.push({ line, target: null });
+                continue;
+            }
+            const ref = m[2].replace(/\\/g, "/");
+            const candidates = [];
+            if (ref.startsWith("/")) {
+                candidates.push(ref.replace(/^\/+/, ""));
+            } else {
+                if (baseDir) candidates.push(baseDir + "/" + ref);
+                candidates.push(ref);
+            }
+            let target = null;
+            for (const c of candidates) {
+                target = idx.get(c);
+                if (target) break;
+            }
+            if (!target) {
+                const base = ref.split("/").pop();
+                const byName = nameIdx.get(String(base).toLowerCase());
+                if (byName && byName.length === 1) target = byName[0];
+            }
+            if (!target) {
+                if (missed.length < 5) missed.push(ref);
+                rows.push({ line, target: null });
+                continue;
+            }
+            let refMap = this._lstRefMap.get(file.index);
+            if (!refMap) {
+                refMap = new Map();
+                this._lstRefMap.set(file.index, refMap);
+            }
+            refMap.set(m[2], target);
+            rows.push({ line, target });
+            pending.set(target.index, target);
+        }
+        const targets = [...pending.values()];
+        for (let i = 0; i < targets.length; i += 200) {
+            const batch = targets.slice(i, i + 200);
+            await Promise.all(batch.map(t => this.extractNameTag(t)));
+        }
+        let matched = 0;
+        let named = 0;
+        const out = rows.map(({ line, target }) => {
+            if (!target) return line;
+            matched++;
+            const name = this._nameTagCache.get(target.index) || "";
+            if (name && !/[\s`{}\[\]#]/.test(name)) {
+                named++;
+                return `${line.trim()} ${name}`;
+            }
+            return line;
+        });
+        const result = this._normalizeLines(out.join("\n"));
+        this._lstTextCache.set(file.index, result);
+        console.info(
+            `[PVF] ${file.name} 名称解析完成：引用 ${rows.length} 行，匹配 ${matched} 个文件，提取名称 ${named} 个，耗时 ${Date.now() - t0}ms` +
+                (missed.length ? `，未匹配示例：${missed.join(", ")}` : "")
+        );
+        return result;
+    }
+
+    // 查询 .lst 行中反引号引用路径对应的文件（decodeLstWithNames 解析时构建映射）
+    getLstRefTarget(file, ref) {
+        if (!file || ref == null) return null;
+        const map = this._lstRefMap.get(file.index);
+        return map ? map.get(ref) || null : null;
+    }
+
     // 文件类型: *.dat（dataType=1）等纯数字定长记录表
     // 通用 decodeToken 会把所有连续数字合并到同一行（_appendNumRun），对定长记录表不可读。
     // 这里按"连续 ID"自动探测每条记录的字段数：首字段为 ID，下一条记录 ID = 首条 ID + 1，
@@ -902,14 +1078,20 @@ class PvfArchive {
     setFileContent(fileIndex, text) {
         const file = this.files[fileIndex];
         if (!file) return;
-        const encoded = this.encodeContent(file, text);
+        // .lst 展示时行尾追加了引用文件的 [name] 名称，保存前必须剥离，避免名称被编码进 token 流
+        const encoded = this.encodeContent(file, this.isLstFile(file) ? stripLstNameAnnotations(text) : text);
         this._overlay.set(fileIndex, encoded);
         this._deleted.delete(fileIndex);
+        if (this._nameTagCache.has(fileIndex)) this._nameTagCache.delete(fileIndex);
+        this._lstTextCache.delete(fileIndex);
+        this._lstRefMap.delete(fileIndex);
     }
 
     setFileRawData(fileIndex, data) {
         this._overlay.set(fileIndex, data);
         this._deleted.delete(fileIndex);
+        this._lstTextCache.delete(fileIndex);
+        this._lstRefMap.delete(fileIndex);
     }
 
     async exportFile(file) {
@@ -954,6 +1136,11 @@ class PvfArchive {
         this._strCache.clear();
         this._strAOffsetCache = null;
         this._strWOffsetCache = null;
+        this._nameTagCache.clear();
+        this._lstTextCache.clear();
+        this._lstRefMap.clear();
+        this._pathIndex = null;
+        this._nameIndex = null;
         // Re-resolve all file names/paths with new encoding
         for (const file of this.files) {
             file.name = this.resolveString(file.nameOff);
@@ -985,6 +1172,10 @@ class PvfArchive {
         file.name = newName;
         file.fullpath = this._normalizePath(file.path, newName);
         this._renamed.add(fileIndex);
+        this._pathIndex = null;
+        this._nameIndex = null;
+        this._lstTextCache.clear();
+        this._lstRefMap.clear();
 
         return { oldFullpath, newFullpath: file.fullpath, oldName, newName };
     }
@@ -1007,6 +1198,10 @@ class PvfArchive {
         file.path = newPath;
         file.fullpath = this._normalizePath(newPath, file.name);
         this._renamed.add(fileIndex);
+        this._pathIndex = null;
+        this._nameIndex = null;
+        this._lstTextCache.clear();
+        this._lstRefMap.clear();
     }
 
     // ---- Rename folder: update path of all files under it ----
@@ -1198,6 +1393,10 @@ class PvfArchive {
             file.path = orig.path;
             file.fullpath = orig.fullpath;
             this._renamed.delete(fileIndex);
+            this._pathIndex = null;
+            this._nameIndex = null;
+            this._lstTextCache.clear();
+            this._lstRefMap.clear();
         }
     }
 
@@ -1217,6 +1416,10 @@ class PvfArchive {
             }
         }
         this._renamed.clear();
+        this._pathIndex = null;
+        this._nameIndex = null;
+        this._lstTextCache.clear();
+        this._lstRefMap.clear();
     }
 
     get modifiedCount() {
@@ -1480,7 +1683,7 @@ class PvfArchive {
         writeInt32LE(headerBytes, 40, hashBytes.length);
         writeInt32LE(headerBytes, 44, nameBytes.length);
         pvfDecrypt("HeaD", headerBytes, MAGIC_DECRYPT);
-        pvfDecryptGuard(headerBytes);
+        if (this._headerUsesGuard) pvfDecryptGuard(headerBytes);
 
         // Assemble: Header + Table + Hash + Name + GRPI + Body
         const totalSize = 0x30 + tableBytes.length + hashBytes.length + nameBytes.length + grpiBytes.length + bodyBytes.length;
@@ -1521,7 +1724,39 @@ class PvfArchive {
     }
 }
 
-export { PvfArchive, pvfDecrypt, pvfDecryptGuard, zlibCompress, zlibDecompress, formatBytes, buildFileTree, detectEncoding, sanitizeFilename };
+export { PvfArchive, pvfDecrypt, pvfDecryptGuard, zlibCompress, zlibDecompress, formatBytes, buildFileTree, detectEncoding, sanitizeFilename, stripLstNameAnnotations };
+
+// 从 PVF 脚本文本中提取 [name] 标签的字符串值（反引号串、{5=}/{7=} 标记或裸字符串）。
+// 用于 .lst 列表在行尾追加引用文件的缩略名称。
+function extractNameFromText(text) {
+    if (!text) return "";
+    const lines = String(text).split("\n");
+    for (let i = 0; i < lines.length; i++) {
+        const t = lines[i].trim();
+        if (/^\[name\]$/.test(t)) {
+            for (let j = i + 1; j < Math.min(lines.length, i + 6); j++) {
+                const s = lines[j].trim();
+                if (!s) continue;
+                if (s.startsWith("#")) continue;
+                const m = /^`((?:[^`]|``)*)`$/.exec(s);
+                if (m) return m[1].replace(/``/g, "`");
+                const m2 = /^\{[57]=`((?:[^`]|``)*)`\}$/.exec(s);
+                if (m2) return m2[1].replace(/``/g, "`");
+                // 裸字符串名称（type3 token）：紧邻 [name] 的非标签、非数字普通行
+                if (!s.startsWith("[") && !/^-?\d/.test(s)) return s;
+            }
+            return "";
+        }
+    }
+    return "";
+}
+
+// 剥离 .lst 增强解码追加在行尾的「缩略名称」，保留数字 token（数字与名称同形但不可剥离）。
+// 兼容 formatPvfText 产生的前导缩进。与 encodeTokenText 结合保证编辑保存不把名称编入 token 流。
+function stripLstNameAnnotations(text) {
+    if (!text) return text;
+    return String(text).replace(/^(\s*\d+\s+`(?:[^`]|``)*`)\s+([^\s`{}\[\]#]+)$/gm, (m, base, tail) => (/^-?\d+$/.test(tail) || /^-?\d*\.\d+$/.test(tail) ? m : base));
+}
 
 function formatBytes(n) {
     if (n < 1024) return n + " B";

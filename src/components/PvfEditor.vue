@@ -22,6 +22,17 @@ const ENCODINGS = [
     { value: "euc-kr", label: "EUC-KR (韩文)" }
 ];
 
+// 判断行内第 col 列是否落在反引号引用字符串中；命中返回引用路径（含反引号间原始内容）
+function refInLine(line, col) {
+    const re = /`(?:[^`]|``)*`/g;
+    let m;
+    while ((m = re.exec(line))) {
+        if (col >= m.index && col < re.lastIndex) return m[0].slice(1, -1).replace(/``/g, "`");
+        if (col < m.index) break;
+    }
+    return null;
+}
+
 export default {
     name: "PvfEditor",
     beforeRouteLeave(to, from, next) {
@@ -112,7 +123,9 @@ export default {
                 fileCount: h.fileCount,
                 groupCount: h.groupCount,
                 bodySize: formatBytes(h.bodySize),
-                totalOrig: formatBytes(totalOrig)
+                totalOrig: formatBytes(totalOrig),
+                format: this.archive.headerFormat,
+                formatLabel: this.archive.headerFormatLabel
             };
         },
         isEditable() {
@@ -132,6 +145,10 @@ export default {
             if (t === 1) return "脚本";
             if (t === 3) return "文本";
             return "二进制";
+        },
+        isLst() {
+            const f = this.currentFile;
+            return !!(f && this.archive && this.archive.isLstFile(f));
         },
         editLines() {
             return this.editText ? this.editText.split("\n") : [];
@@ -327,7 +344,10 @@ export default {
                 this.largeFileLineCount = 0;
                 this.loading = false;
                 this.$nextTick(() => this.updateContainerHeight());
-                this.addLog(`加载 ${file.name} 成功：${arch.header.fileCount} 文件，${arch.header.groupCount} 分块`, "success");
+                this.addLog(`加载 ${file.name} 成功：${arch.header.fileCount} 文件，${arch.header.groupCount} 分块，${arch.headerFormatLabel}`, "success");
+                console.info(
+                    `[PVF] 加载 ${file.name} 成功，文件标识：${arch.headerFormat}（${arch.headerFormatLabel}），保存导出将使用${arch.headerFormat === "guard" ? "Guard（0x55 XOR）" : "原版无 Guard"}包头加密规则`
+                );
             } catch (err) {
                 this.loading = false;
                 console.warn("PVF load failed:", err);
@@ -630,7 +650,19 @@ export default {
                     this._loadingFileIndex = null;
                     return;
                 }
-                const text = this.archive.decodeContent(file, data);
+                const text = await (async () => {
+                    if (this.archive.isLstFile(file)) {
+                        this.loadingMessage = "解析列表名称...";
+                        const t = await this.archive.decodeLstWithNames(file);
+                        if (this._loadingFileIndex !== file.index) {
+                            this._loadingFileIndex = null;
+                            return null;
+                        }
+                        return t;
+                    }
+                    return this.archive.decodeContent(file, data);
+                })();
+                if (text === null) return;
                 // 超大文件：跳过格式化/高亮/校验/全量 textarea 渲染，只读预览前 N 行
                 if (text.length > LARGE_FILE_CHAR_LIMIT) {
                     const lines = text.split("\n");
@@ -931,7 +963,17 @@ export default {
                             this.currentFile = file;
                             const data = await this.archive.getFileData(file);
                             if (data) {
-                                const text = this.archive.decodeContent(file, data);
+                                let text;
+                                if (this.archive.isLstFile(file)) {
+                                    this.loadingMessage = "解析列表名称...";
+                                    text = await this.archive.decodeLstWithNames(file);
+                                    if (this._loadingFileIndex !== file.index) {
+                                        this._loadingFileIndex = null;
+                                        return;
+                                    }
+                                } else {
+                                    text = this.archive.decodeContent(file, data);
+                                }
                                 const formatted = this.applyFormatting(text);
                                 this.originalText = formatted;
                                 this.editText = formatted;
@@ -1137,8 +1179,9 @@ export default {
             }
             const text = this.editText || "";
             const mode = this.highlightMode;
+            const isLst = this.isLst;
             // 缓存命中：文本与模式均未变化则跳过重复高亮（避免加载/编码切换等处重复计算）
-            if (this._hlCache && this._hlCache.text === text && this._hlCache.mode === mode) {
+            if (this._hlCache && this._hlCache.text === text && this._hlCache.mode === mode && this._hlCache.isLst === isLst) {
                 return;
             }
             let html;
@@ -1147,9 +1190,9 @@ export default {
             } else if (mode === "pvf") {
                 try {
                     const result = hljs.highlight(text, { language: "pvf" });
-                    html = this.annotateTagSpans(result.value);
+                    html = this.annotateRefs(this.grayLstNames(this.annotateTagSpans(result.value)));
                 } catch (e) {
-                    html = this.annotateTagSpans(this.escapeHtml(text));
+                    html = this.annotateRefs(this.grayLstNames(this.annotateTagSpans(this.escapeHtml(text))));
                 }
             } else if (mode === "xml") {
                 try {
@@ -1173,7 +1216,7 @@ export default {
                 html = htmlLines.join("\n");
             }
             html += "\n";
-            this._hlCache = { text, mode, html };
+            this._hlCache = { text, mode, isLst, html };
             this.highlightedHtml = html;
         },
         // 高亮文本 -> HTML（用于超大文件只读预览，不带折叠处理）
@@ -1181,7 +1224,7 @@ export default {
             if (!text) return "";
             const mode = this.highlightMode;
             try {
-                if (mode === "pvf") return this.annotateTagSpans(hljs.highlight(text, { language: "pvf" }).value);
+                if (mode === "pvf") return this.annotateRefs(this.grayLstNames(this.annotateTagSpans(hljs.highlight(text, { language: "pvf" }).value)));
                 if (mode === "xml") return this.annotateTagSpans(hljs.highlight(text, { language: "xml" }).value);
             } catch (e) {
                 /* fall through to escaped text */
@@ -1202,6 +1245,62 @@ export default {
         },
         escapeAttr(s) {
             return String(s).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        },
+        // .lst 增强解码在行尾追加的引用文件名称（裸词，高亮为 hljs-title）染为灰色，
+        // 与反引号字符串的引用路径区分开。仅对 .lst 文件生效。
+        grayLstNames(html) {
+            if (!this.isLst) return html;
+            return html.replace(
+                /(<span class="hljs-string">`(?:[^`]|``)*`<\/span>)(\s+)(<span class="hljs-number">[^<]*<\/span>)?<span class="hljs-title">([^<]*)<\/span>/g,
+                (m, strSpan, ws, numSpan, titleText) => {
+                    const nameText = (numSpan ? numSpan.replace(/<[^>]*>/g, "") : "") + titleText;
+                    return `${strSpan}${ws}<span class="hljs-pvf-name">${nameText}</span>`;
+                }
+            );
+        },
+        // 为 .lst 反引号引用路径注入 data-ref 属性（仅 .lst 文件），供大文件预览区点击快捷跳转
+        annotateRefs(html) {
+            if (!this.isLst) return html;
+            return html.replace(/<span class="hljs-string">(`(?:[^`]|``)*`)<\/span>/g, (m, bt) => {
+                const ref = bt.slice(1, -1).replace(/``/g, "`");
+                return `<span class="hljs-string hljs-pvf-ref" data-ref="${this.escapeAttr(ref)}">${bt}</span>`;
+            });
+        },
+        // 大文件预览区点击引用路径 -> 跳转对应文件
+        onHlClick(e) {
+            const el = e.target && e.target.closest ? e.target.closest("[data-ref]") : null;
+            if (!el) return;
+            const ref = el.getAttribute("data-ref");
+            if (!this.archive || !this.currentFile || ref == null) return;
+            const target = this.archive.getLstRefTarget(this.currentFile, ref);
+            if (target && !this.archive.isFileDeleted(target.index)) {
+                this.switchToFile(target);
+            } else {
+                this.addLog(`未找到引用文件：${ref}`, "error");
+            }
+        },
+        // 编辑区点击：命中反引号引用路径（.lst）时快捷跳转对应文件。
+        // 高亮层 pre 在 textarea 之下（pointer-events:none），无法直接命中，故按行列换算。
+        onEditorClick(e) {
+            if (!this.isLst) return;
+            const ta = this.$refs.editorEl;
+            if (!ta || !this.editText) return;
+            const m = this.getEditorMetrics();
+            if (!m) return;
+            const rect = ta.getBoundingClientRect();
+            const relX = e.clientX - rect.left;
+            const relY = e.clientY - rect.top;
+            const row = Math.floor((relY + ta.scrollTop - m.paddingTop) / m.lineHeight);
+            const col = Math.floor((relX + ta.scrollLeft - m.paddingLeft) / m.charWidth);
+            if (row < 0 || row >= this.editLines.length || col < 0) return;
+            const ref = refInLine(this.editLines[row], col);
+            if (!ref) return;
+            const target = this.archive && this.archive.getLstRefTarget(this.currentFile, ref);
+            if (target && !this.archive.isFileDeleted(target.index)) {
+                this.switchToFile(target);
+            } else {
+                this.addLog(`未找到引用文件：${ref}`, "error");
+            }
         },
         // ---- 标签浮窗：依据鼠标所在行判断是否为 [xxx] 标签 ----
         // 高亮层 pre 设有 pointer-events:none 且位于 textarea 之下，无法直接命中；
@@ -1278,7 +1377,12 @@ export default {
             let lineHeight = parseFloat(cs.lineHeight);
             if (isNaN(lineHeight) || lineHeight === 0) lineHeight = fontSize * 1.6;
             const paddingTop = parseFloat(cs.paddingTop) || 0;
-            this._editorMetrics = { fontSize, lineHeight, paddingTop };
+            const paddingLeft = parseFloat(cs.paddingLeft) || 0;
+            const canvas = document.createElement("canvas");
+            const ctx = canvas.getContext("2d");
+            ctx.font = `${cs.fontSize} ${cs.fontFamily}`;
+            const charWidth = ctx.measureText("0").width || fontSize * 0.6;
+            this._editorMetrics = { fontSize, lineHeight, paddingTop, paddingLeft, charWidth };
             return this._editorMetrics;
         },
         positionTooltip(e) {
@@ -1520,6 +1624,7 @@ export default {
                             <span class="pvf-topbar-title-text">{{ fileName }}</span>
                         </span>
                         <span v-if="headerStats" class="pvf-topbar-stats">
+                            <span :class="['pvf-format-badge', 'pvf-format-' + headerStats.format]" :title="'包头加密规则：' + headerStats.formatLabel">{{ headerStats.formatLabel }}</span>
                             {{ headerStats.fileCount.toLocaleString() }} 文件 · {{ headerStats.groupCount.toLocaleString() }} 分块 · {{ headerStats.bodySize }} / {{ headerStats.totalOrig }}
                         </span>
                         <div class="pvf-topbar-search">
@@ -1677,6 +1782,7 @@ export default {
                                             @beforeinput="onEditorBeforeInput"
                                             @mousemove="onEditorMouseMove"
                                             @mouseleave="onEditorMouseLeave"
+                                            @click="onEditorClick"
                                             placeholder="编辑文件内容..."></textarea>
                                     </div>
                                 </div>
@@ -1704,7 +1810,7 @@ export default {
                                 <div class="pvf-largefile-banner">
                                     文件过大（{{ largeFileLineCount.toLocaleString() }} 行），仅预览前 {{ largeFilePreviewLines.toLocaleString() }} 行。完整内容请使用右键导出。
                                 </div>
-                                <pre class="pvf-largefile-preview" v-html="largeFilePreviewHtml"></pre>
+                                <pre class="pvf-largefile-preview" v-html="largeFilePreviewHtml" @click="onHlClick"></pre>
                             </div>
                             <div v-else-if="currentFile" class="pvf-editor-area">
                                 <div class="pvf-readonly">
@@ -2014,6 +2120,26 @@ export default {
     font-size: 0.75rem;
     color: var(--text-muted);
     white-space: nowrap;
+}
+.pvf-format-badge {
+    display: inline-block;
+    padding: 1px 7px;
+    border-radius: 9px;
+    font-size: 0.68rem;
+    font-weight: 600;
+    vertical-align: middle;
+    border: 1px solid;
+    margin-right: 2px;
+}
+.pvf-format-guard {
+    color: #e8a33d;
+    border-color: #e8a33d55;
+    background: #e8a33d18;
+}
+.pvf-format-original {
+    color: #3d9de8;
+    border-color: #3d9de855;
+    background: #3d9de818;
 }
 .pvf-topbar-right {
     display: flex;
@@ -2650,6 +2776,25 @@ export default {
 .pvf-code-highlight :deep(.hljs-title),
 .pvf-largefile-preview :deep(.hljs-title) {
     color: #9cdcfe;
+}
+.pvf-code-highlight :deep(.hljs-pvf-name),
+.pvf-largefile-preview :deep(.hljs-pvf-name) {
+    color: #9a9a9a;
+}
+.pvf-code-highlight :deep(.hljs-pvf-ref),
+.pvf-largefile-preview :deep(.hljs-pvf-ref) {
+    cursor: pointer;
+    text-decoration: underline;
+    text-decoration-color: rgba(206, 145, 120, 0.45);
+    text-underline-offset: 3px;
+}
+.pvf-largefile-preview :deep(.hljs-pvf-ref:hover),
+.pvf-code-highlight :deep(.hljs-pvf-ref:hover) {
+    background: rgba(206, 145, 120, 0.15);
+}
+.pvf-largefile-preview :deep(.pvf-ref-hint) {
+    color: var(--text-muted);
+    font-size: 0.72rem;
 }
 .pvf-code-highlight :deep(.hljs-char.escape),
 .pvf-largefile-preview :deep(.hljs-char.escape) {
