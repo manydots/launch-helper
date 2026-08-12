@@ -17,7 +17,7 @@ const LARGE_FILE_PREVIEW_LINES = 2000;
 // 大文件全量虚拟滚动：固定行高（与 .pvf-largefile-cline/.gline 的 CSS line-height 一致）与渲染缓冲行数
 const LARGE_VIRTUAL_LINE_H = 20;
 const LARGE_VIRTUAL_BUFFER = 20;
-const LARGE_ROW_CACHE_LIMIT = 6000;
+const LARGE_ROW_CACHE_LIMIT = 40000;
 
 const ENCODINGS = [
     { value: "utf-8", label: "UTF-8" },
@@ -350,6 +350,8 @@ export default {
         if (this._searchTimer) clearTimeout(this._searchTimer);
         if (this._largeSearchTimer) clearTimeout(this._largeSearchTimer);
         if (this._largeResizeObserver) this._largeResizeObserver.disconnect();
+        if (this._resizeRaf) cancelAnimationFrame(this._resizeRaf);
+        if (this._largeResizeRaf) cancelAnimationFrame(this._largeResizeRaf);
         this.archive = null;
     },
     methods: {
@@ -1190,7 +1192,13 @@ export default {
             }
         },
         onWindowResize() {
-            this.updateContainerHeight();
+            // 合并同帧内的多次 resize 事件，只在下一帧处理一次，避免窗口拖拽期间反复触发
+            // 强制 reflow（读取 clientHeight）+ 列表渲染造成的布局抖动。
+            if (this._resizeRaf) return;
+            this._resizeRaf = requestAnimationFrame(() => {
+                this._resizeRaf = 0;
+                this.updateContainerHeight();
+            });
         },
         // ---- Overlay editor: scroll sync + tab + highlight ----
         syncScroll() {
@@ -1341,9 +1349,7 @@ export default {
                 try {
                     const data = await this.archive.getFileData(this.currentFile);
                     if (data) {
-                        const text = this.archive.isLstFile(this.currentFile)
-                            ? await this.archive.decodeLstWithNames(this.currentFile)
-                            : this.archive.decodeContent(this.currentFile, data);
+                        const text = this.archive.isLstFile(this.currentFile) ? await this.archive.decodeLstWithNames(this.currentFile) : this.archive.decodeContent(this.currentFile, data);
                         if (text) this.largeFullLines = text.split("\n");
                     }
                 } catch (err) {
@@ -1361,8 +1367,13 @@ export default {
                     this.addLog(`[虚拟滚动] 加载完成：容器高=${el.clientHeight}px 可滚动高=${el.scrollHeight}px 总行=${this.largeFullLines.length}`, "info");
                     if (this._largeResizeObserver) this._largeResizeObserver.disconnect();
                     this._largeResizeObserver = new ResizeObserver(() => {
-                        const h = el.clientHeight;
-                        if (h > 0 && h !== this.largeViewHeight) this.largeViewHeight = h;
+                        // 同一帧内的多次尺寸回调合并为一次视图重算，避免 DevTools 挤压视口时高频重渲染
+                        if (this._largeResizeRaf) return;
+                        this._largeResizeRaf = requestAnimationFrame(() => {
+                            this._largeResizeRaf = 0;
+                            const h = el.clientHeight;
+                            if (h > 0 && h !== this.largeViewHeight) this.largeViewHeight = h;
+                        });
                     });
                     this._largeResizeObserver.observe(el);
                 }
@@ -1379,6 +1390,8 @@ export default {
                 this._largeResizeObserver.disconnect();
                 this._largeResizeObserver = null;
             }
+            if (this._largeResizeRaf) cancelAnimationFrame(this._largeResizeRaf);
+            this._largeResizeRaf = 0;
         },
         onLargeScroll(e) {
             const el = e.target;
@@ -1857,9 +1870,10 @@ export default {
                             <span class="pvf-tag-color-label">标签色</span>
                             <input type="color" :value="tagColor" @input="onTagColorChange" />
                         </label>
-                        <select v-if="archive" class="pvf-encoding-select" :value="strEncoding" title="字符串编码（影响 Type 1 脚本内容与文件名解析）" @change="changeEncoding($event.target.value)">
+                        <!-- 无用 -->
+                        <!-- <select v-if="archive" class="pvf-encoding-select" :value="strEncoding" title="字符串编码（影响 Type 1 脚本内容与文件名解析）" @change="changeEncoding($event.target.value)">
                             <option v-for="enc in ENCODINGS" :key="enc.value" :value="enc.value">{{ enc.label }}</option>
-                        </select>
+                        </select> -->
                         <span v-if="hasChanges" class="pvf-mod-count">
                             <span v-if="modifiedCount > 0">{{ modifiedCount }} 修改</span>
                             <span v-if="modifiedCount > 0 && deletedCount > 0"> · </span>
@@ -2034,30 +2048,50 @@ export default {
                                         <circle cx="11" cy="11" r="8"></circle>
                                         <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
                                     </svg>
-                                    <input
-                                        v-model="largeSearchQuery"
-                                        type="text"
-                                        class="pvf-search-input"
-                                        placeholder="搜索内容..."
-                                        @input="onLargeSearchInput"
-                                        @keydown.enter.prevent="nextLargeMatch"
-                                        @keydown.shift.enter.prevent="prevLargeMatch"
-                                        @keydown.esc.prevent="clearLargeSearch"
-                                    />
+                                    <div class="pvf-largefile-search-wrap">
+                                        <input
+                                            v-model="largeSearchQuery"
+                                            type="text"
+                                            class="pvf-search-input"
+                                            placeholder="搜索内容..."
+                                            @input="onLargeSearchInput"
+                                            @keydown.enter.prevent="nextLargeMatch"
+                                            @keydown.shift.enter.prevent="prevLargeMatch"
+                                            @keydown.esc.prevent="clearLargeSearch" />
+                                        <button v-if="largeSearchQuery" type="button" class="pvf-search-clear" title="清除 (Esc)" @click="clearLargeSearch">
+                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+                                                <line x1="6" y1="6" x2="18" y2="18"></line>
+                                                <line x1="18" y1="6" x2="6" y2="18"></line>
+                                            </svg>
+                                        </button>
+                                    </div>
                                     <span v-if="largeSearchNameLoading" class="pvf-search-count loading">加载名称映射...</span>
                                     <span v-else-if="largeSearchMatches.length" class="pvf-search-count">{{ largeSearchIndex + 1 }} / {{ largeSearchMatches.length }}</span>
                                     <span v-else-if="largeSearchQuery.trim()" class="pvf-search-count none">无匹配</span>
                                     <button class="pvf-search-nav" title="上一个 (Shift+Enter)" :disabled="!largeSearchMatches.length" @click="prevLargeMatch">↑</button>
                                     <button class="pvf-search-nav" title="下一个 (Enter)" :disabled="!largeSearchMatches.length" @click="nextLargeMatch">↓</button>
-                                    <button class="pvf-search-clear" title="清除 (Esc)" @click="clearLargeSearch">×</button>
                                 </div>
                                 <pre v-if="!largeFullView" class="pvf-largefile-preview" v-html="largeFilePreviewHtml" @click="onHlClick"></pre>
                                 <div v-else class="pvf-largefile-vscroll">
                                     <div class="pvf-largefile-gutter" aria-hidden="true">
-                                        <div v-for="row in largeVisibleRows" :key="'g' + row.no" class="pvf-largefile-gline" :class="{ current: row.current }" :style="{ top: (row.top - largeScrollTop) + 'px' }">{{ row.no }}</div>
+                                        <div
+                                            v-for="row in largeVisibleRows"
+                                            :key="'g' + row.no"
+                                            class="pvf-largefile-gline"
+                                            :class="{ current: row.current }"
+                                            :style="{ top: row.top - largeScrollTop + 'px' }">
+                                            {{ row.no }}
+                                        </div>
                                     </div>
                                     <div ref="largeVScrollEl" class="pvf-largefile-preview pvf-largefile-vcontent" @scroll.passive="onLargeScroll">
-                                        <div v-for="row in largeVisibleRows" :key="'c' + row.no" class="pvf-largefile-cline" :class="{ current: row.current }" :style="{ top: row.top + 'px' }" v-html="row.html" @click="onHlClick"></div>
+                                        <div
+                                            v-for="row in largeVisibleRows"
+                                            :key="'c' + row.no"
+                                            class="pvf-largefile-cline"
+                                            :class="{ current: row.current }"
+                                            :style="{ top: row.top + 'px' }"
+                                            v-html="row.html"
+                                            @click="onHlClick"></div>
                                         <div class="pvf-largefile-spacer" :style="{ height: largeTotalHeight + 'px' }"></div>
                                     </div>
                                 </div>
@@ -2575,11 +2609,11 @@ export default {
 }
 .pvf-search-clear {
     position: absolute;
+    inset-block: 0;
     right: 6px;
-    top: 50%;
-    transform: translateY(-50%);
     width: 16px;
     height: 16px;
+    margin: auto;
     padding: 0;
     border: none;
     background: transparent;
@@ -2589,12 +2623,15 @@ export default {
     align-items: center;
     justify-content: center;
     border-radius: 50%;
+    line-height: 1;
+    box-sizing: border-box;
 }
 .pvf-search-clear:hover {
     color: var(--text);
     background: var(--border);
 }
 .pvf-search-clear svg {
+    display: block;
     width: 12px;
     height: 12px;
 }
@@ -3145,10 +3182,14 @@ export default {
     color: var(--text-muted);
     flex-shrink: 0;
 }
-.pvf-search-input {
+.pvf-largefile-search-wrap {
+    position: relative;
     flex: 1;
     min-width: 0;
-    padding: 4px 8px;
+}
+.pvf-search-input {
+    width: 100%;
+    padding: 4px 28px 4px 8px;
     border: 1px solid var(--border);
     border-radius: 6px;
     background: var(--bg);
@@ -3172,8 +3213,7 @@ export default {
 .pvf-search-count.loading {
     color: var(--accent);
 }
-.pvf-search-nav,
-.pvf-search-clear {
+.pvf-search-nav {
     flex-shrink: 0;
     width: 24px;
     height: 24px;
@@ -3188,8 +3228,7 @@ export default {
     cursor: pointer;
     transition: all 0.2s;
 }
-.pvf-search-nav:hover:not(:disabled),
-.pvf-search-clear:hover {
+.pvf-search-nav:hover:not(:disabled) {
     color: var(--text);
     background: rgba(255, 255, 255, 0.06);
 }
