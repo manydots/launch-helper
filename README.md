@@ -56,7 +56,7 @@
 |---|---|---|
 | `VITE_GATEWAY_ENABLED` | 是否启用网关认证与服务状态探测 | `false` |
 | `VITE_GATEWAY_TARGET` | 开发代理网关主机地址（仅 dev server 生效） | `""` |
-| `VITE_GATEWAY_PORT` | 开发代理网关端口（仅 dev server 生效） | `80` |
+| `VITE_GATEWAY_PORT` | 开发代理网关端口（仅 dev server 生效） | `8000` |
 | `VITE_GATEWAY_PATH` | WebSocket 代理路径（需以 `/` 开头） | `/gateway` |
 | `VITE_PLATFORM_CHECK` | 是否校验 Windows 平台 | `true` |
 | `VITE_HEALTH_INTERVAL` | 服务状态轮询间隔（秒） | `5` |
@@ -73,9 +73,9 @@ yarn dev
 ```
 
 - Vite 模式 `development`，加载 `.env` + `.env.development`
-- `VITE_GATEWAY_ENABLED=true`，`VITE_GATEWAY_TARGET=127.0.0.1`，`VITE_GATEWAY_PORT=80`，`VITE_GATEWAY_PATH=/gateway`
-- `vite-plugin-gateway-bridge.js` 在 dev server 挂载 `VITE_GATEWAY_PATH`（默认 `/gateway`），将浏览器 WebSocket 桥接到后端 TCP `127.0.0.1:80`（4 字节大端长度前缀帧）
-- 需要后端网关监听 `127.0.0.1:80`
+- `VITE_GATEWAY_ENABLED=true`，`VITE_GATEWAY_TARGET=127.0.0.1`，`VITE_GATEWAY_PORT=8000`，`VITE_GATEWAY_PATH=/gateway`
+- `vite-plugin-gateway-bridge.js` 在 dev server 挂载 `VITE_GATEWAY_PATH`（默认 `/gateway`），将浏览器 WebSocket 桥接到后端 TCP `127.0.0.1:8000`（4 字节大端长度前缀帧）
+- 需要后端网关监听 `127.0.0.1:8000`
 - `VITE_PLATFORM_CHECK=false`，方便在非 Windows 上调试界面
 
 ### 二、配合网关部署
@@ -219,7 +219,7 @@ vite-plugin-gateway-bridge.js     # dev server WS↔TCP 桥接插件
 
 | 命令 | 模式 | 网关 | 用途 |
 |---|---|---|---|
-| `yarn dev` | development | 桥接 `127.0.0.1:80` | 本地开发 |
+| `yarn dev` | development | 桥接 `127.0.0.1:8000` | 本地开发 |
 | `yarn build` | production | 直连 `VITE_GATEWAY_PATH` | 配合网关部署 |
 | `yarn workflow` | workflow | 关闭 | GitHub Pages 部署 |
 

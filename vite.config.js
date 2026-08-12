@@ -10,7 +10,7 @@ import gatewayBridge from "./vite-plugin-gateway-bridge.js";
 export default defineConfig(({ mode }) => {
     const env = loadEnv(mode, process.cwd());
     const gatewayHost = env.VITE_GATEWAY_TARGET || "127.0.0.1";
-    const gatewayPort = env.VITE_GATEWAY_PORT || "80";
+    const gatewayPort = env.VITE_GATEWAY_PORT || "8000";
     const gatewayPath = env.VITE_GATEWAY_PATH || "/gateway";
     const gatewayTarget = `${gatewayHost}:${gatewayPort}`;
 
