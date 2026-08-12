@@ -14,6 +14,10 @@ hljs.registerLanguage("xml", xmlLang);
 // 10w 行级文件会卡死界面），改为只读预览前 N 行。
 const LARGE_FILE_CHAR_LIMIT = 500000;
 const LARGE_FILE_PREVIEW_LINES = 2000;
+// 大文件全量虚拟滚动：固定行高（与 .pvf-largefile-cline/.gline 的 CSS line-height 一致）与渲染缓冲行数
+const LARGE_VIRTUAL_LINE_H = 20;
+const LARGE_VIRTUAL_BUFFER = 20;
+const LARGE_ROW_CACHE_LIMIT = 6000;
 
 const ENCODINGS = [
     { value: "utf-8", label: "UTF-8" },
@@ -75,6 +79,15 @@ export default {
             largeFilePreviewHtml: "",
             largeFileLineCount: 0,
             largeFilePreviewLines: LARGE_FILE_PREVIEW_LINES,
+            largeFullLines: [],
+            largeFullView: false,
+            largeFullLoading: false,
+            largeScrollTop: 0,
+            largeViewHeight: 0,
+            largeSearchQuery: "",
+            largeSearchMatches: [],
+            largeSearchIndex: -1,
+            largeSearchNameLoading: false,
             refreshKey: 0,
             rowHeight: 24,
             ENCODINGS,
@@ -152,6 +165,28 @@ export default {
         },
         editLines() {
             return this.editText ? this.editText.split("\n") : [];
+        },
+        // ---- 大文件全量虚拟滚动 ----
+        largeTotalHeight() {
+            return this.largeFullLines.length * LARGE_VIRTUAL_LINE_H;
+        },
+        largeVisibleRows() {
+            const lines = this.largeFullLines;
+            const total = lines.length;
+            if (!total) return [];
+            const viewH = this.largeViewHeight > 0 ? this.largeViewHeight : 300;
+            const start = Math.max(0, Math.floor(this.largeScrollTop / LARGE_VIRTUAL_LINE_H) - LARGE_VIRTUAL_BUFFER);
+            const end = Math.min(total, Math.ceil((this.largeScrollTop + viewH) / LARGE_VIRTUAL_LINE_H) + LARGE_VIRTUAL_BUFFER);
+            const cur = this.largeSearchIndex >= 0 ? this.largeSearchMatches[this.largeSearchIndex] : -1;
+            const rows = [];
+            const activeQ = this.largeSearchQuery.trim();
+            for (let i = start; i < end; i++) {
+                const isCurrent = i === cur;
+                let html = this._largeRowHtml(i);
+                if (isCurrent && activeQ) html = this._markLargeSearch(html);
+                rows.push({ no: i + 1, top: i * LARGE_VIRTUAL_LINE_H, html, current: isCurrent });
+            }
+            return rows;
         },
         foldableLines() {
             const lines = this.editLines;
@@ -298,6 +333,8 @@ export default {
         }
     },
     mounted() {
+        // 大文件行高亮缓存：非响应式（避免 computed 内 set 触发响应式失效循环）
+        this.largeRowCache = new Map();
         window.addEventListener("keydown", this.onWindowKeydown);
         window.addEventListener("resize", this.onWindowResize);
         window.addEventListener("click", this.hideContextMenu);
@@ -311,6 +348,8 @@ export default {
         if (this.highlightTimer) clearTimeout(this.highlightTimer);
         if (this.validationTimer) clearTimeout(this.validationTimer);
         if (this._searchTimer) clearTimeout(this._searchTimer);
+        if (this._largeSearchTimer) clearTimeout(this._largeSearchTimer);
+        if (this._largeResizeObserver) this._largeResizeObserver.disconnect();
         this.archive = null;
     },
     methods: {
@@ -627,6 +666,17 @@ export default {
             this.isLargeFile = false;
             this.largeFilePreviewHtml = "";
             this.largeFileLineCount = 0;
+            this.largeFullLines = [];
+            this.largeFullView = false;
+            this.largeFullLoading = false;
+            this.largeScrollTop = 0;
+            this.largeViewHeight = 0;
+            this.clearLargeSearch();
+            this.largeRowCache.clear();
+            if (this._largeResizeObserver) {
+                this._largeResizeObserver.disconnect();
+                this._largeResizeObserver = null;
+            }
 
             if (file.isDir) {
                 this.originalText = "[目录标记]";
@@ -663,9 +713,11 @@ export default {
                     return this.archive.decodeContent(file, data);
                 })();
                 if (text === null) return;
-                // 超大文件：跳过格式化/高亮/校验/全量 textarea 渲染，只读预览前 N 行
+                // 超大文件：跳过格式化/高亮/校验/全量 textarea 渲染，只读预览前 N 行；
+                // 保存全量行数组，供「加载全部内容」进入虚拟滚动浏览时零二次解码复用。
                 if (text.length > LARGE_FILE_CHAR_LIMIT) {
                     const lines = text.split("\n");
+                    this.largeFullLines = lines;
                     const previewText = lines.slice(0, LARGE_FILE_PREVIEW_LINES).join("\n");
                     const formatted = this.applyFormatting(previewText);
                     this.isLargeFile = true;
@@ -1279,6 +1331,165 @@ export default {
                 this.addLog(`未找到引用文件：${ref}`, "error");
             }
         },
+        // ---- 大文件全量虚拟滚动 ----
+        // 「加载全部内容」：复用 loadFileContent 大文件分支已保存的全量行数组，进入虚拟滚动视图
+        async loadLargeFileFull() {
+            if (this.largeFullLoading) return;
+            if (!this.largeFullLines.length && this.currentFile) {
+                // 防御：极端情况下全量行缺失，重新解码一次
+                this.largeFullLoading = true;
+                try {
+                    const data = await this.archive.getFileData(this.currentFile);
+                    if (data) {
+                        const text = this.archive.isLstFile(this.currentFile)
+                            ? await this.archive.decodeLstWithNames(this.currentFile)
+                            : this.archive.decodeContent(this.currentFile, data);
+                        if (text) this.largeFullLines = text.split("\n");
+                    }
+                } catch (err) {
+                    this.addLog(`加载全量内容失败：${err.message || err}`, "error");
+                    this.largeFullLoading = false;
+                    return;
+                }
+            }
+            this.largeFullView = true;
+            this.$nextTick(() => {
+                const el = this.$refs.largeVScrollEl;
+                if (el) {
+                    this.largeViewHeight = el.clientHeight;
+                    el.scrollTop = 0;
+                    this.addLog(`[虚拟滚动] 加载完成：容器高=${el.clientHeight}px 可滚动高=${el.scrollHeight}px 总行=${this.largeFullLines.length}`, "info");
+                    if (this._largeResizeObserver) this._largeResizeObserver.disconnect();
+                    this._largeResizeObserver = new ResizeObserver(() => {
+                        const h = el.clientHeight;
+                        if (h > 0 && h !== this.largeViewHeight) this.largeViewHeight = h;
+                    });
+                    this._largeResizeObserver.observe(el);
+                }
+                this.largeScrollTop = 0;
+                this.largeFullLoading = false;
+            });
+        },
+        exitLargeFileFull() {
+            this.largeFullView = false;
+            this.largeScrollTop = 0;
+            this.largeViewHeight = 0;
+            this.clearLargeSearch();
+            if (this._largeResizeObserver) {
+                this._largeResizeObserver.disconnect();
+                this._largeResizeObserver = null;
+            }
+        },
+        onLargeScroll(e) {
+            const el = e.target;
+            this.largeScrollTop = el.scrollTop;
+            const h = el.clientHeight;
+            if (h > 0 && h !== this.largeViewHeight) this.largeViewHeight = h;
+            if (!this._largeScrollLogCount) this._largeScrollLogCount = 0;
+            if (this._largeScrollLogCount < 5) {
+                this.addLog(`[虚拟滚动] scrollTop=${el.scrollTop} viewH=${this.largeViewHeight} rows=${this.largeVisibleRows.length}`, "info");
+                this._largeScrollLogCount++;
+            }
+        },
+        // ---- 大文件全量搜索 ----
+        onLargeSearchInput() {
+            if (this._largeSearchTimer) clearTimeout(this._largeSearchTimer);
+            this._largeSearchTimer = setTimeout(() => this.runLargeSearch(), 300);
+        },
+        // 搜索：原始行子串匹配；未命中时用 name 字符串表映射增强（如 `name_97` -> 中文名称）再匹配
+        async runLargeSearch() {
+            const q = this.largeSearchQuery.trim();
+            this.largeSearchMatches = [];
+            this.largeSearchIndex = -1;
+            if (!q) return;
+            let strMap = null;
+            if (this.archive) {
+                if (!this.largeSearchNameLoading) this.largeSearchNameLoading = true;
+                try {
+                    strMap = await this.archive.getStrNameMap();
+                } catch (err) {
+                    this.addLog(`加载名称映射失败：${err.message || err}`, "error");
+                }
+                this.largeSearchNameLoading = false;
+            }
+            const lines = this.largeFullLines;
+            const matches = [];
+            const hasMap = strMap && strMap.size > 0;
+            const reKey = /[A-Za-z_][A-Za-z0-9_]*_\d+/gi;
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i];
+                if (line.includes(q)) {
+                    matches.push(i);
+                    continue;
+                }
+                if (hasMap && line.replace(reKey, w => strMap.get(w) || w).includes(q)) matches.push(i);
+            }
+            this.largeSearchMatches = matches;
+            this._jumpToLargeMatch(matches.length ? 0 : -1);
+            this.addLog(`搜索「${q}」：${matches.length} 处匹配`, matches.length ? "info" : "error");
+        },
+        // 跳转到第 idx 个匹配行（滚动画中并高亮）
+        _jumpToLargeMatch(idx) {
+            this.largeSearchIndex = idx;
+            const lineIndex = idx >= 0 ? this.largeSearchMatches[idx] : -1;
+            if (lineIndex < 0) return;
+            const el = this.$refs.largeVScrollEl;
+            if (!el) return;
+            const viewH = this.largeViewHeight > 0 ? this.largeViewHeight : 300;
+            const target = Math.max(0, lineIndex * LARGE_VIRTUAL_LINE_H - Math.floor(viewH / 2) + LARGE_VIRTUAL_LINE_H / 2);
+            el.scrollTop = target;
+        },
+        nextLargeMatch() {
+            const n = this.largeSearchMatches.length;
+            if (!n) return;
+            this._jumpToLargeMatch((this.largeSearchIndex + 1) % n);
+        },
+        prevLargeMatch() {
+            const n = this.largeSearchMatches.length;
+            if (!n) return;
+            this._jumpToLargeMatch((this.largeSearchIndex - 1 + n) % n);
+        },
+        clearLargeSearch() {
+            if (this._largeSearchTimer) clearTimeout(this._largeSearchTimer);
+            this.largeSearchQuery = "";
+            this.largeSearchMatches = [];
+            this.largeSearchIndex = -1;
+            this.largeSearchNameLoading = false;
+        },
+        // 单行高亮渲染（含 .lst 引用标注/灰色名称），按行号 LRU 缓存
+        _largeRowHtml(i) {
+            const no = i + 1;
+            let html = this.largeRowCache.get(no);
+            if (html !== undefined) return html;
+            const line = this.largeFullLines[i] || "";
+            const mode = this.highlightMode;
+            try {
+                if (mode === "pvf") html = hljs.highlight(line, { language: "pvf" }).value;
+                else if (mode === "xml") html = hljs.highlight(line, { language: "xml" }).value;
+                else html = this.escapeHtml(line);
+            } catch (err) {
+                html = this.escapeHtml(line);
+            }
+            html = this.annotateTagSpans(html);
+            if (this.isLst) {
+                html = this.grayLstNames(html);
+                html = this.annotateRefs(html);
+            }
+            if (this.largeRowCache.size >= LARGE_ROW_CACHE_LIMIT) {
+                const first = this.largeRowCache.keys().next().value;
+                if (first !== undefined) this.largeRowCache.delete(first);
+            }
+            this.largeRowCache.set(no, html);
+            return html;
+        },
+        // 当前匹配行内，对搜索词注入 <mark> 高亮（大小写不敏感，仅首个命中）
+        _markLargeSearch(html) {
+            const q = this.largeSearchQuery.trim();
+            if (!q) return html;
+            const idx = html.toUpperCase().indexOf(q.toUpperCase());
+            if (idx < 0) return html;
+            return html.slice(0, idx) + "<mark>" + html.slice(idx, idx + q.length) + "</mark>" + html.slice(idx + q.length);
+        },
         // 编辑区点击：命中反引号引用路径（.lst）时快捷跳转对应文件。
         // 高亮层 pre 在 textarea 之下（pointer-events:none），无法直接命中，故按行列换算。
         onEditorClick(e) {
@@ -1808,9 +2019,48 @@ export default {
                             </div>
                             <div v-else-if="currentFile && isLargeFile" class="pvf-editor-area pvf-largefile">
                                 <div class="pvf-largefile-banner">
-                                    文件过大（{{ largeFileLineCount.toLocaleString() }} 行），仅预览前 {{ largeFilePreviewLines.toLocaleString() }} 行。完整内容请使用右键导出。
+                                    文件过大（{{ largeFileLineCount.toLocaleString() }} 行）。
+                                    <template v-if="!largeFullView">
+                                        仅预览前 {{ largeFilePreviewLines.toLocaleString() }} 行。
+                                        <button class="pvf-largefile-btn" @click="loadLargeFileFull" :disabled="largeFullLoading">{{ largeFullLoading ? "加载中..." : "加载全部内容" }}</button>
+                                    </template>
+                                    <template v-else>
+                                        已加载全部内容（虚拟滚动浏览，点击反引号引用可跳转）。
+                                        <button class="pvf-largefile-btn" @click="exitLargeFileFull">收起为预览</button>
+                                    </template>
                                 </div>
-                                <pre class="pvf-largefile-preview" v-html="largeFilePreviewHtml" @click="onHlClick"></pre>
+                                <div class="pvf-largefile-search" v-if="largeFullView">
+                                    <svg class="pvf-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <circle cx="11" cy="11" r="8"></circle>
+                                        <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                                    </svg>
+                                    <input
+                                        v-model="largeSearchQuery"
+                                        type="text"
+                                        class="pvf-search-input"
+                                        placeholder="搜索内容..."
+                                        @input="onLargeSearchInput"
+                                        @keydown.enter.prevent="nextLargeMatch"
+                                        @keydown.shift.enter.prevent="prevLargeMatch"
+                                        @keydown.esc.prevent="clearLargeSearch"
+                                    />
+                                    <span v-if="largeSearchNameLoading" class="pvf-search-count loading">加载名称映射...</span>
+                                    <span v-else-if="largeSearchMatches.length" class="pvf-search-count">{{ largeSearchIndex + 1 }} / {{ largeSearchMatches.length }}</span>
+                                    <span v-else-if="largeSearchQuery.trim()" class="pvf-search-count none">无匹配</span>
+                                    <button class="pvf-search-nav" title="上一个 (Shift+Enter)" :disabled="!largeSearchMatches.length" @click="prevLargeMatch">↑</button>
+                                    <button class="pvf-search-nav" title="下一个 (Enter)" :disabled="!largeSearchMatches.length" @click="nextLargeMatch">↓</button>
+                                    <button class="pvf-search-clear" title="清除 (Esc)" @click="clearLargeSearch">×</button>
+                                </div>
+                                <pre v-if="!largeFullView" class="pvf-largefile-preview" v-html="largeFilePreviewHtml" @click="onHlClick"></pre>
+                                <div v-else class="pvf-largefile-vscroll">
+                                    <div class="pvf-largefile-gutter" aria-hidden="true">
+                                        <div v-for="row in largeVisibleRows" :key="'g' + row.no" class="pvf-largefile-gline" :class="{ current: row.current }" :style="{ top: (row.top - largeScrollTop) + 'px' }">{{ row.no }}</div>
+                                    </div>
+                                    <div ref="largeVScrollEl" class="pvf-largefile-preview pvf-largefile-vcontent" @scroll.passive="onLargeScroll">
+                                        <div v-for="row in largeVisibleRows" :key="'c' + row.no" class="pvf-largefile-cline" :class="{ current: row.current }" :style="{ top: row.top + 'px' }" v-html="row.html" @click="onHlClick"></div>
+                                        <div class="pvf-largefile-spacer" :style="{ height: largeTotalHeight + 'px' }"></div>
+                                    </div>
+                                </div>
                             </div>
                             <div v-else-if="currentFile" class="pvf-editor-area">
                                 <div class="pvf-readonly">
@@ -2859,6 +3109,157 @@ export default {
     overflow: auto;
     white-space: pre;
     user-select: text;
+}
+.pvf-largefile-btn {
+    margin-left: 8px;
+    padding: 2px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: rgba(91, 140, 255, 0.12);
+    color: var(--accent);
+    font-size: 0.72rem;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+.pvf-largefile-btn:hover:not(:disabled) {
+    background: rgba(91, 140, 255, 0.24);
+}
+.pvf-largefile-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+/* ---- 大文件全量浏览：虚拟滚动（固定行高，见 LARGE_VIRTUAL_LINE_H） ---- */
+/* ---- 大文件全量浏览：搜索工具条 ---- */
+.pvf-largefile-search {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    background: var(--bg-2);
+    border-bottom: 1px solid var(--border);
+}
+.pvf-largefile-search .pvf-search-icon {
+    width: 14px;
+    height: 14px;
+    color: var(--text-muted);
+    flex-shrink: 0;
+}
+.pvf-search-input {
+    flex: 1;
+    min-width: 0;
+    padding: 4px 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 0.74rem;
+    outline: none;
+    box-sizing: border-box;
+}
+.pvf-search-input:focus {
+    border-color: var(--accent);
+}
+.pvf-search-count {
+    flex-shrink: 0;
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+.pvf-search-count.none {
+    color: var(--error);
+}
+.pvf-search-count.loading {
+    color: var(--accent);
+}
+.pvf-search-nav,
+.pvf-search-clear {
+    flex-shrink: 0;
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+.pvf-search-nav:hover:not(:disabled),
+.pvf-search-clear:hover {
+    color: var(--text);
+    background: rgba(255, 255, 255, 0.06);
+}
+.pvf-search-nav:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+.pvf-largefile-gline.current {
+    background: rgba(91, 140, 255, 0.3);
+    color: var(--text);
+    font-weight: 600;
+}
+.pvf-largefile-cline.current {
+    background: rgba(91, 140, 255, 0.18);
+    box-shadow: inset 2px 0 0 var(--accent);
+}
+.pvf-largefile-cline mark {
+    background: rgba(255, 196, 0, 0.4);
+    color: inherit;
+    border-radius: 2px;
+    padding: 0 1px;
+}
+.pvf-largefile-vscroll {
+    flex: 1;
+    display: flex;
+    overflow: hidden;
+    min-height: 0;
+}
+.pvf-largefile-gutter {
+    position: relative;
+    flex-shrink: 0;
+    width: 64px;
+    overflow: hidden;
+    background: var(--bg-2);
+    border-right: 1px solid var(--surface-border);
+    padding-top: 14px;
+    padding-bottom: 14px;
+    user-select: none;
+}
+.pvf-largefile-gline {
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 20px;
+    line-height: 20px;
+    padding-right: 10px;
+    text-align: right;
+    font-family: "SF Mono", "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    overflow: hidden;
+}
+.pvf-largefile-vcontent {
+    position: relative;
+}
+.pvf-largefile-cline {
+    position: absolute;
+    left: 0;
+    min-width: 100%;
+    width: max-content;
+    box-sizing: border-box;
+    height: 20px;
+    line-height: 20px;
+    padding-right: 18px;
+    white-space: pre;
+    overflow: hidden;
+}
+.pvf-largefile-spacer {
+    width: 1px;
+    height: 100%;
 }
 .pvf-empty {
     flex: 1;

@@ -180,6 +180,7 @@ class PvfArchive {
         this._nameTagCache = new Map(); // fileIndex -> [name] 标签值缓存（.lst 名称展示）
         this._lstTextCache = new Map(); // fileIndex -> decodeLstWithNames 结果缓存（.lst 展示文本）
         this._lstRefMap = new Map(); // fileIndex -> Map<引用路径, file>（.lst 引用快捷跳转）
+        this._strNameMap = null; // key -> 中文名称 映射（懒加载扫描 .str 文件，getStrNameMap）
         this._pathIndex = null; // fullpath -> file 索引（懒构建，重命名后失效）
         this._nameIndex = null; // name -> [file] 索引（懒构建，重命名后失效）
     }
@@ -1130,6 +1131,53 @@ class PvfArchive {
     }
 
     // ---- Encoding switching ----
+    // ---- String table (.str) name mapping ----
+    // 扫描全部 .str 字符串表文件，构建「key -> 名称」映射（懒加载 + 缓存）。
+    // 脚本中 [name]/[explain] 等常以字符串 key（如 `name_97`）引用，真实名称定义在 .chn/.kor/.jpn.str 里。
+    // .str 解码文本为逐行「key>名称」，兼容 {N=`...`} / `...` 包装；同名 key 先到先得（中文优先于外文）。
+    async _ensureStrNameMap() {
+        if (this._strNameMap) return this._strNameMap;
+        const map = new Map();
+        const t0 = Date.now();
+        const strFiles = this.files.filter(
+            f => !f.isDir && !this._deleted.has(f.index) && /\.str$/i.test(f.name)
+        );
+        for (const f of strFiles) {
+            try {
+                const data = await this.getFileData(f);
+                if (!data || data.length === 0) continue;
+                const text = this.decodeContent(f, data);
+                if (!text) continue;
+                for (const raw of text.split("\n")) {
+                    let line = raw.trim();
+                    if (!line || line.startsWith("#")) continue;
+                    let m = /^\{[0-9]+=`([^`]*)`\}$/.exec(line);
+                    if (m) line = m[1];
+                    else {
+                        m = /^`([^`]*)`$/.exec(line);
+                        if (m) line = m[1];
+                    }
+                    const kv = /^([^>]+)>([\s\S]*)$/.exec(line);
+                    if (kv) {
+                        const key = kv[1].trim();
+                        const val = kv[2].trim();
+                        if (key && val && !map.has(key)) map.set(key, val);
+                    }
+                }
+            } catch (e) {
+                // 单个 .str 文件解析失败不影响整体
+            }
+        }
+        this._strNameMap = map;
+        console.info(`[PVF] 字符串表解析完成：${strFiles.length} 个 .str 文件，${map.size} 条映射，耗时 ${Date.now() - t0}ms`);
+        return map;
+    }
+
+    // 供界面获取 name 字符串表映射（Promise<Map<string,string>>）
+    getStrNameMap() {
+        return this._ensureStrNameMap();
+    }
+
     setEncoding(encoding) {
         if (this.strEncoding === encoding) return;
         this.strEncoding = encoding;
@@ -1139,6 +1187,7 @@ class PvfArchive {
         this._nameTagCache.clear();
         this._lstTextCache.clear();
         this._lstRefMap.clear();
+        this._strNameMap = null;
         this._pathIndex = null;
         this._nameIndex = null;
         // Re-resolve all file names/paths with new encoding
