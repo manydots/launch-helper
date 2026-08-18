@@ -1,7 +1,7 @@
 <script>
 import hljs from "highlight.js/lib/core";
 import xmlLang from "highlight.js/lib/languages/xml";
-import { PvfArchive, formatBytes, buildFileTree, sanitizeFilename } from "@/utils/pvfTool";
+import { PvfArchive, PvfFormat, formatBytes, buildFileTree, sanitizeFilename } from "@/utils/pvfTool";
 import { registerPvfLanguage } from "@/utils/pvfHighlight";
 import { getTagInfo, parseTagName, renderTagTooltip, PVF_BLOCK_TAGS } from "@/utils/pvfTags";
 import { validatePvfText } from "@/utils/pvfValidator";
@@ -88,7 +88,6 @@ export default {
             largeSearchMatches: [],
             largeSearchIndex: -1,
             largeSearchNameLoading: false,
-            refreshKey: 0,
             rowHeight: 24,
             ENCODINGS,
             tooltip: { show: false, x: 0, y: 0, html: "" },
@@ -230,7 +229,6 @@ export default {
             return parts.join("\n");
         },
         fileTree() {
-            this.refreshKey;
             if (!this.archive) return null;
             const files = this.archive.files.filter(f => !this.archive.isFileDeleted(f.index));
             return buildFileTree(files);
@@ -387,7 +385,7 @@ export default {
                 this.$nextTick(() => this.updateContainerHeight());
                 this.addLog(`加载 ${file.name} 成功：${arch.header.fileCount} 文件，${arch.header.groupCount} 分块，${arch.headerFormatLabel}`, "success");
                 console.info(
-                    `[PVF] 加载 ${file.name} 成功，文件标识：${arch.headerFormat}（${arch.headerFormatLabel}），保存导出将使用${arch.headerFormat === "guard" ? "Guard（0x55 XOR）" : "原版无 Guard"}包头加密规则`
+                    `[PVF] 加载 ${file.name} 成功，文件标识：${arch.headerFormat}（${arch.headerFormatLabel}），保存导出将使用${arch.headerFormat === PvfFormat.GUARD ? arch.headerFormatLabel + "（0x55 XOR）" : arch.headerFormatLabel}包头加密规则`
                 );
             } catch (err) {
                 this.loading = false;
@@ -782,7 +780,6 @@ export default {
                     // Reload from archive
                     const file = this.archive.files[idx];
                     this.loadFileContent(file);
-                    this.refreshKey++;
                 }
             });
         },
@@ -793,7 +790,6 @@ export default {
                 if (ok) {
                     this.archive.revertAll();
                     this.strEncoding = this.archive.strEncoding;
-                    this.refreshKey++;
                     if (this.currentFile) {
                         this.loadFileContent(this.archive.files[this.currentFile.index]);
                     }
@@ -817,7 +813,6 @@ export default {
                             this.editText = "";
                             this.originalText = "";
                         }
-                        this.refreshKey++;
                     }
                 });
             } else {
@@ -832,7 +827,6 @@ export default {
                             this.editText = "";
                             this.originalText = "";
                         }
-                        this.refreshKey++;
                     }
                 });
             }
@@ -884,7 +878,6 @@ export default {
                 }
 
                 this.loading = false;
-                this.refreshKey++;
 
                 // Reload current file if it was affected
                 if (this.currentFile) {
@@ -1010,7 +1003,6 @@ export default {
                         // setEncoding 会清空字符串缓存并按新编码重新解析所有文件名/路径
                         this.archive.setEncoding(enc);
                         this.strEncoding = enc;
-                        this.refreshKey++;
                         // 重新读取当前文件（按新编码解码）
                         if (this.currentFile && !this.currentFile.isDir) {
                             const file = this.archive.files[this.currentFile.index];
@@ -1882,7 +1874,7 @@ export default {
                             <span v-if="renamedCount > 0">{{ renamedCount }} 重命名</span>
                         </span>
                         <button v-if="hasChanges" class="btn btn-sm btn-outline-secondary" @click="revertAll">全部撤销</button>
-                        <button class="pvf-icon-btn" :disabled="!hasChanges" @click="downloadPvf" data-tip="导出 PVF">
+                        <button class="pvf-icon-btn" :disabled="!hasChanges && !textDirty" @click="downloadPvf" data-tip="导出 PVF">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
                                 <polyline points="17 21 17 13 7 13 7 21" />

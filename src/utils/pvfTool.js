@@ -6,117 +6,26 @@
 
 import { decodeText, encodeText, decodeUtf16LE, encodeUtf16LE, detectEncoding as iconvDetect } from "./encoding.js";
 
-// ---- Binary helpers ----
-function readInt32LE(buf, off) {
-    return buf[off] | (buf[off + 1] << 8) | (buf[off + 2] << 16) | (buf[off + 3] << 24);
-}
-function readUInt32LE(buf, off) {
-    return (buf[off] | (buf[off + 1] << 8) | (buf[off + 2] << 16) | (buf[off + 3] << 24)) >>> 0;
-}
-function writeInt32LE(buf, off, val) {
-    buf[off] = val & 0xff;
-    buf[off + 1] = (val >> 8) & 0xff;
-    buf[off + 2] = (val >> 16) & 0xff;
-    buf[off + 3] = (val >> 24) & 0xff;
-}
+import {
+    readInt32LE,
+    readUInt32LE,
+    writeInt32LE,
+    mergeChunks,
+    pvfDecrypt,
+    pvfDecryptGuard,
+    zlibCompress,
+    zlibDecompress,
+    encodeFileTable,
+    encodeGrpiTable,
+    encodeHeaderRaw,
+    encodeBodyChunk,
+    encodeNameSection,
+    decodeNameSection
+} from "./pvfCodec.js";
+import { PvfFormat, PvfFormatLabels, PvfFormatDefault, MAGIC_DECRYPT, MAGIC_DECRYPT2 } from "./pvfCodec.js";
+
 function escapeRegExp(s) {
     return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-// ---- PVF Decryption (PvfDecryptor.cs) ----
-const MAGIC_DECRYPT = 0x269ec3;
-const MAGIC_DECRYPT2 = 0x269ec9;
-
-function pvfDecrypt(key, buf, magic) {
-    const k = new Array(key.length);
-    for (let i = 0; i < key.length; i++) k[i] = key.charCodeAt(i);
-    if (k.length < 4) return 0;
-    const len = buf.length;
-    let tail = len;
-
-    let seed = (Math.imul(0x76826701, k[0]) + Math.imul(0x1c1, (k[3] + Math.imul(0x1c1, (k[2] + Math.imul(0x1c1, k[1])) | 0)) | 0)) | 0;
-
-    if (len >= 4) {
-        const quadCount = len >>> 2;
-        tail = len - (quadCount << 2);
-        for (let i = 0; i < quadCount; i++) {
-            const t1 = (Math.imul(0x343fd, seed) + magic) | 0;
-            seed = (Math.imul(0x343fd, t1) + magic) | 0;
-            const xorKey = (((t1 >>> 16) & 0xffff) << 16) | ((seed >>> 16) & 0xffff);
-            const off = i << 2;
-            const data = (buf[off] | (buf[off + 1] << 8) | (buf[off + 2] << 16) | (buf[off + 3] << 24)) >>> 0;
-            const newData = (data ^ xorKey) >>> 0;
-            buf[off] = newData & 0xff;
-            buf[off + 1] = (newData >>> 8) & 0xff;
-            buf[off + 2] = (newData >>> 16) & 0xff;
-            buf[off + 3] = (newData >>> 24) & 0xff;
-        }
-    }
-
-    if (tail > 0) {
-        const t1 = (Math.imul(0x343fd, seed) + magic) | 0;
-        const t2 = (Math.imul(0x343fd, t1) + magic) | 0;
-        const finalKey = (((t1 >>> 16) & 0xffff) << 16) | ((t2 >>> 16) & 0xffff);
-        const kb = [finalKey & 0xff, (finalKey >>> 8) & 0xff, (finalKey >>> 16) & 0xff, (finalKey >>> 24) & 0xff];
-        const start = len - tail;
-        for (let i = 0; i < tail; i++) buf[start + i] ^= kb[i];
-    }
-    return tail;
-}
-
-function pvfDecryptGuard(buf) {
-    if (buf.length < 28) return;
-    for (let i = 24; i < 28; i++) buf[i] ^= 0x55;
-}
-
-// ---- Zlib compress / decompress (via CompressionStream) ----
-async function zlibCompress(data) {
-    if (typeof CompressionStream === "undefined") throw new Error("浏览器不支持 CompressionStream");
-    const cs = new CompressionStream("deflate");
-    const writer = cs.writable.getWriter();
-    writer.write(data);
-    writer.close();
-    const reader = cs.readable.getReader();
-    const chunks = [];
-    let totalLen = 0;
-    for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        chunks.push(value);
-        totalLen += value.length;
-    }
-    const result = new Uint8Array(totalLen);
-    let off = 0;
-    for (const c of chunks) {
-        result.set(c, off);
-        off += c.length;
-    }
-    return result;
-}
-
-async function zlibDecompress(data) {
-    if (typeof DecompressionStream === "undefined") throw new Error("浏览器不支持 DecompressionStream");
-    if (data.length < 6 || data[0] !== 0x78) throw new Error("无效的 Zlib 头");
-    const ds = new DecompressionStream("deflate");
-    const writer = ds.writable.getWriter();
-    writer.write(data);
-    writer.close();
-    const reader = ds.readable.getReader();
-    const chunks = [];
-    let totalLen = 0;
-    for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        chunks.push(value);
-        totalLen += value.length;
-    }
-    const result = new Uint8Array(totalLen);
-    let off = 0;
-    for (const c of chunks) {
-        result.set(c, off);
-        off += c.length;
-    }
-    return result;
 }
 
 // ---- Float helpers ----
@@ -185,14 +94,14 @@ class PvfArchive {
         this._nameIndex = null; // name -> [file] 索引（懒构建，重命名后失效）
     }
 
-    // 当前文件标识：guard=工具自定义（Guard 包头） original=原版（无 Guard）
+    // 当前文件格式枚举值（用于逻辑判断与 CSS 类名）
     get headerFormat() {
-        return this._headerUsesGuard ? "guard" : "original";
+        return this._headerUsesGuard ? PvfFormat.GUARD : PvfFormat.ORIGINAL;
     }
 
-    // 当前文件标识的可读文案（用于界面与日志打印）
+    // 当前文件格式的可读文案（用于界面与日志打印）
     get headerFormatLabel() {
-        return this._headerUsesGuard ? "Guard格式" : "原版格式";
+        return PvfFormatLabels[this.headerFormat] || this.headerFormat;
     }
 
     async parse() {
@@ -200,11 +109,12 @@ class PvfArchive {
         if (buf.length < 0x30) throw new Error("数据不足以包含 PVF 头部");
 
         // Header
-        // 依次尝试 Guard 加密（工具自定义）与原版两种包头：解密后校验签名与分区布局，
+        // 按默认格式优先（PvfFormatDefault）依次尝试解密包头：校验签名与分区布局，
         // 仅当布局合法才判定该候选有效，避免把 Guard 误判为原版（或反之）。
         this.header = null;
         let lastHeaderError = null;
-        for (const usesGuard of [true, false]) {
+        const tryGuardFirst = PvfFormatDefault === PvfFormat.GUARD;
+        for (const usesGuard of tryGuardFirst ? [true, false] : [false, true]) {
             try {
                 this.header = this._decodeHeaderCandidate(buf, usesGuard);
                 this._headerUsesGuard = usesGuard;
@@ -1153,9 +1063,7 @@ class PvfArchive {
         if (this._strNameMap) return this._strNameMap;
         const map = new Map();
         const t0 = Date.now();
-        const strFiles = this.files.filter(
-            f => !f.isDir && !this._deleted.has(f.index) && /\.str$/i.test(f.name)
-        );
+        const strFiles = this.files.filter(f => !f.isDir && !this._deleted.has(f.index) && /\.str$/i.test(f.name));
         for (const f of strFiles) {
             try {
                 const data = await this.getFileData(f);
@@ -1508,9 +1416,9 @@ class PvfArchive {
         parts.push(this.rawNameHeader);
 
         // sTrA section
-        parts.push(await this._compressNameSection("sTrA", this.strABuf, 0xaa74472e));
+        parts.push(await encodeNameSection("sTrA", this.strABuf, 0xaa74472e));
         // sTrW section
-        parts.push(await this._compressNameSection("sTrW", this.strWBuf, 0x9a82f037));
+        parts.push(await encodeNameSection("sTrW", this.strWBuf, 0x9a82f037));
 
         // Calculate total size
         let totalLen = 0;
@@ -1522,23 +1430,6 @@ class PvfArchive {
             off += p.length;
         }
         return result;
-    }
-
-    async _compressNameSection(key, rawBuffer, xorConst) {
-        if (!rawBuffer || rawBuffer.length === 0) {
-            rawBuffer = key === "sTrW" ? new Uint8Array([0, 0]) : new Uint8Array([0]);
-        }
-        const compressed = await zlibCompress(rawBuffer);
-        const encrypted = new Uint8Array(compressed);
-        pvfDecrypt(key, encrypted, MAGIC_DECRYPT2);
-
-        // cnt1 = encrypted.length ^ xorConst
-        // cnt2 = rawBuffer.length ^ encrypted.length
-        const section = new Uint8Array(8 + encrypted.length);
-        writeInt32LE(section, 0, (encrypted.length ^ xorConst) | 0);
-        writeInt32LE(section, 4, (rawBuffer.length ^ encrypted.length) | 0);
-        section.set(encrypted, 8);
-        return section;
     }
 
     // ---- Hash table rebuild ----
@@ -1688,9 +1579,7 @@ class PvfArchive {
             } else {
                 const originalChunk = await this._getChunk(ci);
                 const newChunk = await this._rebuildChunkWithOverlay(ci, originalChunk, newItems, oldToNewIndex);
-                const compressed = await zlibCompress(newChunk);
-                const encrypted = new Uint8Array(compressed);
-                pvfDecrypt("BodY", encrypted, MAGIC_DECRYPT);
+                const encrypted = await encodeBodyChunk(newChunk);
                 bodyParts.push(encrypted);
                 cumulativeCompressed += encrypted.length;
                 newGroups.push({ compressedSize: cumulativeCompressed, originalSize: newChunk.length });
@@ -1699,26 +1588,10 @@ class PvfArchive {
         }
 
         // Concatenate body
-        let bodyTotalLen = 0;
-        for (const p of bodyParts) bodyTotalLen += p.length;
-        const bodyBytes = new Uint8Array(bodyTotalLen);
-        let bodyOff = 0;
-        for (const p of bodyParts) {
-            bodyBytes.set(p, bodyOff);
-            bodyOff += p.length;
-        }
+        const bodyBytes = mergeChunks(bodyParts);
 
         // Rebuild file table
-        const tableBytes = new Uint8Array(newItems.length * 0x18);
-        for (let i = 0; i < newItems.length; i++) {
-            const off = i * 0x18;
-            writeInt32LE(tableBytes, off, newItems[i].nameOff);
-            writeInt32LE(tableBytes, off + 4, newItems[i].pathOff);
-            writeInt32LE(tableBytes, off + 8, newItems[i].chunkIndex);
-            writeInt32LE(tableBytes, off + 12, newItems[i].dataOffset);
-            writeInt32LE(tableBytes, off + 16, newItems[i].dataSize);
-            writeInt32LE(tableBytes, off + 20, newItems[i].dataType);
-        }
+        const tableBytes = encodeFileTable(newItems);
 
         // Rebuild hash table
         const hashBytes = this._buildHashTableBytes(newItems);
@@ -1728,41 +1601,25 @@ class PvfArchive {
         const nameBytes = await this.buildNameTableBytes();
 
         // Rebuild GRPI
-        const grpiBytes = new Uint8Array(newGroups.length * 8);
-        for (let i = 0; i < newGroups.length; i++) {
-            writeInt32LE(grpiBytes, i * 8, newGroups[i].compressedSize);
-            writeInt32LE(grpiBytes, i * 8 + 4, newGroups[i].originalSize);
-        }
+        const grpiBytes = encodeGrpiTable(newGroups);
         pvfDecrypt("GRPI", grpiBytes, MAGIC_DECRYPT);
 
         // Rebuild header
-        const headerBytes = new Uint8Array(0x30);
-        writeInt32LE(headerBytes, 0, this.header.signature);
-        headerBytes.set(this.header.guid, 4);
-        writeInt32LE(headerBytes, 24, newItems.length);
-        writeInt32LE(headerBytes, 28, this.header.padding);
-        writeInt32LE(headerBytes, 32, cumulativeCompressed);
-        writeInt32LE(headerBytes, 36, newGroups.length);
-        writeInt32LE(headerBytes, 40, hashBytes.length);
-        writeInt32LE(headerBytes, 44, nameBytes.length);
+        const headerBytes = encodeHeaderRaw({
+            signature: this.header.signature,
+            guid: this.header.guid,
+            fileCount: newItems.length,
+            padding: this.header.padding,
+            bodySize: cumulativeCompressed,
+            groupCount: newGroups.length,
+            hashTableSize: hashBytes.length,
+            nameTableSize: nameBytes.length
+        });
         pvfDecrypt("HeaD", headerBytes, MAGIC_DECRYPT);
         if (this._headerUsesGuard) pvfDecryptGuard(headerBytes);
 
         // Assemble: Header + Table + Hash + Name + GRPI + Body
-        const totalSize = 0x30 + tableBytes.length + hashBytes.length + nameBytes.length + grpiBytes.length + bodyBytes.length;
-        const result = new Uint8Array(totalSize);
-        let pos = 0;
-        result.set(headerBytes, pos);
-        pos += 0x30;
-        result.set(tableBytes, pos);
-        pos += tableBytes.length;
-        result.set(hashBytes, pos);
-        pos += hashBytes.length;
-        result.set(nameBytes, pos);
-        pos += nameBytes.length;
-        result.set(grpiBytes, pos);
-        pos += grpiBytes.length;
-        result.set(bodyBytes, pos);
+        const result = mergeChunks([headerBytes, tableBytes, hashBytes, nameBytes, grpiBytes, bodyBytes]);
 
         // 自校验：重开导出字节，回读每个 overlay 文件的原始字节并逐字节比对，
         // 端到端验证分块重建/文件表/压缩/加密正确。任一不一致即抛错，避免产出坏档。
@@ -1787,7 +1644,21 @@ class PvfArchive {
     }
 }
 
-export { PvfArchive, pvfDecrypt, pvfDecryptGuard, zlibCompress, zlibDecompress, formatBytes, buildFileTree, detectEncoding, sanitizeFilename, stripLstNameAnnotations };
+export {
+    PvfArchive,
+    PvfFormat,
+    PvfFormatLabels,
+    PvfFormatDefault,
+    pvfDecrypt,
+    pvfDecryptGuard,
+    zlibCompress,
+    zlibDecompress,
+    formatBytes,
+    buildFileTree,
+    detectEncoding,
+    sanitizeFilename,
+    stripLstNameAnnotations
+};
 
 // 从 PVF 脚本文本中提取 [name] 标签的字符串值（反引号串、{5=}/{7=} 标记或裸字符串）。
 // 用于 .lst 列表在行尾追加引用文件的缩略名称。

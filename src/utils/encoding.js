@@ -1,23 +1,19 @@
 // Encoding utilities using native browser TextDecoder/TextEncoder
 
-const ALIAS = {
-    "utf-8": "utf-8",
+import { encodeGBK } from "./gbkEncoder.js";
+
+const ENCODING_ALIASES = {
     utf8: "utf-8",
+    "utf-8": "utf-8",
     gbk: "gbk",
     gb2312: "gbk",
-    gb18030: "gb18030",
-    big5: "big5",
-    "euc-kr": "euc-kr",
-    "shift-jis": "shift_jis",
-    shift_jis: "shift_jis",
-    "iso-8859-1": "iso-8859-1",
-    "utf-16le": "utf-16le"
+    big5: "big5"
 };
 
-const DEFAULT_ENCODING = "utf-8";
+const DEFAULT_ENCODING = "utf8";
 
 function resolveEnc(enc) {
-    return ALIAS[(enc || DEFAULT_ENCODING).toLowerCase()] || DEFAULT_ENCODING;
+    return ENCODING_ALIASES[(enc || DEFAULT_ENCODING).toLowerCase()] || DEFAULT_ENCODING;
 }
 
 export function decodeText(bytes, encoding) {
@@ -29,7 +25,10 @@ export function encodeText(text, encoding) {
     if (enc === "utf-8") {
         return new TextEncoder().encode(text);
     }
-    // Non-UTF-8 encoding: fall back to UTF-8 (native TextEncoder limitation)
+    if (enc === "gbk" || enc === "gb2312") {
+        return encodeGBK(text);
+    }
+    // Other encodings: fall back to UTF-8 (native TextEncoder limitation)
     return new TextEncoder().encode(text);
 }
 
@@ -45,7 +44,7 @@ export function encodeUtf16LE(text) {
 
 export function detectEncoding(bytes) {
     if (!bytes || bytes.length === 0) return DEFAULT_ENCODING;
-    const candidates = ["utf-8", "gbk", "big5", "euc-kr", "shift-jis", "iso-8859-1"];
+    const candidates = ["utf-8", "gbk", "big5"];
     for (const enc of candidates) {
         try {
             new TextDecoder(enc, { fatal: true }).decode(bytes);
