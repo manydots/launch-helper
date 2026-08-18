@@ -13,6 +13,7 @@ import {
     mergeChunks,
     pvfDecrypt,
     pvfDecryptGuard,
+    pvfDecryptProtected,
     zlibCompress,
     zlibDecompress,
     encodeFileTable,
@@ -86,7 +87,7 @@ class PvfArchive {
         this._renamed = new Set(); // fileIndex -> true (renamed)
         this._originalMeta = new Map(); // fileIndex -> { nameOff, name, fullpath }
         this.strEncoding = "utf-8"; // encoding for sTrA (single-byte) string table
-        this._headerUsesGuard = false; // true 表示头部采用 Guard（0x55 XOR）加密（工具自定义格式），false 为原版 PVF 包头
+        this._headerFormat = PvfFormat.ORIGINAL; // 当前头部格式（original / guard / protected），parse 时自动探测
         this._nameTagCache = new Map(); // fileIndex -> [name] 标签值缓存（.lst 名称展示）
         this._lstTextCache = new Map(); // fileIndex -> decodeLstWithNames 结果缓存（.lst 展示文本）
         this._lstRefMap = new Map(); // fileIndex -> Map<引用路径, file>（.lst 引用快捷跳转）
@@ -99,7 +100,7 @@ class PvfArchive {
 
     // 当前文件格式枚举值（用于逻辑判断与 CSS 类名）
     get headerFormat() {
-        return this._headerUsesGuard ? PvfFormat.GUARD : PvfFormat.ORIGINAL;
+        return this._headerFormat;
     }
 
     // 当前文件格式的可读文案（用于界面与日志打印）
@@ -114,13 +115,15 @@ class PvfArchive {
         // Header
         // 按默认格式优先（PvfFormatDefault）依次尝试解密包头：校验签名与分区布局，
         // 仅当布局合法才判定该候选有效，避免把 Guard 误判为原版（或反之）。
+        // 候选顺序：原版 → Guard → protected_nkpi（CN），依次回退。
         this.header = null;
         let lastHeaderError = null;
         const tryGuardFirst = PvfFormatDefault === PvfFormat.GUARD;
-        for (const usesGuard of tryGuardFirst ? [true, false] : [false, true]) {
+        const candidates = tryGuardFirst ? [PvfFormat.GUARD, PvfFormat.ORIGINAL, PvfFormat.PROTECTED] : [PvfFormat.ORIGINAL, PvfFormat.GUARD, PvfFormat.PROTECTED];
+        for (const fmt of candidates) {
             try {
-                this.header = this._decodeHeaderCandidate(buf, usesGuard);
-                this._headerUsesGuard = usesGuard;
+                this.header = this._decodeHeaderCandidate(buf, fmt);
+                this._headerFormat = fmt;
                 break;
             } catch (e) {
                 lastHeaderError = e;
@@ -138,6 +141,9 @@ class PvfArchive {
         pos += tableSize;
         const hashOffset = pos;
         pos += h.hashTableSize;
+        // protected_nkpi 的 HASH 表无法/无需解密（官方服务端亦不读取），
+        // 原样保存原始字节，导出时直接复用，保证重封包格式一致。
+        this._rawHashBytes = buf.slice(hashOffset, hashOffset + h.hashTableSize);
         const nameOffset = pos;
         pos += h.nameTableSize;
         const grpiOffset = pos;
@@ -180,17 +186,23 @@ class PvfArchive {
 
         // GRPI
         const grpiBytes = buf.slice(grpiOffset, grpiOffset + grpiSize);
-        pvfDecrypt("GRPI", grpiBytes, MAGIC_DECRYPT);
+        if (this._headerFormat === PvfFormat.PROTECTED) pvfDecryptProtected("grpi", grpiBytes, MAGIC_DECRYPT);
+        else pvfDecrypt("GRPI", grpiBytes, MAGIC_DECRYPT);
         this._parseGroups(grpiBytes, this.header.groupCount);
 
         return this.header;
     }
 
-    // 解密并校验一个头部候选（usesGuard 决定是否先做 Guard 解密），失败抛错由调用方回退到另一种格式。
-    _decodeHeaderCandidate(allBytes, usesGuard) {
+    // 解密并校验一个头部候选（fmt 决定解密方式：original 用 "HeaD"，guard 额外 0x55 XOR，
+    // protected 用 "hEAd" UTF-16 seed 密钥流且无 guard），失败抛错由调用方回退到下一种格式。
+    _decodeHeaderCandidate(allBytes, fmt) {
         const headerBytes = allBytes.slice(0, 0x30);
-        if (usesGuard) pvfDecryptGuard(headerBytes);
-        if (pvfDecrypt("HeaD", headerBytes, MAGIC_DECRYPT) !== 0) throw new Error("PVF 头部解密失败");
+        if (fmt === PvfFormat.PROTECTED) {
+            pvfDecryptProtected("hEAd", headerBytes, MAGIC_DECRYPT);
+        } else {
+            if (fmt === PvfFormat.GUARD) pvfDecryptGuard(headerBytes);
+            if (pvfDecrypt("HeaD", headerBytes, MAGIC_DECRYPT) !== 0) throw new Error("PVF 头部解密失败");
+        }
 
         const signature = readUInt32LE(headerBytes, 0);
         if (signature !== 0x69706b6e) {
@@ -226,13 +238,17 @@ class PvfArchive {
     async _parseNameTable(nameBytes) {
         if (nameBytes.length < 16) return;
         let idx = 8;
+        // protected_nkpi（CN）字符串池密钥为大写变体 "StRa"/"StRw"，旧格式为 "sTrA"/"sTrW"
+        const useProtected = this._headerFormat === PvfFormat.PROTECTED;
+        const keyA = useProtected ? "StRa" : "sTrA";
+        const keyW = useProtected ? "StRw" : "sTrW";
 
-        const sTrA = this._readStringSection(nameBytes, idx, "sTrA", 0xaa74472e);
+        const sTrA = this._readStringSection(nameBytes, idx, keyA, 0xaa74472e);
         if (sTrA) {
             idx = sTrA.nextIdx;
             this.strABuf = await zlibDecompress(sTrA.encrypted);
         }
-        const sTrW = this._readStringSection(nameBytes, idx, "sTrW", 0x9a82f037);
+        const sTrW = this._readStringSection(nameBytes, idx, keyW, 0x9a82f037);
         if (sTrW) {
             this.strWBuf = await zlibDecompress(sTrW.encrypted);
         }
@@ -244,7 +260,8 @@ class PvfArchive {
         const encSize = (cnt1 ^ xorConst) | 0;
         if (encSize <= 0 || idx + 8 + encSize > bytes.length) return null;
         const encrypted = bytes.slice(idx + 8, idx + 8 + encSize);
-        pvfDecrypt(key, encrypted, MAGIC_DECRYPT2);
+        if (this._headerFormat === PvfFormat.PROTECTED) pvfDecryptProtected(key, encrypted, MAGIC_DECRYPT2);
+        else pvfDecrypt(key, encrypted, MAGIC_DECRYPT2);
         return { encrypted, nextIdx: idx + 8 + encSize };
     }
 
@@ -424,7 +441,8 @@ class PvfArchive {
         if (size <= 0 || start + size > this.bodyOffset + this.bodyLength) return null;
 
         const encrypted = this.buf.slice(start, start + size);
-        pvfDecrypt("BodY", encrypted, MAGIC_DECRYPT);
+        if (this._headerFormat === PvfFormat.PROTECTED) pvfDecryptProtected("bODy", encrypted, MAGIC_DECRYPT);
+        else pvfDecrypt("BodY", encrypted, MAGIC_DECRYPT);
         const decompressed = await zlibDecompress(encrypted);
         if (this._chunkCache.size >= 64) this._chunkCache.delete(this._chunkCache.keys().next().value);
         this._chunkCache.set(chunkIndex, decompressed);
@@ -842,7 +860,9 @@ class PvfArchive {
             if (!target) return line;
             matched++;
             const name = this._nameTagCache.get(target.index) || "";
-            if (name && !/[\s`{}\[\]#]/.test(name)) {
+            // 仅排除会破坏行结构或脚本语法的字符（换行/反引号/花括号/方括号/井号）；
+            // 空格必须允许——英文版（如 90US）的名称几乎都含空格，之前误滤导致不显示
+            if (name && !/[\n\r`{}\[\]#]/.test(name)) {
                 named++;
                 return `${line.trim()} ${name}`;
             }
@@ -1601,15 +1621,15 @@ class PvfArchive {
     }
 
     // ---- Name table rebuild ----
-    async buildNameTableBytes() {
+    async buildNameTableBytes(useProtected = false) {
         const parts = [];
         // 8-byte header
         parts.push(this.rawNameHeader);
 
-        // sTrA section
-        parts.push(await encodeNameSection("sTrA", this.strABuf, 0xaa74472e));
+        // sTrA section（protected_nkpi 密钥为大写变体 "StRa"，与解密侧一致）
+        parts.push(await encodeNameSection(useProtected ? "StRa" : "sTrA", this.strABuf, 0xaa74472e, useProtected));
         // sTrW section
-        parts.push(await encodeNameSection("sTrW", this.strWBuf, 0x9a82f037));
+        parts.push(await encodeNameSection(useProtected ? "StRw" : "sTrW", this.strWBuf, 0x9a82f037, useProtected));
 
         // Calculate total size
         let totalLen = 0;
@@ -1770,7 +1790,7 @@ class PvfArchive {
             } else {
                 const originalChunk = await this._getChunk(ci);
                 const newChunk = await this._rebuildChunkWithOverlay(ci, originalChunk, newItems, oldToNewIndex);
-                const encrypted = await encodeBodyChunk(newChunk);
+                const encrypted = await encodeBodyChunk(newChunk, this._headerFormat === PvfFormat.PROTECTED);
                 bodyParts.push(encrypted);
                 cumulativeCompressed += encrypted.length;
                 newGroups.push({ compressedSize: cumulativeCompressed, originalSize: newChunk.length });
@@ -1784,16 +1804,23 @@ class PvfArchive {
         // Rebuild file table
         const tableBytes = encodeFileTable(newItems);
 
-        // Rebuild hash table
-        const hashBytes = this._buildHashTableBytes(newItems);
-        pvfDecrypt("HASH", hashBytes, MAGIC_DECRYPT);
+        // Rebuild hash table（protected_nkpi 格式的 HASH 表无法解密重建，直接复用原始字节）
+        let hashBytes;
+        if (this._headerFormat === PvfFormat.PROTECTED) {
+            hashBytes = (this._rawHashBytes || new Uint8Array(0)).slice();
+        } else {
+            hashBytes = this._buildHashTableBytes(newItems);
+            pvfDecrypt("HASH", hashBytes, MAGIC_DECRYPT);
+        }
 
         // Rebuild name table
-        const nameBytes = await this.buildNameTableBytes();
+        const useProtected = this._headerFormat === PvfFormat.PROTECTED;
+        const nameBytes = await this.buildNameTableBytes(useProtected);
 
         // Rebuild GRPI
         const grpiBytes = encodeGrpiTable(newGroups);
-        pvfDecrypt("GRPI", grpiBytes, MAGIC_DECRYPT);
+        if (useProtected) pvfDecryptProtected("grpi", grpiBytes, MAGIC_DECRYPT);
+        else pvfDecrypt("GRPI", grpiBytes, MAGIC_DECRYPT);
 
         // Rebuild header
         const headerBytes = encodeHeaderRaw({
@@ -1806,8 +1833,12 @@ class PvfArchive {
             hashTableSize: hashBytes.length,
             nameTableSize: nameBytes.length
         });
-        pvfDecrypt("HeaD", headerBytes, MAGIC_DECRYPT);
-        if (this._headerUsesGuard) pvfDecryptGuard(headerBytes);
+        if (useProtected) {
+            pvfDecryptProtected("hEAd", headerBytes, MAGIC_DECRYPT);
+        } else {
+            pvfDecrypt("HeaD", headerBytes, MAGIC_DECRYPT);
+            if (this._headerFormat === PvfFormat.GUARD) pvfDecryptGuard(headerBytes);
+        }
 
         // Assemble: Header + Table + Hash + Name + GRPI + Body
         const result = mergeChunks([headerBytes, tableBytes, hashBytes, nameBytes, grpiBytes, bodyBytes]);
@@ -1842,6 +1873,7 @@ export {
     PvfFormatDefault,
     pvfDecrypt,
     pvfDecryptGuard,
+    pvfDecryptProtected,
     zlibCompress,
     zlibDecompress,
     formatBytes,

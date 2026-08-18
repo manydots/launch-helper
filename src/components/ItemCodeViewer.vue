@@ -140,7 +140,9 @@ async function loadPvf(file) {
                     it.rarity = meta && meta.rarity >= 0 ? meta.rarity : null;
                     it.minLevel = meta && meta.minLevel >= 0 ? meta.minLevel : null;
                 });
-                allItems.push(...list);
+                // 大档案如 CN的 .lst 可达十余万行，push(...list) 参数展开会爆栈，
+                // 必须逐条追加
+                for (let i = 0; i < list.length; i++) allItems.push(list[i]);
             }
         }
         if (!allItems.length) throw new Error("归档中未找到任何物品列表文件");
@@ -188,7 +190,7 @@ async function loadPvf(file) {
                 </div>
                 <h2>查看物品编码</h2>
                 <p>解析 Script.pvf 中的 stackable/equipment/creature 物品列表，映射展示物品编码与名称</p>
-                <p>支持 JP / JPAG（0x55 XOR）两种格式的 PVF 解析</p>
+                <p>支持 JP / JPAG（0x55 XOR）/ CN、US（protected_nkpi）三种格式的 PVF 解析</p>
                 <button class="btn btn-primary" @click="$refs.fileInputEl && $refs.fileInputEl.click()">
                     <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
@@ -332,6 +334,12 @@ async function loadPvf(file) {
     color: #3d9de8;
     border-color: #3d9de855;
     background: #3d9de818;
+}
+.ivc-format-protected {
+    color: #ff6b60;
+    border-color: #ff6b6055;
+    background: linear-gradient(135deg, #e0524a28, #ff6b6018);
+    box-shadow: 0 0 0 1px #ff6b6014 inset;
 }
 .ivc-file-name {
     flex: 1;

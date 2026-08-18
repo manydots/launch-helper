@@ -6,13 +6,15 @@
 // ---- 解密类型枚举 ----
 const PvfFormat = Object.freeze({
     ORIGINAL: "original", // 原版 PVF 包头（无 Guard 加密）
-    GUARD: "guard" // Guard 包头（第 24~27 字节 0x55 XOR）
+    GUARD: "guard", // Guard 包头（第 24~27 字节 0x55 XOR）
+    PROTECTED: "protected" // 新版 protected_nkpi（UTF-16 seed 密钥流）
 });
 
 // 枚举值 → 显示标签（后续新增格式只需在此追加映射）
 const PvfFormatLabels = Object.freeze({
     [PvfFormat.ORIGINAL]: "JP",
-    [PvfFormat.GUARD]: "JPAG"
+    [PvfFormat.GUARD]: "JPAG",
+    [PvfFormat.PROTECTED]: "CN"
 });
 
 // 默认优先尝试的解析格式（original 优先，兼容大多数原版 PVF 文件）
@@ -109,6 +111,52 @@ function pvfDecrypt(key, buf, magic) {
 function pvfDecryptGuard(buf) {
     if (buf.length < 28) return;
     for (let i = 24; i < 28; i++) buf[i] ^= 0x55;
+}
+
+/**
+ * 新版 protected_nkpi 解密（UTF-16 seed 密钥流，复刻新版客户端的
+ * protected_nkpi 归档算法：seed 由 key 的 UTF-16 码元生成，常量 0x339E9711/0x393，
+ * 用于 header("hEAd")、GRPI("grpi")、body("bODy")、字符串池("StRa"/"StRw") 解密。
+ * @param {string} key   解密密钥（至少 4 个 UTF-16 码元）
+ * @param {Uint8Array} buf  待解密数据（原地修改）
+ * @param {number} magic    魔数（MAGIC_DECRYPT 或 MAGIC_DECRYPT2）
+ * @returns {number} 尾部字节数
+ */
+function pvfDecryptProtected(key, buf, magic) {
+    const k = [];
+    for (let i = 0; i < key.length; i++) k.push(key.charCodeAt(i));
+    if (k.length < 4) return 0;
+    const len = buf.length;
+    let tail = len;
+
+    let seed = (Math.imul(0x339e9711, k[0]) + Math.imul(0x393, (k[3] + Math.imul(0x393, (k[2] + Math.imul(0x393, k[1])) | 0)) | 0)) | 0;
+
+    if (len >= 4) {
+        const quadCount = len >>> 2;
+        tail = len - (quadCount << 2);
+        for (let i = 0; i < quadCount; i++) {
+            const t1 = (Math.imul(0x343fd, seed) + magic) | 0;
+            seed = (Math.imul(0x343fd, t1) + magic) | 0;
+            const xorKey = ((t1 & 0xffff0000) + (seed >>> 16)) >>> 0;
+            const off = i << 2;
+            const data = (buf[off] | (buf[off + 1] << 8) | (buf[off + 2] << 16) | (buf[off + 3] << 24)) >>> 0;
+            const newData = (data ^ xorKey) >>> 0;
+            buf[off] = newData & 0xff;
+            buf[off + 1] = (newData >>> 8) & 0xff;
+            buf[off + 2] = (newData >>> 16) & 0xff;
+            buf[off + 3] = (newData >>> 24) & 0xff;
+        }
+    }
+
+    if (tail > 0) {
+        const t1 = (Math.imul(0x343fd, seed) + magic) | 0;
+        const t2 = (Math.imul(0x343fd, t1) + magic) | 0;
+        const finalKey = ((t1 & 0xffff0000) + (t2 >>> 16)) >>> 0;
+        const kb = [finalKey & 0xff, (finalKey >>> 8) & 0xff, (finalKey >>> 16) & 0xff, (finalKey >>> 24) & 0xff];
+        const start = len - tail;
+        for (let i = 0; i < tail; i++) buf[start + i] ^= kb[i];
+    }
+    return tail;
 }
 
 // ---- Zlib 压缩 / 解压（via CompressionStream）----
@@ -224,28 +272,33 @@ function encodeHeaderRaw({ signature, guid, fileCount, padding, bodySize, groupC
 }
 
 /**
- * 压缩并加密一个 body 块（compress → encrypt "BodY"）
+ * 压缩并加密一个 body 块（compress → encrypt "BodY" / "bODy"）
+ * @param {Uint8Array} chunk  明文数据
+ * @param {boolean} [useProtected]  true 用 protected_nkpi 算法（新版），默认旧算法
  */
-async function encodeBodyChunk(chunk) {
+async function encodeBodyChunk(chunk, useProtected = false) {
     const compressed = await zlibCompress(chunk);
     const encrypted = new Uint8Array(compressed);
-    pvfDecrypt("BodY", encrypted, MAGIC_DECRYPT);
+    if (useProtected) pvfDecryptProtected("bODy", encrypted, MAGIC_DECRYPT);
+    else pvfDecrypt("BodY", encrypted, MAGIC_DECRYPT);
     return encrypted;
 }
 
 /**
  * 压缩并加密一个 name 表分区（compress → encrypt key → 封装 8 字节头）
- * @param {string} key      "sTrA" 或 "sTrW"
+ * @param {string} key      "sTrA" 或 "sTrW"（protected 格式为 "StRa" / "StRw"）
  * @param {Uint8Array} rawBuffer  原始数据
  * @param {number} xorConst  0xaa74472e（sTrA）或 0x9a82f037（sTrW）
+ * @param {boolean} [useProtected]  true 用 protected_nkpi 算法（新版），默认旧算法
  */
-async function encodeNameSection(key, rawBuffer, xorConst) {
+async function encodeNameSection(key, rawBuffer, xorConst, useProtected = false) {
     if (!rawBuffer || rawBuffer.length === 0) {
         rawBuffer = key === "sTrW" ? new Uint8Array([0, 0]) : new Uint8Array([0]);
     }
     const compressed = await zlibCompress(rawBuffer);
     const encrypted = new Uint8Array(compressed);
-    pvfDecrypt(key, encrypted, MAGIC_DECRYPT2);
+    if (useProtected) pvfDecryptProtected(key, encrypted, MAGIC_DECRYPT2);
+    else pvfDecrypt(key, encrypted, MAGIC_DECRYPT2);
 
     const section = new Uint8Array(8 + encrypted.length);
     writeInt32LE(section, 0, (encrypted.length ^ xorConst) | 0);
@@ -284,6 +337,7 @@ export {
     mergeChunks,
     pvfDecrypt,
     pvfDecryptGuard,
+    pvfDecryptProtected,
     zlibCompress,
     zlibDecompress,
     encodeFileTableEntry,

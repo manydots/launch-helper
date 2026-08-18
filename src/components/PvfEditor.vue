@@ -2438,6 +2438,12 @@ export default {
     border-color: #3d9de855;
     background: #3d9de818;
 }
+.pvf-format-protected {
+    color: #ff6b60;
+    border-color: #ff6b6055;
+    background: linear-gradient(135deg, #e0524a28, #ff6b6018);
+    box-shadow: 0 0 0 1px #ff6b6014 inset;
+}
 .pvf-topbar-right {
     display: flex;
     align-items: center;

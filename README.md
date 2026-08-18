@@ -15,7 +15,7 @@
 - 注册表一键生成 / 卸载，非 Windows 环境自动提示
 - 内置 PVF 文件解析与编辑器：解密解析 `Script.pvf`，支持文件树浏览、脚本语法高亮、多编码切换、编辑 / 重命名 / 删除 / 导入 / 导出、重新打包
 - 大文件全量浏览：数万行文件虚拟滚动查看，支持内容搜索（含 name 映射中文命中）与逐条跳转
-- 物品编码查看：解析 `Script.pvf` 中的 `stackable/stackable.lst`、`equipment/equipment.lst`、`creature/creature.lst`，映射展示物品 ID / 类型 / 名称 / 品质 / 使用等级 / 引用路径，支持 JP / JPAG（0x55 XOR）两种格式
+- 物品编码查看：解析 `Script.pvf` 中的 `stackable/stackable.lst`、`equipment/equipment.lst`、`creature/creature.lst`，映射展示物品 ID / 类型 / 名称 / 品质 / 使用等级 / 引用路径，支持 JP / JPAG（0x55 XOR）/ CN、US（protected_nkpi）三种格式
 - 兼容旧版浏览器（@vitejs/plugin-legacy 自动注入 polyfill）
 
 ## 使用方式
@@ -51,7 +51,7 @@
 
 > 支持修改 / 删除 / 重命名后重新打包，离开编辑器时若有未保存修改会提示确认。
 >
-> **关于 90CN**：90CN 本质上就是带 Guard 加密的 PVF（即 JPAG），或不带 Guard 的普通 PVF（即 JP）。本工具对两种格式均可自动识别并解析，无需手动选择。
+> **关于格式**：工具自动识别三种 PVF 包头格式——JP（原版）、JPAG（Guard，`0x55 XOR`）、CN / US（新版 `protected_nkpi`，UTF-16 seed 密钥流，字符串池使用 `StRa`/`StRw` 大写密钥），打开时自动探测，无需手动选择。
 
 ### 查看物品编码
 
@@ -59,7 +59,7 @@
 2. 打开 `.pvf` 文件（如 `Script.pvf`），自动定位并解析 `stackable/stackable.lst`、`equipment/equipment.lst`、`creature/creature.lst`
 3. 表格展示物品 ID、类型徽标、物品名称（经字符串表映射）、品质与使用等级、引用路径，大列表虚拟滚动渲染
 4. 顶部搜索框可按物品 ID / 类型 / 物品名称 / 引用路径过滤
-5. 品质色依客户端串表着色（普通 ~ 传说），支持 JP / JPAG（0x55 XOR）两种 PVF 包头格式，打开时自动识别并标注
+5. 品质色依客户端串表着色（普通 ~ 传说），支持 JP / JPAG（0x55 XOR）/ CN、US（protected_nkpi）三种 PVF 包头格式，打开时自动识别并标注
 
 ## 环境变量
 
@@ -207,7 +207,7 @@ Response { success, code, message, body, sequence }
 - **品质与使用等级**：按 `[rarity]` / `[minimum level]` 标签从 token 流定向提取，品质色依客户端串表着色（普通 ~ 传说）
 - **虚拟滚动表格**：物品 ID / 类型 / 名称 / 品质 / 使用等级 / 引用路径六列，数万行仅渲染可视区域
 - **搜索过滤**：单输入框按 ID / 类型 / 名称 / 路径实时过滤，带清除按钮
-- **格式识别**：顶部徽章区分「JPAG」（`0x55 XOR` 头）与「JP」
+- **格式识别**：顶部徽章区分「JPAG」（`0x55 XOR` 头）与「JP」，以及「PROTECTED」（新版 `protected_nkpi`，CN / US）
 
 ## 项目结构
 
