@@ -17,12 +17,17 @@ const searchQuery = ref("");
 const error = ref("");
 const labelNameMap = {
     Stackable: "物品",
-    Equipment: "装备"
+    Equipment: "装备",
+    Creature: "宠物"
 };
+
+// 品级体系依客户端串表(dstr 35103-35105): 勇者=红色仅出自异界, 传说=6
+const RARITY_LABELS = ["普通", "高级", "稀有", "神器", "史诗", "勇者", "传说"];
 
 const LST_TYPES = [
     { id: "stackable", label: "Stackable", path: /^stackable\/stackable\.lst$/i },
-    { id: "equipment", label: "Equipment", path: /^equipment\/equipment\.lst$/i }
+    { id: "equipment", label: "Equipment", path: /^equipment\/equipment\.lst$/i },
+    { id: "creature", label: "Creature", path: /^creature\/creature\.lst$/i }
 ];
 
 const listScrollEl = ref(null);
@@ -46,7 +51,7 @@ const visibleRows = computed(() => {
     const rows = [];
     for (let i = start; i < end; i++) {
         const it = filteredItems.value[i];
-        rows.push({ no: i, top: i * ROW_H, code: it.code, type: it.type, name: it.name, ref: it.ref });
+        rows.push({ no: i, top: i * ROW_H, code: it.code, type: it.type, name: it.name, ref: it.ref, rarity: it.rarity, minLevel: it.minLevel });
     }
     return rows;
 });
@@ -128,6 +133,13 @@ async function loadPvf(file) {
                 list.forEach(it => {
                     it.type = lstType.label;
                 });
+                loadingMessage.value = `正在解析 ${lstType.label} 品质与使用等级...`;
+                const metaList = await arch.listLstItemMeta(lst, list);
+                list.forEach((it, i) => {
+                    const meta = metaList[i];
+                    it.rarity = meta && meta.rarity >= 0 ? meta.rarity : null;
+                    it.minLevel = meta && meta.minLevel >= 0 ? meta.minLevel : null;
+                });
                 allItems.push(...list);
             }
         }
@@ -175,7 +187,7 @@ async function loadPvf(file) {
                     </svg>
                 </div>
                 <h2>查看物品编码</h2>
-                <p>解析 Script.pvf 中的 stackable/equipment 物品列表，映射展示物品编码与名称</p>
+                <p>解析 Script.pvf 中的 stackable/equipment/creature 物品列表，映射展示物品编码与名称</p>
                 <p>支持 JP / JPAG（0x55 XOR）两种格式的 PVF 解析</p>
                 <button class="btn btn-primary" @click="$refs.fileInputEl && $refs.fileInputEl.click()">
                     <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -224,6 +236,8 @@ async function loadPvf(file) {
                     <span>物品ID</span>
                     <span>类型</span>
                     <span>物品名称</span>
+                    <span>品质</span>
+                    <span>使用等级</span>
                     <span>引用路径</span>
                 </div>
                 <div v-if="filteredItems.length" ref="listScrollEl" class="ivc-scroll" @scroll.passive="onListScroll">
@@ -232,6 +246,8 @@ async function loadPvf(file) {
                         <span class="ivc-code">{{ row.code }}</span>
                         <span class="ivc-type" :class="'type-' + row.type">{{ labelNameMap[row.type] }}</span>
                         <span class="ivc-name" :class="{ empty: !row.name }">{{ row.name || "—" }}</span>
+                        <span class="ivc-rarity" :class="row.rarity >= 0 ? 'rarity-' + row.rarity : 'rarity-unknown'">{{ row.rarity >= 0 ? RARITY_LABELS[row.rarity] || row.rarity : "—" }}</span>
+                        <span class="ivc-min-level" :class="{ empty: !row.minLevel }">{{ row.minLevel >= 0 ? row.minLevel : "—" }}</span>
                         <span class="ivc-ref">{{ row.ref }}</span>
                     </div>
                 </div>
@@ -516,7 +532,7 @@ async function loadPvf(file) {
 .ivc-head,
 .ivc-row {
     display: grid;
-    grid-template-columns: 2fr 2fr 3fr 3fr;
+    grid-template-columns: 1.5fr 1.5fr 2.5fr 1.5fr 1.5fr 3fr;
     gap: 12px;
     padding: 0 16px;
     align-items: center;
@@ -559,6 +575,49 @@ async function loadPvf(file) {
 }
 .ivc-type.type-Equipment {
     color: #e8a33d;
+}
+.ivc-type.type-Creature {
+    color: #4db86b;
+}
+/* 品质色（依客户端串表：普通白灰/高级蓝/稀有紫/神器粉/史诗金/勇者红/传说橙） */
+.ivc-rarity {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.ivc-rarity.rarity-0 {
+    color: #e5edf5;
+}
+.ivc-rarity.rarity-1 {
+    color: #68d5ed;
+}
+.ivc-rarity.rarity-2 {
+    color: #b982ff;
+}
+.ivc-rarity.rarity-3 {
+    color: #f873ed;
+}
+.ivc-rarity.rarity-4 {
+    color: #ffc247;
+}
+.ivc-rarity.rarity-5 {
+    color: #ff7373;
+}
+.ivc-rarity.rarity-6 {
+    color: #ff8338;
+}
+.ivc-rarity.rarity-unknown {
+    color: var(--text-muted);
+    opacity: 0.6;
+}
+.ivc-min-level {
+    color: var(--text);
+    font-family: "SF Mono", "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+    font-size: 0.76rem;
+}
+.ivc-min-level.empty {
+    color: var(--text-muted);
+    opacity: 0.6;
 }
 .ivc-name {
     color: var(--text);
