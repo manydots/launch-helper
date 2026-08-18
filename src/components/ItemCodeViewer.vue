@@ -15,6 +15,15 @@ const loading = ref(false);
 const loadingMessage = ref("");
 const searchQuery = ref("");
 const error = ref("");
+const labelNameMap = {
+    Stackable: "物品",
+    Equipment: "装备"
+};
+
+const LST_TYPES = [
+    { id: "stackable", label: "Stackable", path: /^stackable\/stackable\.lst$/i },
+    { id: "equipment", label: "Equipment", path: /^equipment\/equipment\.lst$/i }
+];
 
 const listScrollEl = ref(null);
 const listScrollTop = ref(0);
@@ -24,9 +33,7 @@ let listResizeObserver = null;
 const filteredItems = computed(() => {
     const q = searchQuery.value.trim().toLowerCase();
     if (!q) return items.value;
-    return items.value.filter(
-        it => it.code.toLowerCase().includes(q) || it.name.toLowerCase().includes(q) || it.ref.toLowerCase().includes(q)
-    );
+    return items.value.filter(it => it.code.toLowerCase().includes(q) || it.type.toLowerCase().includes(q) || it.name.toLowerCase().includes(q) || it.ref.toLowerCase().includes(q));
 });
 
 // 虚拟滚动：仅渲染可视区 ± 缓冲行，窗口 resize / 滚动时 DOM 行数恒定，避免整表重排卡顿。
@@ -39,7 +46,7 @@ const visibleRows = computed(() => {
     const rows = [];
     for (let i = start; i < end; i++) {
         const it = filteredItems.value[i];
-        rows.push({ no: i, top: i * ROW_H, code: it.code, name: it.name, ref: it.ref });
+        rows.push({ no: i, top: i * ROW_H, code: it.code, type: it.type, name: it.name, ref: it.ref });
     }
     return rows;
 });
@@ -112,16 +119,25 @@ async function loadPvf(file) {
         loadingMessage.value = "正在解析 PVF 归档...";
         const arch = new PvfArchive(buffer);
         await arch.parse();
-        const lst = arch.files.find(f => !f.isDir && /^stackable\/stackable\.lst$/i.test(f.fullpath || ""));
-        if (!lst) throw new Error("归档中未找到 stackable/stackable.lst");
-        loadingMessage.value = "正在提取物品名称（解析引用文件 [name] 标签）...";
-        const list = await arch.listLstItems(lst);
+        const allItems = [];
+        for (const lstType of LST_TYPES) {
+            const lst = arch.files.find(f => !f.isDir && lstType.path.test(f.fullpath || ""));
+            if (lst) {
+                loadingMessage.value = `正在提取 ${lstType.label} 物品名称...`;
+                const list = await arch.listLstItems(lst);
+                list.forEach(it => {
+                    it.type = lstType.label;
+                });
+                allItems.push(...list);
+            }
+        }
+        if (!allItems.length) throw new Error("归档中未找到任何物品列表文件");
         archive.value = arch;
         fileName.value = file.name;
-        items.value = list;
+        items.value = allItems;
         searchQuery.value = "";
     } catch (err) {
-        error.value = (err && err.message) ? err.message : "加载失败，请确认选择的是有效的 Script.pvf 文件。";
+        error.value = err && err.message ? err.message : "加载失败，请确认选择的是有效的 Script.pvf 文件。";
     } finally {
         loading.value = false;
     }
@@ -159,8 +175,8 @@ async function loadPvf(file) {
                     </svg>
                 </div>
                 <h2>查看物品编码</h2>
-                <p>解析 Script.pvf 中的 stackable/stackable.lst，映射展示物品编码与名称</p>
-                <p>支持原版 / Guard（0x55 XOR）两种格式的 PVF 解析</p>
+                <p>解析 Script.pvf 中的 stackable/equipment 物品列表，映射展示物品编码与名称</p>
+                <p>支持 JP / JPAG（0x55 XOR）两种格式的 PVF 解析</p>
                 <button class="btn btn-primary" @click="$refs.fileInputEl && $refs.fileInputEl.click()">
                     <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
@@ -206,6 +222,7 @@ async function loadPvf(file) {
             <div class="ivc-list">
                 <div class="ivc-head">
                     <span>物品ID</span>
+                    <span>类型</span>
                     <span>物品名称</span>
                     <span>引用路径</span>
                 </div>
@@ -213,6 +230,7 @@ async function loadPvf(file) {
                     <div class="ivc-spacer" :style="{ height: filteredItems.length * ROW_H + 'px' }"></div>
                     <div v-for="row in visibleRows" :key="row.no" class="ivc-row" :style="{ top: row.top + 'px' }">
                         <span class="ivc-code">{{ row.code }}</span>
+                        <span class="ivc-type" :class="'type-' + row.type">{{ labelNameMap[row.type] }}</span>
                         <span class="ivc-name" :class="{ empty: !row.name }">{{ row.name || "—" }}</span>
                         <span class="ivc-ref">{{ row.ref }}</span>
                     </div>
@@ -498,7 +516,7 @@ async function loadPvf(file) {
 .ivc-head,
 .ivc-row {
     display: grid;
-    grid-template-columns: 3fr 3fr 4fr;
+    grid-template-columns: 2fr 2fr 3fr 3fr;
     gap: 12px;
     padding: 0 16px;
     align-items: center;
@@ -528,6 +546,19 @@ async function loadPvf(file) {
     font-family: "SF Mono", "Cascadia Code", "JetBrains Mono", Consolas, monospace;
     color: var(--accent);
     font-weight: 600;
+}
+.ivc-type {
+    font-size: 0.72rem;
+    padding: 2px 6px;
+    border-radius: 4px;
+    text-align: left;
+    font-weight: 500;
+}
+.ivc-type.type-Stackable {
+    color: #3d9de8;
+}
+.ivc-type.type-Equipment {
+    color: #e8a33d;
 }
 .ivc-name {
     color: var(--text);
