@@ -13,9 +13,9 @@
 - Material 风格输入框，聚焦时支持一键清空
 - 打字机动效副标题、毛玻璃卡片界面
 - 注册表一键生成 / 卸载，非 Windows 环境自动提示
-- 内置 PVF 文件解析与编辑器：解密解析 `Script.pvf`，支持文件树浏览、脚本语法高亮、多编码切换、编辑 / 重命名 / 删除 / 导入 / 导出、重新打包（TODO）
+- 内置 PVF 文件解析与编辑器：解密解析 `Script.pvf`，支持文件树浏览、脚本语法高亮、多编码切换、编辑 / 重命名 / 删除 / 导入 / 导出、重新打包
 - 大文件全量浏览：数万行文件虚拟滚动查看，支持内容搜索（含 name 映射中文命中）与逐条跳转
-- 物品编码查看：解析 `Script.pvf` 中的 `stackable/stackable.lst`，映射展示物品 ID / 名称 / 引用路径，支持 JP / JPAG（0x55 XOR）两种格式
+- 物品编码查看：解析 `Script.pvf` 中的 `stackable/stackable.lst`、`equipment/equipment.lst`、`creature/creature.lst`，映射展示物品 ID / 类型 / 名称 / 品质 / 使用等级 / 引用路径，支持 JP / JPAG（0x55 XOR）两种格式
 - 兼容旧版浏览器（@vitejs/plugin-legacy 自动注入 polyfill）
 
 ## 使用方式
@@ -56,10 +56,10 @@
 ### 查看物品编码
 
 1. 在游戏启动页点击右上角「查看物品编码」入口进入
-2. 打开 `.pvf` 文件（如 `Script.pvf`），自动定位并解析 `stackable/stackable.lst`
-3. 表格展示物品 ID、物品名称（经字符串表映射）与引用路径，大列表虚拟滚动渲染
-4. 顶部搜索框可按物品 ID / 物品名称 / 引用路径过滤
-5. 支持 JP / JPAG（0x55 XOR）两种 PVF 包头格式，打开时自动识别并标注
+2. 打开 `.pvf` 文件（如 `Script.pvf`），自动定位并解析 `stackable/stackable.lst`、`equipment/equipment.lst`、`creature/creature.lst`
+3. 表格展示物品 ID、类型徽标、物品名称（经字符串表映射）、品质与使用等级、引用路径，大列表虚拟滚动渲染
+4. 顶部搜索框可按物品 ID / 类型 / 物品名称 / 引用路径过滤
+5. 品质色依客户端串表着色（普通 ~ 传说），支持 JP / JPAG（0x55 XOR）两种 PVF 包头格式，打开时自动识别并标注
 
 ## 环境变量
 
@@ -196,15 +196,17 @@ Response { success, code, message, body, sequence }
 - **大文件全量浏览**：超过 50 万字符的文件进入只读分支，虚拟滚动（固定行高 + 缓冲行）渲染数万行不掉帧，行号固定列、横向滚动跟随
 - **内容搜索**：全量视图内置搜索，大小写不敏感匹配原始行；未命中时通过字符串表将 `name_数字` 映射为中文名称后再匹配（如搜「金锭」命中 `name_97`），支持上 / 下一个跳转、行内 `<mark>` 高亮
 - **重新打包**：暂存修改 / 删除 / 重命名后重新加密压缩，导出新 PVF 文件
+- **解析性能**：字符串表 offset→value 缓存 + 文本解码器复用，文件表数百万次 `resolveString` 全 O(1) 查表（百万次约 4ms）；标签按 token 流偏移定向扫描、按 chunk 批量解压（每 chunk 仅解压一次）；文件树增量缓存，删除 / 重命名外零重建，50 万文件大档案秒级加载
 
 ### 物品编码查看
 
 独立于编辑器的只读工具，复用 `PvfArchive` 解析能力：
 
-- **自动定位**：打开 `Script.pvf` 后自动检索 `stackable/stackable.lst`（忽略大小写）
+- **自动定位**：打开 `Script.pvf` 后自动检索 `stackable/stackable.lst`、`equipment/equipment.lst`、`creature/creature.lst`（忽略大小写），对应「物品 / 装备 / 宠物」三类
 - **名称映射**：逐行解析编码 / 引用路径，配合字符串表将 `name_数字` 映射为中文物品名
-- **虚拟滚动表格**：物品 ID / 物品名称 / 引用路径三列（3:3:4），数万行仅渲染可视区域
-- **搜索过滤**：单输入框按 ID / 名称 / 路径实时过滤，带清除按钮
+- **品质与使用等级**：按 `[rarity]` / `[minimum level]` 标签从 token 流定向提取，品质色依客户端串表着色（普通 ~ 传说）
+- **虚拟滚动表格**：物品 ID / 类型 / 名称 / 品质 / 使用等级 / 引用路径六列，数万行仅渲染可视区域
+- **搜索过滤**：单输入框按 ID / 类型 / 名称 / 路径实时过滤，带清除按钮
 - **格式识别**：顶部徽章区分「JPAG」（`0x55 XOR` 头）与「JP」
 
 ## 项目结构
@@ -218,7 +220,7 @@ src/
 ├── components/
 │   ├── GameLauncher.vue          # 启动器主界面（登录、配置、注册表、状态探测）
 │   ├── PvfEditor.vue             # PVF 文件编辑器（解析、编辑、重打包）
-│   ├── ItemCodeViewer.vue        # 物品编码查看页（stackable.lst 解析、虚拟滚动、搜索）
+│   ├── ItemCodeViewer.vue        # 物品编码查看页（stackable/equipment/creature.lst、品质/等级、虚拟滚动、搜索）
 │   ├── MaterialTextField.vue     # Material 风格输入框
 │   └── ModalHost.vue             # 全局弹窗挂载点
 ├── hooks/
