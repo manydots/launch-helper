@@ -77,9 +77,10 @@ class PvfArchive {
         this.bodyOffset = 0;
         this.bodyLength = 0;
         this._chunkCache = new Map();
-        this._strCache = new Map();
         this._strAOffsetCache = null;
         this._strWOffsetCache = null;
+        this._strAValueCache = null;
+        this._strWValueCache = null;
         this._overlay = new Map(); // fileIndex -> Uint8Array (modified raw data)
         this._deleted = new Set(); // fileIndex -> true (soft-deleted)
         this._renamed = new Set(); // fileIndex -> true (renamed)
@@ -89,6 +90,8 @@ class PvfArchive {
         this._nameTagCache = new Map(); // fileIndex -> [name] 标签值缓存（.lst 名称展示）
         this._lstTextCache = new Map(); // fileIndex -> decodeLstWithNames 结果缓存（.lst 展示文本）
         this._lstRefMap = new Map(); // fileIndex -> Map<引用路径, file>（.lst 引用快捷跳转）
+        this._itemMetaCache = new Map(); // fileIndex -> { rarity, minLevel }（.lst 物品品质/使用等级解析缓存）
+        this._tagOffsetCache = null; // 常用标签的字符串表偏移缓存（懒构建）
         this._strNameMap = null; // key -> 中文名称 映射（懒加载扫描 .str 文件，getStrNameMap）
         this._pathIndex = null; // fullpath -> file 索引（懒构建，重命名后失效）
         this._nameIndex = null; // name -> [file] 索引（懒构建，重命名后失效）
@@ -163,6 +166,11 @@ class PvfArchive {
             this.strEncoding = detectEncoding(this.strABuf);
         }
 
+        // 提前构建字符串表缓存（offset->value 表）：文件表解析需要数百万次
+        // resolveString，缓存就绪后全部 O(1) 查表，避免逐条重复解码字符串表。
+        // 此阶段仍在加载 spinner 下，单帧解码成本可接受。
+        this._buildStringCaches();
+
         await new Promise(r => setTimeout(r, 0));
 
         // File table
@@ -174,10 +182,6 @@ class PvfArchive {
         const grpiBytes = buf.slice(grpiOffset, grpiOffset + grpiSize);
         pvfDecrypt("GRPI", grpiBytes, MAGIC_DECRYPT);
         this._parseGroups(grpiBytes, this.header.groupCount);
-
-        // Pre-build the string-offset cache (used by renames/edits) during load so
-        // the first rename doesn't synchronously decode the whole string table.
-        await this._buildStringOffsetCacheAsync();
 
         return this.header;
     }
@@ -247,16 +251,19 @@ class PvfArchive {
     // ---- String resolution ----
     resolveString(magicOff) {
         if (magicOff < 0) return "";
-        if (this._strCache.has(magicOff)) return this._strCache.get(magicOff);
-        let result;
         if ((magicOff & 1) !== 0) {
-            const off = (magicOff >> 1) * 2;
-            result = this._readUnicodeString(this.strWBuf, off);
-        } else {
-            const off = magicOff >> 1;
-            result = this._readUtf8String(this.strABuf, off);
+            const idx = magicOff >> 1;
+            const vc = this._strWValueCache;
+            if (vc && vc[idx] !== undefined) return vc[idx];
+            const result = this._readUnicodeString(this.strWBuf, idx * 2);
+            if (vc) vc[idx] = result;
+            return result;
         }
-        if (this._strCache.size < 50000) this._strCache.set(magicOff, result);
+        const idx = magicOff >> 1;
+        const vc = this._strAValueCache;
+        if (vc && vc[idx] !== undefined) return vc[idx];
+        const result = this._readUtf8String(this.strABuf, idx);
+        if (vc) vc[idx] = result;
         return result;
     }
 
@@ -277,10 +284,15 @@ class PvfArchive {
     }
 
     // ---- String offset management (for editing) ----
-    _ensureStringOffsetCache() {
+    // 同步构建字符串表缓存：value->offset（getOrAddStringOffset 编辑用）+
+    // offset->value（resolveString O(1) 查表用）。parse() 在文件表解析前调用，
+    // setEncoding 在重解析前调用；_ensureStringOffsetCache 兜底懒构建。
+    _buildStringCaches() {
         if (this._strAOffsetCache && this._strWOffsetCache) return;
         this._strAOffsetCache = new Map();
         this._strWOffsetCache = new Map();
+        this._strAValueCache = [];
+        this._strWValueCache = [];
         if (!this.strABuf) this.strABuf = new Uint8Array([0]);
         if (!this.strWBuf) this.strWBuf = new Uint8Array([0, 0]);
 
@@ -290,6 +302,7 @@ class PvfArchive {
             while (end < this.strABuf.length && this.strABuf[end] !== 0) end++;
             const value = end > pos ? decodeText(this.strABuf.subarray(pos, end), this.strEncoding) : "";
             if (!this._strAOffsetCache.has(value)) this._strAOffsetCache.set(value, pos << 1);
+            this._strAValueCache[pos] = value;
             pos = end + 1;
         }
 
@@ -299,46 +312,13 @@ class PvfArchive {
             while (end + 1 < this.strWBuf.length && !(this.strWBuf[end] === 0 && this.strWBuf[end + 1] === 0)) end += 2;
             const value = end > pos ? decodeUtf16LE(this.strWBuf.subarray(pos, end)) : "";
             if (!this._strWOffsetCache.has(value)) this._strWOffsetCache.set(value, ((pos >> 1) << 1) | 1);
+            this._strWValueCache[pos >> 1] = value;
             pos = end + 2;
         }
     }
 
-    // Async, yielding variant of _ensureStringOffsetCache. Called from parse() so
-    // the string table is decoded once during load (under the loading spinner)
-    // instead of synchronously freezing the UI on the first rename/edit.
-    async _buildStringOffsetCacheAsync() {
-        if (this._strAOffsetCache && this._strWOffsetCache) return;
-        this._strAOffsetCache = new Map();
-        this._strWOffsetCache = new Map();
-        if (!this.strABuf) this.strABuf = new Uint8Array([0]);
-        if (!this.strWBuf) this.strWBuf = new Uint8Array([0, 0]);
-
-        let lastYield = Date.now();
-        let pos = 0;
-        while (pos < this.strABuf.length) {
-            let end = pos;
-            while (end < this.strABuf.length && this.strABuf[end] !== 0) end++;
-            const value = end > pos ? decodeText(this.strABuf.subarray(pos, end), this.strEncoding) : "";
-            if (!this._strAOffsetCache.has(value)) this._strAOffsetCache.set(value, pos << 1);
-            pos = end + 1;
-            if (Date.now() - lastYield > 50) {
-                await new Promise(r => setTimeout(r, 0));
-                lastYield = Date.now();
-            }
-        }
-
-        pos = 0;
-        while (pos + 1 < this.strWBuf.length) {
-            let end = pos;
-            while (end + 1 < this.strWBuf.length && !(this.strWBuf[end] === 0 && this.strWBuf[end + 1] === 0)) end += 2;
-            const value = end > pos ? decodeUtf16LE(this.strWBuf.subarray(pos, end)) : "";
-            if (!this._strWOffsetCache.has(value)) this._strWOffsetCache.set(value, ((pos >> 1) << 1) | 1);
-            pos = end + 2;
-            if (Date.now() - lastYield > 50) {
-                await new Promise(r => setTimeout(r, 0));
-                lastYield = Date.now();
-            }
-        }
+    _ensureStringOffsetCache() {
+        this._buildStringCaches();
     }
 
     getOrAddStringOffset(value, preferUnicode = false) {
@@ -446,7 +426,7 @@ class PvfArchive {
         const encrypted = this.buf.slice(start, start + size);
         pvfDecrypt("BodY", encrypted, MAGIC_DECRYPT);
         const decompressed = await zlibDecompress(encrypted);
-        if (this._chunkCache.size >= 20) this._chunkCache.delete(this._chunkCache.keys().next().value);
+        if (this._chunkCache.size >= 64) this._chunkCache.delete(this._chunkCache.keys().next().value);
         this._chunkCache.set(chunkIndex, decompressed);
         return decompressed;
     }
@@ -467,6 +447,35 @@ class PvfArchive {
         const chunk = await this._getChunk(file.chunkIndex);
         if (!chunk || file.dataOffset < 0 || file.dataOffset + file.dataSize > chunk.length) return null;
         return chunk.subarray(file.dataOffset, file.dataOffset + file.dataSize);
+    }
+
+    // 批量读取文件数据：按 chunk 分组，每个 chunk 仅解压一次（不依赖 _chunkCache 的 20 槽窗口，
+    // 避免大档案下同一 chunk 被反复 zlib 解压）。返回与 files 等长的数组，读取失败项为 null。
+    async getFilesData(files) {
+        const result = new Array(files.length).fill(null);
+        const byChunk = new Map();
+        for (let i = 0; i < files.length; i++) {
+            const f = files[i];
+            if (!f || f.isDir || f.dataSize <= 0) continue;
+            if (this._overlay.has(f.index)) {
+                result[i] = this._overlay.get(f.index);
+                continue;
+            }
+            const list = byChunk.get(f.chunkIndex);
+            if (list) list.push(i);
+            else byChunk.set(f.chunkIndex, [i]);
+        }
+        const entries = [...byChunk.entries()].sort((a, b) => a[0] - b[0]);
+        for (const [chunkIndex, indexes] of entries) {
+            const chunk = await this._getChunk(chunkIndex);
+            if (!chunk) continue;
+            for (const i of indexes) {
+                const f = files[i];
+                if (f.dataOffset < 0 || f.dataOffset + f.dataSize > chunk.length) continue;
+                result[i] = chunk.subarray(f.dataOffset, f.dataOffset + f.dataSize);
+            }
+        }
+        return result;
     }
 
     // ---- Content decode ----
@@ -641,6 +650,86 @@ class PvfArchive {
         return idx;
     }
 
+    // 常用标签的字符串表偏移（懒构建）。token 流中标签以 type 3 token 的字符串表偏移表示，
+    // 直接比较偏移即可识别标签，无需对每个标签 token 调用 resolveString 解码文本。
+    _buildTagOffsetCache() {
+        if (this._tagOffsetCache) return this._tagOffsetCache;
+        this._ensureStringOffsetCache();
+        const cache = new Map();
+        for (const tag of ["[name]", "[rarity]", "[minimum level]"]) {
+            let off = this._strAOffsetCache.get(tag);
+            if (off == null) off = this._strWOffsetCache.get(tag);
+            cache.set(tag, off);
+        }
+        this._tagOffsetCache = cache;
+        return cache;
+    }
+
+    // 读取标签后的一个值 token：type 0 整数、type 6/5/7 字符串（resolveString 天然反转义）。
+    // type 3 若为标签形式（[...]）视为下一标签而非值，返回 null。
+    _readItemTagValue(data, off) {
+        if (off + 5 > data.length) return null;
+        const type = data[off];
+        const value = readInt32LE(data, off + 1);
+        if (type === 0) return value;
+        if (type === 6 || type === 5 || type === 7) return this.resolveString(value);
+        if (type === 3) {
+            const s = this.resolveString(value);
+            return /^\[.*\]$/.test(s) ? null : s;
+        }
+        return null;
+    }
+
+    // token 级定向扫描物品文件（dataType=1），提取 [name] / [rarity] / [minimum level] 三个标签，
+    // 避免 decodeContent 全文解码。返回 { name, rarity, minLevel }，字段缺省为 null。
+    // 字符串表中缺少任一目标标签偏移时返回 null，调用方应回退到全文文本解析。
+    _extractItemTagsFast(file, data) {
+        const tags = this._buildTagOffsetCache();
+        const nameOff = tags.get("[name]");
+        const rarityOff = tags.get("[rarity]");
+        const minLevelOff = tags.get("[minimum level]");
+        if (nameOff == null || rarityOff == null || minLevelOff == null) return null;
+        const result = { name: null, rarity: null, minLevel: null };
+        const len = data.length - (data.length % 5);
+        for (let off = 0; off < len; off += 5) {
+            if (data[off] !== 3) continue;
+            const value = readInt32LE(data, off + 1);
+            let key = null;
+            if (value === nameOff) key = "name";
+            else if (value === rarityOff) key = "rarity";
+            else if (value === minLevelOff) key = "minLevel";
+            if (!key) continue;
+            const v = this._readItemTagValue(data, off + 5);
+            if (key === "name") {
+                result.name = v == null ? null : String(v);
+            } else if (typeof v === "number") {
+                result[key] = v;
+            } else {
+                const m = /^(\d+)/.exec(String(v == null ? "" : v));
+                result[key] = m ? parseInt(m[1], 10) : null;
+            }
+        }
+        return result;
+    }
+
+    // 从已读取的文件数据中提取 [name] 标签值（无 IO）。token 流文件走 _extractItemTagsFast
+    // 定向扫描，顺带把 rarity/minLevel 写入 _itemMetaCache，供 listLstItemMeta 复用，
+    // 避免同一文件二次读取解码。非 token 流或无标签偏移时回退到全文文本解析。
+    _extractNameFromData(file, data) {
+        if (!data || data.length === 0) return "";
+        if (file.dataType === 1) {
+            const m = this._extractItemTagsFast(file, data);
+            if (m) {
+                if (!this._itemMetaCache.has(file.index)) {
+                    this._itemMetaCache.set(file.index, { rarity: m.rarity, minLevel: m.minLevel });
+                }
+                return m.name ? String(m.name) : "";
+            }
+            return extractNameFromText(this.decodeContent(file, data));
+        }
+        return extractNameFromText(this.decodeContent(file, data));
+    }
+
     // 提取指定文件的 [name] 标签值（异步读取 + 缓存）。常用于 .lst 列表展示引用文件的缩略名称。
     async extractNameTag(file) {
         if (!file || file.isDir) return "";
@@ -648,14 +737,41 @@ class PvfArchive {
         let name = "";
         try {
             const data = await this.getFileData(file);
-            if (data && data.length > 0) {
-                name = extractNameFromText(this.decodeContent(file, data));
-            }
+            name = this._extractNameFromData(file, data);
         } catch (e) {
             name = "";
         }
         this._nameTagCache.set(file.index, name);
         return name;
+    }
+
+    // 批量提取 [name] 标签值：内部用 getFilesData 按 chunk 分组读取，每个 chunk 仅解压一次。
+    // 返回与 files 等长的名称数组（缺省为空串），并顺带填充 _itemMetaCache。
+    async extractNameTags(files) {
+        const names = new Array(files.length).fill("");
+        const pending = [];
+        for (let i = 0; i < files.length; i++) {
+            const f = files[i];
+            if (!f || f.isDir || this._nameTagCache.has(f.index)) continue;
+            pending.push({ index: i, file: f });
+        }
+        pending.sort((a, b) => (a.file.chunkIndex || 0) - (b.file.chunkIndex || 0));
+        for (let i = 0; i < pending.length; i += 500) {
+            const batch = pending.slice(i, i + 500);
+            const datas = await this.getFilesData(batch.map(p => p.file));
+            for (let n = 0; n < batch.length; n++) {
+                const p = batch[n];
+                let name = "";
+                try {
+                    name = this._extractNameFromData(p.file, datas[n]);
+                } catch (e) {
+                    name = "";
+                }
+                this._nameTagCache.set(p.file.index, name);
+                names[p.index] = name;
+            }
+        }
+        return names;
     }
 
     // .lst 增强解码：在「数字 `引用路径`」行尾追加引用文件的 [name] 标签值，便于识别物品名称。
@@ -717,11 +833,9 @@ class PvfArchive {
             rows.push({ line, target });
             pending.set(target.index, target);
         }
-        const targets = [...pending.values()];
-        for (let i = 0; i < targets.length; i += 200) {
-            const batch = targets.slice(i, i + 200);
-            await Promise.all(batch.map(t => this.extractNameTag(t)));
-        }
+        // 按 chunk 顺序批处理，批量读取使每个 chunk 仅解压一次，避免大档案下反复 zlib 解压
+        const targets = [...pending.values()].sort((a, b) => (a.chunkIndex || 0) - (b.chunkIndex || 0));
+        await this.extractNameTags(targets);
         let matched = 0;
         let named = 0;
         const out = rows.map(({ line, target }) => {
@@ -762,6 +876,72 @@ class PvfArchive {
             items.push({ code: m[1], ref: m[2].replace(/``/g, "`"), name: m[3] ? m[3].trim() : "" });
         }
         return items;
+    }
+
+    // 确保 .lst 的引用映射（ref -> file）已构建；listLstItems / decodeLstWithNames 后即就绪。
+    async _ensureLstRefMap(file) {
+        await this.decodeLstWithNames(file);
+        return this._lstRefMap.get(file.index) || new Map();
+    }
+
+    // 从已读取的数据解析单个物品文件的 [rarity] / [minimum level]（无 IO）。
+    // 无相应标签或解析失败返回 null；两字段均为整数或 null。
+    // token 流文件走 _extractItemTagsFast 定向扫描；非 token 流或无标签偏移时回退全文文本解析。
+    _resolveItemMetaFromData(file, data) {
+        if (!data || data.length === 0) return null;
+        if (file.dataType === 1) {
+            const m = this._extractItemTagsFast(file, data);
+            if (m) {
+                return { rarity: m.rarity, minLevel: m.minLevel };
+            }
+            return {
+                rarity: extractIntFieldFromText(this.decodeContent(file, data), "rarity"),
+                minLevel: extractIntFieldFromText(this.decodeContent(file, data), "minimum level")
+            };
+        }
+        const text = this.decodeContent(file, data);
+        return {
+            rarity: extractIntFieldFromText(text, "rarity"),
+            minLevel: extractIntFieldFromText(text, "minimum level")
+        };
+    }
+
+    // 为 listLstItems 的结果批量解析引用物品文件的元数据（品质 rarity / 最低使用等级）。
+    // 返回与 items 等长的数组，每项 { rarity, minLevel }（字段可缺省为 null）；引用无法解析的项为 null。
+    // 大多数条目在 extractNameTag 阶段已预填充 _itemMetaCache；缺失项走 getFilesData 批量读取
+    // （按 chunk 分组，每个 chunk 仅解压一次），结果直接取自返回值，缓存仅作重复调用优化。
+    async listLstItemMeta(lstFile, items) {
+        const map = await this._ensureLstRefMap(lstFile);
+        const metas = new Array(items.length).fill(null);
+        const pending = [];
+        for (let i = 0; i < items.length; i++) {
+            const target = map.get(items[i].ref) || map.get(items[i].ref.replace(/`/g, "``"));
+            if (!target) continue;
+            const cached = this._itemMetaCache.get(target.index);
+            if (cached !== undefined) {
+                metas[i] = cached;
+            } else {
+                pending.push({ index: i, target });
+            }
+        }
+        pending.sort((a, b) => (a.target.chunkIndex || 0) - (b.target.chunkIndex || 0));
+        for (let i = 0; i < pending.length; i += 500) {
+            const batch = pending.slice(i, i + 500);
+            const datas = await this.getFilesData(batch.map(p => p.target));
+            for (let n = 0; n < batch.length; n++) {
+                const p = batch[n];
+                let meta = null;
+                try {
+                    meta = this._resolveItemMetaFromData(p.target, datas[n]);
+                } catch (e) {
+                    meta = null;
+                }
+                // 缓存条目数天然 ≤ 文件总数（每个文件最多一条），无需截断；截断会导致读不到结果
+                this._itemMetaCache.set(p.target.index, meta);
+                metas[p.index] = meta;
+            }
+        }
+        return metas;
     }
 
     // 文件类型: *.dat（dataType=1）等纯数字定长记录表
@@ -1010,6 +1190,7 @@ class PvfArchive {
         if (this._nameTagCache.has(fileIndex)) this._nameTagCache.delete(fileIndex);
         this._lstTextCache.delete(fileIndex);
         this._lstRefMap.delete(fileIndex);
+        this._itemMetaCache.delete(fileIndex);
     }
 
     setFileRawData(fileIndex, data) {
@@ -1017,6 +1198,7 @@ class PvfArchive {
         this._deleted.delete(fileIndex);
         this._lstTextCache.delete(fileIndex);
         this._lstRefMap.delete(fileIndex);
+        this._itemMetaCache.delete(fileIndex);
     }
 
     async exportFile(file) {
@@ -1103,16 +1285,21 @@ class PvfArchive {
     setEncoding(encoding) {
         if (this.strEncoding === encoding) return;
         this.strEncoding = encoding;
-        this._strCache.clear();
         this._strAOffsetCache = null;
         this._strWOffsetCache = null;
+        this._strAValueCache = null;
+        this._strWValueCache = null;
         this._nameTagCache.clear();
         this._lstTextCache.clear();
         this._lstRefMap.clear();
+        this._itemMetaCache.clear();
+        this._tagOffsetCache = null;
         this._strNameMap = null;
         this._pathIndex = null;
         this._nameIndex = null;
-        // Re-resolve all file names/paths with new encoding
+        // 编码变化后字符串解码结果随之变化：重建字符串表缓存，
+        // 再以 O(1) 查表方式重解析全部文件路径（避免 100 万次逐条解码）。
+        this._buildStringCaches();
         for (const file of this.files) {
             file.name = this.resolveString(file.nameOff);
             file.path = this.resolveString(file.pathOff);
@@ -1147,6 +1334,7 @@ class PvfArchive {
         this._nameIndex = null;
         this._lstTextCache.clear();
         this._lstRefMap.clear();
+        this._itemMetaCache.clear();
 
         return { oldFullpath, newFullpath: file.fullpath, oldName, newName };
     }
@@ -1173,6 +1361,7 @@ class PvfArchive {
         this._nameIndex = null;
         this._lstTextCache.clear();
         this._lstRefMap.clear();
+        this._itemMetaCache.clear();
     }
 
     // ---- Rename folder: update path of all files under it ----
@@ -1368,6 +1557,7 @@ class PvfArchive {
             this._nameIndex = null;
             this._lstTextCache.clear();
             this._lstRefMap.clear();
+            this._itemMetaCache.clear();
         }
     }
 
@@ -1391,6 +1581,7 @@ class PvfArchive {
         this._nameIndex = null;
         this._lstTextCache.clear();
         this._lstRefMap.clear();
+        this._itemMetaCache.clear();
     }
 
     get modifiedCount() {
@@ -1660,29 +1851,71 @@ export {
     stripLstNameAnnotations
 };
 
+// 解析 PVF 脚本标签的一行内容值（见 extractTagFromText）：
+//   反引号串 `xx`（含 `` 转义）      -> 解出字符串
+//   {5=`xx`} / {7=`xx`} 标记        -> 解出内部字符串
+//   纯数字行（可含连续数字）         -> 首个整数
+//   [xxx] 包裹值 / 裸字符串          -> 原样返回
+function parseTagValueLine(line) {
+    let m = /^`((?:[^`]|``)*)`$/.exec(line);
+    if (m) return m[1].replace(/``/g, "`");
+    m = /^\{[57]=`((?:[^`]|``)*)`\}$/.exec(line);
+    if (m) return m[1].replace(/``/g, "`");
+    m = /^(\d+)(?:\s|$)/.exec(line);
+    if (m) return parseInt(m[1], 10);
+    return line;
+}
+
+// 从 PVF 脚本文本中提取 [tag] 标签的值（通用，兼容闭合 [tag]...[\/tag] 与不闭合两种写法）。
+// 标签行允许前导缩进、大小写不敏感；内容行跳过空行与 # 注释。
+//   闭合形式：内容为 [tag] 与 [/tag] 之间的所有行；
+//   不闭合形式：内容为 [tag] 后到下一个标签（[...] 行）前的所有行（即紧邻值行）。
+// 返回 { raw, values, value, closed }：raw 为内容行数组（trim 后），values 为逐行解析值，
+// value 为 values 首项（无内容时为 null），closed 标记是否为闭合标签；标签不存在返回 null。
+function extractTagFromText(text, tag) {
+    if (!text) return null;
+    const lines = String(text).split("\n");
+    const open = "[" + String(tag).toLowerCase() + "]";
+    const close = "[/" + String(tag).toLowerCase() + "]";
+    for (let i = 0; i < lines.length; i++) {
+        if (lines[i].trim().toLowerCase() !== open) continue;
+        let closed = false;
+        for (let j = i + 1; j < lines.length; j++) {
+            if (lines[j].trim().toLowerCase() === close) {
+                closed = true;
+                break;
+            }
+        }
+        const raw = [];
+        for (let j = i + 1; j < lines.length; j++) {
+            const trimmed = lines[j].trim();
+            if (!trimmed || trimmed.startsWith("#")) continue;
+            if (trimmed.toLowerCase() === close) break;
+            if (!closed && trimmed.startsWith("[")) break;
+            raw.push(trimmed);
+        }
+        const values = raw.map(parseTagValueLine);
+        return { raw, values, value: values.length ? values[0] : null, closed };
+    }
+    return null;
+}
+
 // 从 PVF 脚本文本中提取 [name] 标签的字符串值（反引号串、{5=}/{7=} 标记或裸字符串）。
 // 用于 .lst 列表在行尾追加引用文件的缩略名称。
 function extractNameFromText(text) {
-    if (!text) return "";
-    const lines = String(text).split("\n");
-    for (let i = 0; i < lines.length; i++) {
-        const t = lines[i].trim();
-        if (/^\[name\]$/.test(t)) {
-            for (let j = i + 1; j < Math.min(lines.length, i + 6); j++) {
-                const s = lines[j].trim();
-                if (!s) continue;
-                if (s.startsWith("#")) continue;
-                const m = /^`((?:[^`]|``)*)`$/.exec(s);
-                if (m) return m[1].replace(/``/g, "`");
-                const m2 = /^\{[57]=`((?:[^`]|``)*)`\}$/.exec(s);
-                if (m2) return m2[1].replace(/``/g, "`");
-                // 裸字符串名称（type3 token）：紧邻 [name] 的非标签、非数字普通行
-                if (!s.startsWith("[") && !/^-?\d/.test(s)) return s;
-            }
-            return "";
-        }
-    }
-    return "";
+    const res = extractTagFromText(text, "name");
+    const v = res && res.value != null ? res.value : "";
+    return typeof v === "number" ? String(v) : v;
+}
+
+// 从 PVF 脚本文本中提取 [tag] 标签后的首个整数值（如 [rarity] / [minimum level]）。
+// 标签缺失、后随非数字内容返回 null；连续数字行取第一个数。
+function extractIntFieldFromText(text, tag) {
+    const res = extractTagFromText(text, tag);
+    if (!res || res.value == null) return null;
+    if (typeof res.value === "number") return res.value;
+    const m = /^(\d+)/.exec(String(res.value));
+    return m ? parseInt(m[1], 10) : null;
 }
 
 // 剥离 .lst 增强解码追加在行尾的「缩略名称」，保留数字 token（数字与名称同形但不可剥离）。
@@ -1709,7 +1942,7 @@ function sanitizeFilename(name) {
 
 // ---- Build hierarchical file tree from flat file list ----
 function buildFileTree(files) {
-    const root = { name: "", path: "", isDir: true, file: null, children: [] };
+    const root = { name: "", path: "", isDir: true, file: null, children: [], total: files.length };
     const folderMap = new Map();
     folderMap.set("", root);
 
@@ -1735,6 +1968,7 @@ function buildFileTree(files) {
                 curNode.children.push({
                     name: part,
                     path: curPath,
+                    pathLower: curPath.toLowerCase(),
                     isDir: false,
                     file,
                     children: []
@@ -1744,6 +1978,7 @@ function buildFileTree(files) {
                     const folderNode = {
                         name: part,
                         path: curPath,
+                        pathLower: curPath.toLowerCase(),
                         isDir: true,
                         file: null,
                         children: []

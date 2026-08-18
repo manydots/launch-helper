@@ -99,6 +99,7 @@ export default {
             drag: null,
             folds: [],
             isFolding: false,
+            changeStamp: 0,
             tagColor: localStorage.getItem("pvf-tag-color") || "#ff6b9d"
         };
     },
@@ -230,8 +231,17 @@ export default {
         },
         fileTree() {
             if (!this.archive) return null;
-            const files = this.archive.files.filter(f => !this.archive.isFileDeleted(f.index));
-            return buildFileTree(files);
+            this.changeStamp; // 依赖：删除/重命名等变更后强制重建缓存树
+            // 树缓存：50 万文件全量 filter+排序+建树只发生在结构变更时一次，
+            // 避免每次 _deleted 变化都触发全量重建（此前每次删除都同步卡顿）。
+            if (!this._treeCache) {
+                this._treeCache = buildFileTree(this.archive.files.filter(f => !this.archive.isFileDeleted(f.index)));
+            }
+            return this._treeCache;
+        },
+        visibleFileCount() {
+            const tree = this.fileTree;
+            return tree ? tree.total : 0;
         },
         isSearching() {
             return this.effectiveQuery.toLowerCase().trim().length > 0;
@@ -262,7 +272,7 @@ export default {
             function mark(node) {
                 let has = false;
                 if (!node.isDir) {
-                    has = node.path.toLowerCase().includes(q);
+                    has = node.pathLower.includes(q);
                     if (has) visiblePaths.add(node.path);
                 } else {
                     for (const child of node.children) {
@@ -369,6 +379,7 @@ export default {
                 const arch = new PvfArchive(buffer);
                 await arch.parse();
                 this.archive = arch;
+                this._treeCache = null;
                 this.fileName = file.name;
                 // Use auto-detected encoding from archive
                 this.strEncoding = arch.strEncoding;
@@ -777,6 +788,8 @@ export default {
                 if (ok) {
                     const idx = this.currentFile.index;
                     this.archive.revertFile(idx);
+                    this._treeCache = null;
+                    this.changeStamp++;
                     // Reload from archive
                     const file = this.archive.files[idx];
                     this.loadFileContent(file);
@@ -789,6 +802,8 @@ export default {
             confirmModal({ title: "撤销全部修改", message: `确认撤销全部 ${total} 项修改？` }).then(ok => {
                 if (ok) {
                     this.archive.revertAll();
+                    this._treeCache = null;
+                    this.changeStamp++;
                     this.strEncoding = this.archive.strEncoding;
                     if (this.currentFile) {
                         this.loadFileContent(this.archive.files[this.currentFile.index]);
@@ -808,6 +823,8 @@ export default {
                 confirmModal({ title: "删除目录", message: `确认删除目录 <code>${node.path}</code> 及其下 ${files.length} 个文件？` }).then(ok => {
                     if (ok) {
                         files.forEach(f => this.archive.deleteFile(f.index));
+                        this._treeCache = null;
+                        this.changeStamp++;
                         if (this.currentFile && files.some(f => f.index === this.currentFile.index)) {
                             this.currentFile = null;
                             this.editText = "";
@@ -822,6 +839,8 @@ export default {
                 }).then(ok => {
                     if (ok) {
                         this.archive.deleteFile(node.file.index);
+                        this._treeCache = null;
+                        this.changeStamp++;
                         if (this.currentFile && this.currentFile.index === node.file.index) {
                             this.currentFile = null;
                             this.editText = "";
@@ -878,6 +897,8 @@ export default {
                 }
 
                 this.loading = false;
+                this._treeCache = null;
+                this.changeStamp++;
 
                 // Reload current file if it was affected
                 if (this.currentFile) {
