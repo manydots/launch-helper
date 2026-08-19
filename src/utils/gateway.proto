@@ -109,23 +109,27 @@ message AccountResetPasswordRequest {
 // 邮件附件：一条物品/装备/宠物，写入 mailbox_attachments 并编码为 82B item_core BLOB。
 message MailAttachment {
   int32 item_id               = 1; // 物品模板ID
-  int32 count                 = 2; // 堆叠数量（消耗品/材料可 >1，装备/宠物建议 1）
-  int32 kind                  = 3; // 物品种类：0=消耗品(默认) 1=装备 2=消耗品 3=材料 5=宠物 6=宠物装备 8=时装 ...
+  int32 count                 = 2; // 堆叠数量（消耗品/材料可 >1，装备/时装/宠物建议 1）
+  int32 kind                  = 3; // 物品种类（必填 1-11，0 非法）：1=装备 2=消耗品 3=材料 5=宠物本体 6=宠物装备 7=宠物消耗品 8=时装 ...
+  // 注意：kind 必须与 item_id 对应物品的实际类型一致——网关直接按此编码 82B item_core，
+  // 服务端领取时按 kind 字节决定落库列表（8→时装列表、5/6/7→宠物列表），无 PVF 兜底解析，
+  // 与 item_type 不一致会被网关拒绝（code=1014）。
   int32 upgrade_level         = 4; // 强化/增幅等级（0-31，仅装备）
   int32 amplify_type          = 5; // 红字类型/增幅类型（仅装备）
-  // 来源列表类型：决定客户端将该物品放入哪个背包列表。与 kind 是两个独立维度，
-  // 但应匹配（服务端只据 item_type 映射 source_list_type，不校验 kind 一致性）：
-  //   0 = 主背包（默认）：物品/装备/消耗品/材料等（kind=0/1/2/3/4/6/...）
-  //   1 = 时装列表（Avatar）：建议配 kind=8 时装
-  //   3|7 = 宠物列表（Pet）：建议配 kind=5 宠物（及宠物系 6|7）
-  // 映射：0->0(Main) 1->1(Avatar) 3|7->3(Pet)，其余->0
+  // 来源列表类型：服务端强制校验（必须与 kind 匹配，否则返回 code=1014）：
+  //   0 = 主背包（默认）：装备/消耗品/材料（kind=1/2/3）
+  //   1 = 时装列表（Avatar=1）：须配 kind=8 时装
+  //   3|7 = 宠物列表（Pet=7）：须配 kind=5/6/7 宠物系
+  // 映射（对齐服务端 MapMailboxItemType / InventoryListType 枚举）：
+  //   0->0(Main) 1->1(Avatar) 3|7->7(Pet)，其余取值非法（code=1014）
   int32 item_type             = 6;
-  // 宠物序列号/句柄：仅对宠物类物品（kind=5 宠物本体）有意义；装备/消耗品/材料/时装等应保持 0。
-  // 写入 mailbox_attachments.pet_serial_or_handle，不编入 82B item_core。
+  // 宠物序列号/句柄：仅对宠物本体（kind=5）有意义；系统邮件发放应保持 0——
+  // 服务端领取时会将 82B 内宠物 UID 清零并重新分配（mailbox_attachments.pet_serial_or_handle 仅作存档展示）。
   int32 pet_serial_or_handle  = 7;
-  // 到期时间戳（Unix 秒，0=永久）：适用于限时类物品（如限时装备 kind=1、限时时装 kind=8、
+  // 到期时间戳（Unix 秒，0=永久）：适用于限时类物品（限时装备 kind=1、限时时装 kind=8、
   // 限时宠物 kind=5）；消耗品/材料等永久物品填 0。
-  // 写入 mailbox_attachments.expire_time，不编入 82B item_core。
+  // 网关同时写入 82B item_core 的 ExpireTime 字段与 mailbox_attachments.expire_time 列，
+  // 领取时转为时装/宠物 detail 的到期时间。
   int32 expire_time           = 8;
 }
 message SendItemsRequest {
@@ -134,6 +138,7 @@ message SendItemsRequest {
   string title                       = 3; // 邮件标题
   string body                        = 4; // 邮件正文
   repeated MailAttachment attachments = 5; // 附件（按 10 条/封上限自动拆分多封）
+  string idempotency_key             = 6; // 可选幂等键：非空时相同键的重试不重复投递（多封时按序号派生独立键）
 }
 message SendItemsResponse {
   int64  message_id     = 1; // 首封邮件 message_id

@@ -4,6 +4,10 @@ import { openModal, alertModal, useModal } from "@/hooks/useModal";
 import { api } from "@/utils/gateway";
 import MaterialTextField from "@/components/MaterialTextField.vue";
 
+// 堆叠物品（消耗品/材料/宠物消耗品等）单附件数量上限的固定参数。
+// 不可堆叠物品（装备/时装/宠物本体/宠物装备）数量恒为 1。
+const STACKABLE_COUNT_LIMIT = 10000;
+
 export default {
     name: "GameLauncher",
     components: { MaterialTextField },
@@ -16,6 +20,7 @@ export default {
             inputPath: this.store.gamePath || "",
             loading: false,
             showConfig: !this.store.gamePath,
+            stackableCountLimit: STACKABLE_COUNT_LIMIT,
             subtitleFull: "游戏快速启动工具",
             typedSubtitle: "",
             mode: "login",
@@ -246,8 +251,8 @@ export default {
             this.itemsKey = "";
             this.itemsRoles = [];
             this.itemsRoleId = "";
-            this.itemsTitle = "LaunchHelper 物品发放";
-            this.itemsBody = "LaunchHelper 管理工具的物品发放";
+            this.itemsTitle = "GM物品发放";
+            this.itemsBody = "";
             this.itemsList = [];
             this.itemsErrors = { mid: "", key: "", role: "", title: "" };
             this.mode = "items";
@@ -277,11 +282,20 @@ export default {
             this.itemsRoles = roles;
             this.itemsRoleId = String(roles[0].character_id);
         },
-        addAttachment() {
+        async addAttachment() {
+            if (this.itemsList.length >= 10) {
+                await alertModal({ title: "数量超限", message: "单次发放最多添加 10 个物品。" });
+                return;
+            }
+            const incomplete = this.itemsList.find(a => a.item_type === "" || !a.kind || !a.item_id || a.count < 1);
+            if (incomplete) {
+                await alertModal({ title: "附件不完整", message: "请将当前物品填写完整（背包类型、物品种类、物品ID、数量），再添加下一个物品。" });
+                return;
+            }
             this.itemsList.push(this.createAttachment());
         },
         createAttachment() {
-            return { item_id: 0, count: 1, kind: 0, upgrade_level: 0, amplify_type: 0, item_type: 0, pet_serial_or_handle: 0, expire_time: 0 };
+            return { item_id: 0, count: 1, kind: 3, upgrade_level: 0, amplify_type: "", item_type: 0, pet_serial_or_handle: 0, expire_time: 0, expire_days: 0 };
         },
         removeAttachment(index) {
             this.itemsList.splice(index, 1);
@@ -302,20 +316,21 @@ export default {
                 11: "鬼剑士(女)",
                 12: "守护者"
             };
-            return names[job] || `职业${job}`;
+            return names[job ?? 0] || `职业${job}`;
         },
         validKinds(itemType) {
             switch (itemType) {
                 case 1:
                     return [8];
                 case 3:
-                    return [5, 6];
+                case 7:
+                    return [6, 7]; // 5
                 default:
                     return [1, 2, 3];
             }
         },
         kindName(kind) {
-            const names = { 0: "未知", 1: "装备", 2: "消耗品", 3: "材料", 5: "宠物", 6: "宠物装备", 8: "时装" };
+            const names = { 0: "未知", 1: "装备", 2: "消耗品", 3: "材料", 5: "宠物本体", 6: "宠物装备", 7: "宠物消耗品", 8: "时装" };
             return names[kind] || `种类${kind}`;
         },
         updateAttachment(att, field, value) {
@@ -324,17 +339,25 @@ export default {
             if (field === "item_type") {
                 const valid = this.validKinds(num);
                 if (!valid.includes(att.kind)) att.kind = valid[0] || 0;
-                if (att.kind === 1 || att.kind === 5 || att.kind === 6) att.count = 1;
+                if (att.kind === 1 || att.kind === 5 || att.kind === 6 || att.kind === 8) att.count = 1;
+                att.upgrade_level = 0;
+                att.amplify_type = 0;
+                if (num !== 1) {
+                    att.expire_days = 0;
+                    att.expire_time = 0;
+                }
             }
             if (field === "kind") {
-                if (num === 1 || num === 5 || num === 6) att.count = 1;
-                if (num !== 1) {
-                    att.upgrade_level = 0;
-                    att.amplify_type = 0;
-                }
+                if (num === 1 || num === 5 || num === 6 || num === 8) att.count = 1;
+                att.upgrade_level = 0;
+                att.amplify_type = 0;
                 if (num !== 5) {
                     att.pet_serial_or_handle = 0;
                 }
+            }
+            if (field === "expire_days") {
+                att.expire_time = att.item_type === 1 && num > 0 ? Math.floor(Date.now() / 1000) + num * 86400 : 0;
+                if (att.item_type !== 1 && num > 0) att.expire_days = 0;
             }
             if (field === "amplify_type" && num === 128) {
                 att.upgrade_level = 0;
@@ -356,7 +379,25 @@ export default {
                 await alertModal({ title: "物品为空", message: "请至少添加一个物品附件。" });
                 return;
             }
+            const incomplete = this.itemsList.find(a => !a.item_id || !a.kind || a.count < 1);
+            if (incomplete) {
+                await alertModal({ title: "附件不完整", message: "每个附件都需要填写物品ID、选择物品种类，且数量不能小于 1。" });
+                return;
+            }
+            const overLimit = this.itemsList.find(a => (a.kind === 1 || a.kind === 5 || a.kind === 6 || a.kind === 8 ? a.count !== 1 : a.count > this.stackableCountLimit));
+            if (overLimit) {
+                await alertModal({ title: "数量超限", message: `不可堆叠物品（装备/时装/宠物本体/宠物装备）数量必须为 1；堆叠物品单个附件数量不能超过 ${this.stackableCountLimit}。` });
+                return;
+            }
+            const mismatch = this.itemsList.find(a => !this.validKinds(a.item_type).includes(a.kind));
+            if (mismatch) {
+                await alertModal({ title: "种类与背包不匹配", message: "物品种类与背包类型不匹配，请检查后重试。" });
+                return;
+            }
             this.loading = true;
+            this.itemsList.forEach(a => {
+                a.expire_time = a.item_type === 1 && a.expire_days > 0 ? Math.floor(Date.now() / 1000) + a.expire_days * 86400 : 0;
+            });
             const data = await this.callApi(api.sendItems(this.itemsMid.trim(), Number(this.itemsRoleId), this.itemsTitle.trim(), this.itemsBody.trim(), this.itemsList, this.itemsKey.trim()), {
                 errorTitle: "发放失败"
             });
@@ -580,7 +621,7 @@ export default {
 </script>
 
 <template>
-    <div class="launcher">
+    <div class="launcher" :class="{ wide: mode === 'items' }">
         <div class="launcher-card">
             <div v-if="gatewayEnabled" class="service-status" :class="statusInfo.cls" :title="statusInfo.text">
                 <span class="status-dot"></span>
@@ -715,84 +756,101 @@ export default {
                         </button>
                     </div>
 
-                    <template v-if="true">
+                    <template v-if="itemsRoles.length">
                         <div class="role-field" :class="{ focused: itemsRoleId }">
                             <select class="role-select" v-model="itemsRoleId">
                                 <option value="" disabled>请选择角色</option>
-                                <option v-for="r in itemsRoles" :key="r.character_id" :value="String(r.character_id)">{{ r.name }} (Lv.{{ r.level }} / {{ jobName(r.job) }})</option>
+                                <option v-for="r in itemsRoles" :key="r.character_id" :value="String(r.character_id)">{{ r.name }} (Lv{{ r.level }} / {{ jobName(r.job) }})</option>
                             </select>
                             <label class="role-label">角色</label>
                             <span class="role-underline"></span>
                             <p v-if="itemsErrors.role" class="role-error">{{ itemsErrors.role }}</p>
                         </div>
 
-                        <MaterialTextField v-model="itemsTitle" label="邮件标题" :error="itemsErrors.title" />
-                        <MaterialTextField v-model="itemsBody" label="邮件正文（可选）" />
+                        <!-- <MaterialTextField v-model="itemsTitle" label="邮件标题" :error="itemsErrors.title" /> -->
+                        <!-- <MaterialTextField v-model="itemsBody" label="邮件正文（可选）" /> -->
 
                         <div class="section-divider"><span>邮件附件</span></div>
 
-                        <div v-for="(att, idx) in itemsList" :key="idx" class="attachment-card">
-                            <div class="attachment-header">
-                                <span class="attachment-index">#{{ idx + 1 }}</span>
-                                <button class="attachment-remove" @click="removeAttachment(idx)" title="移除">
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                        <line x1="18" y1="6" x2="6" y2="18" />
-                                        <line x1="6" y1="6" x2="18" y2="18" />
-                                    </svg>
-                                </button>
-                            </div>
-                            <div class="attachment-grid">
-                                <label class="att-field">
-                                    <span class="att-label">背包类型</span>
-                                    <select class="att-input" :value="att.item_type" @change="updateAttachment(att, 'item_type', $event.target.value)">
-                                        <option :value="0">主背包</option>
-                                        <option :value="1">时装</option>
-                                        <option :value="3">宠物</option>
-                                    </select>
-                                </label>
-                                <label class="att-field">
-                                    <span class="att-label">物品种类</span>
-                                    <select class="att-input" :value="att.kind" @change="updateAttachment(att, 'kind', $event.target.value)">
-                                        <option v-for="k in validKinds(att.item_type)" :key="k" :value="k">{{ kindName(k) }}</option>
-                                    </select>
-                                </label>
-                                <label class="att-field">
-                                    <span class="att-label">物品ID</span>
-                                    <input type="number" class="att-input" :value="att.item_id" min="0" @input="updateAttachment(att, 'item_id', $event.target.value)" />
-                                </label>
-                                <label class="att-field">
-                                    <span class="att-label">物品数量</span>
-                                    <input
-                                        type="number"
-                                        class="att-input"
-                                        :value="att.count"
-                                        min="1"
-                                        :max="att.kind === 1 || att.kind === 5 || att.kind === 6 ? 1 : 100000"
-                                        :disabled="att.kind === 1 || att.kind === 5 || att.kind === 6"
-                                        @input="updateAttachment(att, 'count', $event.target.value)" />
-                                </label>
-                                <label class="att-field">
-                                    <span class="att-label">红字类型</span>
-                                    <select class="att-input" :value="att.amplify_type" :disabled="att.kind !== 1" @change="updateAttachment(att, 'amplify_type', $event.target.value)">
-                                        <option :value="0">无红字</option>
-                                        <option :value="1">体力</option>
-                                        <option :value="2">精神</option>
-                                        <option :value="3">力量</option>
-                                        <option :value="4">智力</option>
-                                        <option :value="128">未净化</option>
-                                    </select>
-                                </label>
-                                <label class="att-field">
-                                    <span class="att-label">强化等级</span>
-                                    <input
-                                        type="number"
-                                        class="att-input"
-                                        :value="att.upgrade_level"
-                                        min="0"
-                                        :max="att.amplify_type === 128 ? 0 : 31"
-                                        :disabled="att.kind !== 1 || att.amplify_type === 128"
-                                        @input="updateAttachment(att, 'upgrade_level', $event.target.value)" />
-                                </label>
+                        <div class="attachment-list">
+                            <div v-for="(att, idx) in itemsList" :key="idx" class="attachment-card">
+                                <div class="attachment-header">
+                                    <span class="attachment-index">#{{ idx + 1 }}</span>
+                                    <button class="attachment-remove" @click="removeAttachment(idx)" title="移除">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                            <line x1="18" y1="6" x2="6" y2="18" />
+                                            <line x1="6" y1="6" x2="18" y2="18" />
+                                        </svg>
+                                    </button>
+                                </div>
+                                <div class="attachment-grid">
+                                    <label class="att-field">
+                                        <span class="att-label">背包类型</span>
+                                        <select class="att-input" :value="att.item_type" @change="updateAttachment(att, 'item_type', $event.target.value)">
+                                            <option value="" disabled>请选择背包类型</option>
+                                            <option :value="0">主背包</option>
+                                            <option :value="1">时装</option>
+                                            <option :value="3">宠物</option>
+                                        </select>
+                                    </label>
+                                    <label class="att-field">
+                                        <span class="att-label">物品种类</span>
+                                        <select class="att-input" :value="att.kind" @change="updateAttachment(att, 'kind', $event.target.value)">
+                                            <option value="" disabled>请选择种类</option>
+                                            <option v-for="k in validKinds(att.item_type)" :key="k" :value="k">{{ kindName(k) }}</option>
+                                        </select>
+                                    </label>
+                                    <label class="att-field">
+                                        <span class="att-label">物品ID</span>
+                                        <input type="number" class="att-input" :value="att.item_id" min="0" @input="updateAttachment(att, 'item_id', $event.target.value)" />
+                                    </label>
+                                    <label class="att-field">
+                                        <span class="att-label">物品数量</span>
+                                        <input
+                                            type="number"
+                                            class="att-input"
+                                            :value="att.count"
+                                            min="1"
+                                            :max="att.kind === 1 || att.kind === 5 || att.kind === 6 || att.kind === 8 ? 1 : stackableCountLimit"
+                                            :disabled="att.kind === 1 || att.kind === 5 || att.kind === 6 || att.kind === 8"
+                                            @input="updateAttachment(att, 'count', $event.target.value)" />
+                                    </label>
+                                    <label class="att-field">
+                                        <span class="att-label">红字类型</span>
+                                        <select class="att-input" :value="att.amplify_type" :disabled="att.kind !== 1" @change="updateAttachment(att, 'amplify_type', $event.target.value)">
+                                            <option value="" disabled>请选择红字类型</option>
+                                            <option :value="0">无红字</option>
+                                            <option :value="1">体力</option>
+                                            <option :value="2">精神</option>
+                                            <option :value="3">力量</option>
+                                            <option :value="4">智力</option>
+                                            <option :value="128">未净化</option>
+                                        </select>
+                                    </label>
+                                    <label class="att-field">
+                                        <span class="att-label">强化等级</span>
+                                        <input
+                                            type="number"
+                                            class="att-input"
+                                            :value="att.upgrade_level"
+                                            min="0"
+                                            :max="att.amplify_type === 128 ? 0 : 31"
+                                            :disabled="att.kind !== 1 || att.amplify_type === 128"
+                                            @input="updateAttachment(att, 'upgrade_level', $event.target.value)" />
+                                    </label>
+                                    <label class="att-field">
+                                        <span class="att-label">限时天数</span>
+                                        <input
+                                            type="number"
+                                            class="att-input"
+                                            :value="att.expire_days"
+                                            min="0"
+                                            placeholder="0=永久（仅时装）"
+                                            :disabled="att.item_type !== 1"
+                                            @input="updateAttachment(att, 'expire_days', $event.target.value)" />
+                                    </label>
+                                </div>
+                                <p class="att-tip">物品种类必须与物品 ID 的实际类型一致，否则领取后会落入错误的背包列表；限时天数仅对时装（时装背包）生效；宠物发送宠物胶囊（主背包-消耗品）</p>
                             </div>
                         </div>
 
@@ -827,6 +885,9 @@ export default {
     width: 100%;
     margin: auto;
     font-family: system-ui, sans-serif;
+}
+.launcher.wide {
+    max-width: 960px;
 }
 .launcher-card {
     position: relative;
@@ -1109,10 +1170,10 @@ export default {
 .role-select {
     width: 100%;
     box-sizing: border-box;
-    padding: 10px 0 8px;
+    padding: 10px 22px 8px 0;
     border: none;
     border-bottom: 1px solid var(--input-border);
-    background: transparent;
+    background-color: transparent;
     font-size: 1rem;
     outline: none;
     color: var(--input-text);
@@ -1120,6 +1181,14 @@ export default {
     appearance: none;
     -webkit-appearance: none;
     cursor: pointer;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%236b7390' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 2px center;
+    background-size: 14px;
+}
+.role-select option {
+    background-color: var(--bg-2);
+    color: var(--input-text);
 }
 .role-select:focus {
     border-bottom-color: var(--accent);
@@ -1165,12 +1234,20 @@ export default {
     height: 13px;
     border-width: 1.5px;
 }
+.attachment-list {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+}
 .attachment-card {
     border: 1px solid var(--divider);
     border-radius: 10px;
     padding: 10px 12px;
     margin-bottom: 8px;
     background: var(--outline-3-hover-bg);
+}
+.attachment-list .attachment-card {
+    margin-bottom: 0;
 }
 .attachment-header {
     display: flex;
@@ -1240,11 +1317,27 @@ export default {
 }
 .att-input::-webkit-inner-spin-button,
 .att-input::-webkit-outer-spin-button {
-    opacity: 0.5;
+    -webkit-appearance: none;
+    appearance: none;
+    margin: 0;
+}
+.att-input[type="number"] {
+    appearance: textfield;
+    -moz-appearance: textfield;
 }
 select.att-input {
-    appearance: auto;
+    appearance: none;
+    -webkit-appearance: none;
     cursor: pointer;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%236b7390' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 7px center;
+    background-size: 12px;
+    padding-right: 24px;
+}
+select.att-input option {
+    background-color: var(--bg-2);
+    color: var(--input-text);
 }
 .add-attachment-btn {
     width: 100%;
@@ -1254,5 +1347,11 @@ select.att-input {
 .add-attachment-btn svg {
     width: 14px;
     height: 14px;
+}
+.att-tip {
+    margin: 6px 0 8px;
+    font-size: 0.72rem;
+    line-height: 1.5;
+    color: var(--text-muted);
 }
 </style>

@@ -159,10 +159,53 @@ Response { success, code, message, body, sequence }
 | `CMD_REGISTER` | 2 | 注册账号 |
 | `CMD_LOGIN` | 3 | 登录，返回 `launch_args` |
 | `CMD_CHANGE_PASSWORD` | 4 | 修改密码 |
+| `CMD_ACCOUNT_RESET` | 6 | 管理接口：强制重置密码 |
+| `CMD_SEND_ITEMS` | 7 | 管理接口：系统邮件投递物品 / 装备 / 时装 / 宠物 |
+| `CMD_GET_ROLES` | 8 | 管理接口：查询账号角色二维数据 |
 
 每个请求携带递增 `sequence`，响应按 `sequence` 匹配回调；单请求超时 15s。
 
 **开发桥接**：`vite-plugin-gateway-bridge.js` 仅在 dev server 运行，将 `VITE_GATEWAY_PATH`（默认 `/gateway`）的 WebSocket 数据以 4 字节大端长度前缀帧转发到 TCP 目标，使浏览器能直连仅支持 TCP 的后端网关。
+
+### 物品发放规则
+
+通过 `CMD_SEND_ITEMS`（管理接口，需管理密钥）以系统邮件投递物品，每个附件为一条 `MailAttachment`。以下规则与游戏服务端（GMTool / 网关）的最终行为保持一致：
+
+**背包类型（`item_type`）与物品种类（`kind`）**
+
+| 背包类型 | `item_type` | 允许的 `kind` | 领取落库列表 |
+|---|---|---|---|
+| 主背包 | 0 | 1 装备 / 2 消耗品 / 3 材料 | 主背包（Main=0） |
+| 时装 | 1 | 8 时装 | 时装列表（Avatar=1） |
+| 宠物 | 3 | 5 宠物本体 / 6 宠物装备 / 7 宠物消耗品 | 宠物列表（Pet=7） |
+
+- 服务端映射：`item_type` 0→主背包、1→时装、3|7→宠物，其余取值非法（返回 `code=1014`）。
+- **`kind` 必须与物品 ID 的实际类型一致**：网关按 `kind` 直接编码 82B `item_core`（无 PVF 兜底解析），服务端领取时按 82B 的 kind 字节决定落库列表（8→时装列表、5/6/7→宠物列表），不一致会被网关拒绝（`code=1014`）或落入错误背包。物品 ID 的实际类型按 PVF 元数据判定：路径含 `/avatar/`→时装、装备类型 `[creature]`→宠物本体、`artifact`→宠物装备、堆叠 `[creature]`/`[feed]`→宠物消耗品。
+
+**数量（`count`）**
+
+- 装备 / 时装 / 宠物本体 / 宠物装备为不可堆叠物品，数量强制为 1（服务端 `NormalizeInsertCount` 对不可堆叠物品恒返回 1）。
+- 堆叠物品（消耗品 / 材料 / 宠物消耗品等）单个附件数量上限统一为固定参数 `STACKABLE_COUNT_LIMIT`。
+
+**限时天数（`expire_days` → `expire_time`）**
+
+- 0=永久（默认）。
+- >0 时前端换算为 Unix 秒：`expire_time = now + 天数 × 86400`。
+- 服务端写入 `item_core.ExpireTime`，领取时转为时装 / 宠物 detail 的到期时间；仅对限时装备 / 时装 / 宠物有意义。
+
+**宠物序列号（`pet_serial_or_handle`）**
+
+- 系统邮件发放恒为 0：服务端领取时会将宠物 UID 清零并重新分配，该字段仅作存档展示，不参与实际发放。
+
+**幂等键（`idempotency_key`）**
+
+- 可选：非空时相同键的重试不重复投递（多封时网关按 `键#序号` 派生独立键，整单可安全重试）。
+
+**校验**
+
+- 前端在发放前校验：附件不能为空、每个附件需填写物品 ID 并选择种类；不可堆叠物品（装备 / 时装 / 宠物本体 / 宠物装备）数量必须为 1，堆叠物品单附件数量 ≤ `STACKABLE_COUNT_LIMIT`。
+- 网关强制校验：`kind` 必填（1-11，`0` 非法）、`item_type` 取值必须为 0/1/3/7 且与 `kind` 匹配，违例均返回 `code=1014`。
+- 服务端按 10 条附件/封上限自动拆分多封邮件，装备附件的强化 / 增幅 / 锻造属性仅对 `kind=1` 生效。
 
 ### 服务状态探测
 
