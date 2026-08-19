@@ -12,14 +12,23 @@ const RegisterResponse = root.lookupType("gateway.RegisterResponse");
 const LoginRequest = root.lookupType("gateway.LoginRequest");
 const LoginResponse = root.lookupType("gateway.LoginResponse");
 const ChangePasswordRequest = root.lookupType("gateway.ChangePasswordRequest");
-const AdminResetPasswordRequest = root.lookupType("gateway.AdminResetPasswordRequest");
+const AccountInfoRequest = root.lookupType("gateway.AccountInfoRequest");
+const AccountInfoResponse = root.lookupType("gateway.AccountInfoResponse");
+const AccountResetPasswordRequest = root.lookupType("gateway.AccountResetPasswordRequest");
+const SendItemsRequest = root.lookupType("gateway.SendItemsRequest");
+const SendItemsResponse = root.lookupType("gateway.SendItemsResponse");
+const GetRolesRequest = root.lookupType("gateway.GetRolesRequest");
+const AccountRoleTree = root.lookupType("gateway.AccountRoleTree");
 
 const CMD = {
     HEALTH: 1,
     REGISTER: 2,
     LOGIN: 3,
     CHANGE_PASSWORD: 4,
-    ADMIN_RESET: 6
+    ACCOUNT_INFO: 5,
+    ACCOUNT_RESET: 6,
+    SEND_ITEMS: 7,
+    GET_ROLES: 8
 };
 
 const RESPONSE_TYPES = {
@@ -27,7 +36,10 @@ const RESPONSE_TYPES = {
     [CMD.REGISTER]: RegisterResponse,
     [CMD.LOGIN]: LoginResponse,
     [CMD.CHANGE_PASSWORD]: null,
-    [CMD.ADMIN_RESET]: null
+    [CMD.ACCOUNT_INFO]: AccountInfoResponse,
+    [CMD.ACCOUNT_RESET]: null,
+    [CMD.SEND_ITEMS]: SendItemsResponse,
+    [CMD.GET_ROLES]: AccountRoleTree
 };
 
 const CMD_NAMES = {
@@ -35,7 +47,10 @@ const CMD_NAMES = {
     [CMD.REGISTER]: "REGISTER",
     [CMD.LOGIN]: "LOGIN",
     [CMD.CHANGE_PASSWORD]: "CHANGE_PASSWORD",
-    [CMD.ADMIN_RESET]: "ADMIN_RESET"
+    [CMD.ACCOUNT_INFO]: "ACCOUNT_INFO",
+    [CMD.ACCOUNT_RESET]: "ACCOUNT_RESET",
+    [CMD.SEND_ITEMS]: "SEND_ITEMS",
+    [CMD.GET_ROLES]: "GET_ROLES"
 };
 
 const REQUEST_TYPES = {
@@ -43,7 +58,10 @@ const REQUEST_TYPES = {
     [CMD.REGISTER]: RegisterRequest,
     [CMD.LOGIN]: LoginRequest,
     [CMD.CHANGE_PASSWORD]: ChangePasswordRequest,
-    [CMD.ADMIN_RESET]: AdminResetPasswordRequest
+    [CMD.ACCOUNT_INFO]: AccountInfoRequest,
+    [CMD.ACCOUNT_RESET]: AccountResetPasswordRequest,
+    [CMD.SEND_ITEMS]: SendItemsRequest,
+    [CMD.GET_ROLES]: GetRolesRequest
 };
 
 const TIMEOUT_MS = 15000;
@@ -207,15 +225,38 @@ class GatewayClient {
         return this.send(CMD.CHANGE_PASSWORD, body);
     }
 
-    async adminResetPassword(m_id, new_password, new_password_confirm, authKey) {
-        const body = AdminResetPasswordRequest.encode(
-            AdminResetPasswordRequest.create({
+    async accountInfo(m_id) {
+        const body = AccountInfoRequest.encode(AccountInfoRequest.create({ m_id })).finish();
+        return this.send(CMD.ACCOUNT_INFO, body);
+    }
+
+    async accountResetPassword(m_id, new_password, new_password_confirm, authKey) {
+        const body = AccountResetPasswordRequest.encode(
+            AccountResetPasswordRequest.create({
                 m_id,
                 new_password,
                 new_password_confirm
             })
         ).finish();
-        return this.send(CMD.ADMIN_RESET, body, authKey);
+        return this.send(CMD.ACCOUNT_RESET, body, authKey);
+    }
+
+    async sendItems(m_id, character_id, title, body_text, attachments, authKey) {
+        const body = SendItemsRequest.encode(
+            SendItemsRequest.create({
+                m_id,
+                character_id,
+                title,
+                body: body_text,
+                attachments
+            })
+        ).finish();
+        return this.send(CMD.SEND_ITEMS, body, authKey);
+    }
+
+    async getRoles(m_id, authKey) {
+        const body = GetRolesRequest.encode(GetRolesRequest.create({ m_id })).finish();
+        return this.send(CMD.GET_ROLES, body, authKey);
     }
 }
 
@@ -226,5 +267,10 @@ export const api = {
     register: (m_id, password, password_confirm) => client.register(m_id, password, password_confirm),
     login: (m_id, password) => client.login(m_id, password),
     changePassword: (m_id, old_password, new_password, new_password_confirm) => client.changePassword(m_id, old_password, new_password, new_password_confirm),
-    adminResetPassword: (m_id, new_password, new_password_confirm, authKey) => client.adminResetPassword(m_id, new_password, new_password_confirm, authKey)
+    accountInfo: m_id => client.accountInfo(m_id),
+    accountResetPassword: (m_id, new_password, new_password_confirm, authKey) => client.accountResetPassword(m_id, new_password, new_password_confirm, authKey),
+    sendItems: (m_id, character_id, title, body, attachments, authKey) => client.sendItems(m_id, character_id, title, body, attachments, authKey),
+    getRoles: (m_id, authKey) => client.getRoles(m_id, authKey),
+    // 向后兼容别名
+    adminResetPassword: (m_id, new_password, new_password_confirm, authKey) => client.accountResetPassword(m_id, new_password, new_password_confirm, authKey)
 };

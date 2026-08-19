@@ -12,7 +12,9 @@ enum Command {
   CMD_LOGIN           = 3;
   CMD_CHANGE_PASSWORD = 4;
   CMD_ACCOUNT_INFO    = 5;
-  CMD_ADMIN_RESET     = 6;
+  CMD_ACCOUNT_RESET   = 6; // 管理接口：无需旧密码强制重置密码（原 CMD_ADMIN_RESET，值不变）
+  CMD_SEND_ITEMS      = 7; // 管理接口：系统邮件投递物品/装备/宠物
+  CMD_GET_ROLES       = 8; // 管理接口：查询账号角色二维数据(树)
 }
 
 // 通用请求头（TCP + UDP + WebSocket 共用）
@@ -96,9 +98,76 @@ message AccountInfoResponse {
   string last_login_ip     = 16;
 }
 
-// --- CMD_ADMIN_RESET ---
-message AdminResetPasswordRequest {
+// --- CMD_ACCOUNT_RESET ---
+message AccountResetPasswordRequest {
   string m_id                 = 1;
   string new_password         = 2;
   string new_password_confirm = 3;
+}
+
+// --- CMD_SEND_ITEMS ---
+// 邮件附件：一条物品/装备/宠物，写入 mailbox_attachments 并编码为 82B item_core BLOB。
+message MailAttachment {
+  int32 item_id               = 1; // 物品模板ID
+  int32 count                 = 2; // 堆叠数量（消耗品/材料可 >1，装备/宠物建议 1）
+  int32 kind                  = 3; // 物品种类：0=消耗品(默认) 1=装备 2=消耗品 3=材料 5=宠物 6=宠物装备 8=时装 ...
+  int32 upgrade_level         = 4; // 强化/增幅等级（0-31，仅装备）
+  int32 amplify_type          = 5; // 红字类型/增幅类型（仅装备）
+  // 来源列表类型：决定客户端将该物品放入哪个背包列表。与 kind 是两个独立维度，
+  // 但应匹配（服务端只据 item_type 映射 source_list_type，不校验 kind 一致性）：
+  //   0 = 主背包（默认）：物品/装备/消耗品/材料等（kind=0/1/2/3/4/6/...）
+  //   1 = 时装列表（Avatar）：建议配 kind=8 时装
+  //   3|7 = 宠物列表（Pet）：建议配 kind=5 宠物（及宠物系 6|7）
+  // 映射：0->0(Main) 1->1(Avatar) 3|7->3(Pet)，其余->0
+  int32 item_type             = 6;
+  // 宠物序列号/句柄：仅对宠物类物品（kind=5 宠物本体）有意义；装备/消耗品/材料/时装等应保持 0。
+  // 写入 mailbox_attachments.pet_serial_or_handle，不编入 82B item_core。
+  int32 pet_serial_or_handle  = 7;
+  // 到期时间戳（Unix 秒，0=永久）：适用于限时类物品（如限时装备 kind=1、限时时装 kind=8、
+  // 限时宠物 kind=5）；消耗品/材料等永久物品填 0。
+  // 写入 mailbox_attachments.expire_time，不编入 82B item_core。
+  int32 expire_time           = 8;
+}
+message SendItemsRequest {
+  string m_id                        = 1; // 目标账号
+  int32  character_id                = 2; // 收件角色ID（必填，必须 > 0）
+  string title                       = 3; // 邮件标题
+  string body                        = 4; // 邮件正文
+  repeated MailAttachment attachments = 5; // 附件（按 10 条/封上限自动拆分多封）
+}
+message SendItemsResponse {
+  int64  message_id     = 1; // 首封邮件 message_id
+  int32  character_id   = 2; // 实际收件角色
+  string character_name = 3; // 实际收件角色名
+  int32  mail_count     = 4; // 实际投递邮件封数
+}
+
+// --- CMD_GET_ROLES ---
+message GetRolesRequest {
+  string m_id = 1;
+}
+message RoleInfo {
+  int64  character_id         = 1;
+  string name                 = 2;
+  int32  job                  = 3;
+  int32  grow_type            = 4;
+  int32  level                = 5;
+  int32  exp                  = 6;
+  int32  pvp_grade            = 7;
+  int32  pvp_rating_grade     = 8;
+  int32  user_state           = 9;
+  int32  town_id              = 10;
+  int32  area_id              = 11;
+  int32  slot_index           = 12;
+  int64  stat_hp_max          = 13; // 生命上限（character_subtype1_fields）
+  int64  stat_mp_max          = 14; // 魔力上限
+  int32  stat_physical_attack = 15; // 物理攻击
+  int32  stat_magical_attack  = 16; // 魔法攻击
+  string created_at           = 17;
+  string updated_at           = 18;
+}
+message AccountRoleTree {
+  int64  account_id = 1;
+  string m_id       = 2;
+  repeated RoleInfo roles = 3;
 }
