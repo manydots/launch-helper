@@ -3,6 +3,7 @@ import { fileURLToPath, URL } from "node:url";
 import { defineConfig, loadEnv } from "vite";
 import vue from "@vitejs/plugin-vue";
 import legacy from "@vitejs/plugin-legacy";
+import ElementPlus from "unplugin-element-plus/vite";
 // import vueDevTools from "vite-plugin-vue-devtools";
 import gatewayBridge from "./vite-plugin-gateway-bridge.js";
 
@@ -28,6 +29,7 @@ export default defineConfig(({ mode }) => {
             legacy({
                 targets: ["defaults", "not IE 11"]
             }),
+            ElementPlus(),
             gatewayBridge({ target: gatewayTarget, path: gatewayPath })
         ],
         resolve: {

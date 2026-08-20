@@ -1,6 +1,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { useRouter } from "vue-router";
+import { ElCascader, ElInput, ElSelect, ElOption, ElInputNumber } from "element-plus";
 import { PvfArchive, firstTypeTag, stackSegment, equipSpecial, classifyItemExpiration } from "@/utils/pvfTool.js";
 import { TwPvfArchive } from "@/utils/pvfToolTw.js";
 
