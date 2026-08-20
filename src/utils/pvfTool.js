@@ -668,13 +668,29 @@ class PvfArchive {
         return idx;
     }
 
+    // 物品元数据快速定向扫描的标签集。[name] 为必需（缺失则整体回退全文解析），
+    // 其余标签可选：存在才提取，缺失字段为 null。语义对齐 86JPGMTool 物品发放解析
+    // （PvfIndexService.Items.cs / StackableExpirationPolicyResolver.cs，见 docs/pvf-item-grant-parsing.md）。
+    static ITEM_META_TAGS = [
+        "[name]",
+        "[rarity]",
+        "[minimum level]",
+        "[equipment type]",
+        "[stackable type]",
+        "[item category]",
+        "[random option]",
+        "[usable period]",
+        "[expiration date]",
+        "[daily delete item]"
+    ];
+
     // 常用标签的字符串表偏移（懒构建）。token 流中标签以 type 3 token 的字符串表偏移表示，
     // 直接比较偏移即可识别标签，无需对每个标签 token 调用 resolveString 解码文本。
     _buildTagOffsetCache() {
         if (this._tagOffsetCache) return this._tagOffsetCache;
         this._ensureStringOffsetCache();
         const cache = new Map();
-        for (const tag of ["[name]", "[rarity]", "[minimum level]"]) {
+        for (const tag of PvfArchive.ITEM_META_TAGS) {
             let off = this._strAOffsetCache.get(tag);
             if (off == null) off = this._strWOffsetCache.get(tag);
             cache.set(tag, off);
@@ -698,40 +714,79 @@ class PvfArchive {
         return null;
     }
 
-    // token 级定向扫描物品文件（dataType=1），提取 [name] / [rarity] / [minimum level] 三个标签，
-    // 避免 decodeContent 全文解码。返回 { name, rarity, minLevel }，字段缺省为 null。
-    // 字符串表中缺少任一目标标签偏移时返回 null，调用方应回退到全文文本解析。
+    // token 级定向扫描物品文件（dataType=1），提取 ITEM_META_TAGS 标签集，避免 decodeContent 全文解码。
+    // 返回 { name, rarity, minLevel, equipType, stackableType, itemCategory, hasRandomOption,
+    //        usablePeriod, expirationDate, dailyDelete }，字段缺省为 null。
+    // 字符串表中缺少 [name] 偏移时返回 null，调用方应回退到全文文本解析；其余标签可选。
     _extractItemTagsFast(file, data) {
         const tags = this._buildTagOffsetCache();
         const nameOff = tags.get("[name]");
-        const rarityOff = tags.get("[rarity]");
-        const minLevelOff = tags.get("[minimum level]");
-        if (nameOff == null || rarityOff == null || minLevelOff == null) return null;
-        const result = { name: null, rarity: null, minLevel: null };
+        if (nameOff == null) return null;
+        const offsetToKey = new Map();
+        for (const tag of PvfArchive.ITEM_META_TAGS) {
+            const off = tags.get(tag);
+            if (off == null) continue;
+            offsetToKey.set(off, tag);
+        }
+        const result = {
+            name: null,
+            rarity: null,
+            minLevel: null,
+            equipType: null,
+            stackableType: null,
+            itemCategory: null,
+            hasRandomOption: false,
+            usablePeriod: null,
+            expirationDate: null,
+            dailyDelete: null
+        };
         const len = data.length - (data.length % 5);
         for (let off = 0; off < len; off += 5) {
             if (data[off] !== 3) continue;
             const value = readInt32LE(data, off + 1);
-            let key = null;
-            if (value === nameOff) key = "name";
-            else if (value === rarityOff) key = "rarity";
-            else if (value === minLevelOff) key = "minLevel";
-            if (!key) continue;
+            const tag = offsetToKey.get(value);
+            if (!tag) continue;
             const v = this._readItemTagValue(data, off + 5);
-            if (key === "name") {
-                result.name = v == null ? null : String(v);
-            } else if (typeof v === "number") {
-                result[key] = v;
-            } else {
-                const m = /^(\d+)/.exec(String(v == null ? "" : v));
-                result[key] = m ? parseInt(m[1], 10) : null;
+            switch (tag) {
+                case "[name]":
+                    result.name = v == null ? null : String(v);
+                    break;
+                case "[random option]":
+                    // 仅记存在性；值（若有）不参与分类
+                    result.hasRandomOption = true;
+                    break;
+                case "[rarity]":
+                case "[minimum level]":
+                case "[usable period]":
+                case "[daily delete item]": {
+                    if (typeof v === "number") {
+                        result[tag === "[rarity]" ? "rarity" : tag === "[minimum level]" ? "minLevel" : tag === "[usable period]" ? "usablePeriod" : "dailyDelete"] = v;
+                    } else {
+                        const m = /^(\d+)/.exec(String(v == null ? "" : v));
+                        const parsed = m ? parseInt(m[1], 10) : null;
+                        result[tag === "[rarity]" ? "rarity" : tag === "[minimum level]" ? "minLevel" : tag === "[usable period]" ? "usablePeriod" : "dailyDelete"] = parsed;
+                    }
+                    break;
+                }
+                case "[equipment type]":
+                    result.equipType = v == null ? null : String(v);
+                    break;
+                case "[stackable type]":
+                    result.stackableType = v == null ? null : String(v);
+                    break;
+                case "[item category]":
+                    result.itemCategory = v == null ? null : String(v);
+                    break;
+                case "[expiration date]":
+                    result.expirationDate = v == null ? null : String(v);
+                    break;
             }
         }
         return result;
     }
 
     // 从已读取的文件数据中提取 [name] 标签值（无 IO）。token 流文件走 _extractItemTagsFast
-    // 定向扫描，顺带把 rarity/minLevel 写入 _itemMetaCache，供 listLstItemMeta 复用，
+    // 定向扫描，顺带把完整物品元数据写入 _itemMetaCache，供 listLstItemMeta 复用，
     // 避免同一文件二次读取解码。非 token 流或无标签偏移时回退到全文文本解析。
     _extractNameFromData(file, data) {
         if (!data || data.length === 0) return "";
@@ -739,13 +794,28 @@ class PvfArchive {
             const m = this._extractItemTagsFast(file, data);
             if (m) {
                 if (!this._itemMetaCache.has(file.index)) {
-                    this._itemMetaCache.set(file.index, { rarity: m.rarity, minLevel: m.minLevel });
+                    this._itemMetaCache.set(file.index, this._metaWithoutName(m));
                 }
                 return m.name ? String(m.name) : "";
             }
             return extractNameFromText(this.decodeContent(file, data));
         }
         return extractNameFromText(this.decodeContent(file, data));
+    }
+
+    // 剔除 name 字段的元数据快照（_itemMetaCache 存 rarity/minLevel 等非展示键，name 走 _nameTagCache）
+    _metaWithoutName(m) {
+        return {
+            rarity: m.rarity,
+            minLevel: m.minLevel,
+            equipType: m.equipType,
+            stackableType: m.stackableType,
+            itemCategory: m.itemCategory,
+            hasRandomOption: m.hasRandomOption,
+            usablePeriod: m.usablePeriod,
+            expirationDate: m.expirationDate,
+            dailyDelete: m.dailyDelete
+        };
     }
 
     // 提取指定文件的 [name] 标签值（异步读取 + 缓存）。常用于 .lst 列表展示引用文件的缩略名称。
@@ -904,30 +974,40 @@ class PvfArchive {
         return this._lstRefMap.get(file.index) || new Map();
     }
 
-    // 从已读取的数据解析单个物品文件的 [rarity] / [minimum level]（无 IO）。
-    // 无相应标签或解析失败返回 null；两字段均为整数或 null。
+    // 从已读取的数据解析单个物品文件的完整元数据（无 IO）。
+    // 无相应标签或解析失败时字段为 null；整数字段为 number 或 null。
     // token 流文件走 _extractItemTagsFast 定向扫描；非 token 流或无标签偏移时回退全文文本解析。
     _resolveItemMetaFromData(file, data) {
         if (!data || data.length === 0) return null;
         if (file.dataType === 1) {
             const m = this._extractItemTagsFast(file, data);
-            if (m) {
-                return { rarity: m.rarity, minLevel: m.minLevel };
-            }
-            return {
-                rarity: extractIntFieldFromText(this.decodeContent(file, data), "rarity"),
-                minLevel: extractIntFieldFromText(this.decodeContent(file, data), "minimum level")
-            };
+            if (m) return this._metaWithoutName(m);
+            const text = this.decodeContent(file, data);
+            return this._metaFromText(text);
         }
-        const text = this.decodeContent(file, data);
+        return this._metaFromText(this.decodeContent(file, data));
+    }
+
+    // 全文文本路径的元数据提取（与 token 快速路径同语义）
+    _metaFromText(text) {
+        const tagRes = extractTagFromText(text, "random option");
         return {
             rarity: extractIntFieldFromText(text, "rarity"),
-            minLevel: extractIntFieldFromText(text, "minimum level")
+            minLevel: extractIntFieldFromText(text, "minimum level"),
+            equipType: extractStringFieldFromText(text, "equipment type"),
+            stackableType: extractStringFieldFromText(text, "stackable type"),
+            itemCategory: extractStringFieldFromText(text, "item category"),
+            hasRandomOption: tagRes != null,
+            usablePeriod: extractIntFieldFromText(text, "usable period"),
+            expirationDate: extractStringFieldFromText(text, "expiration date"),
+            dailyDelete: extractIntFieldFromText(text, "daily delete item")
         };
     }
 
-    // 为 listLstItems 的结果批量解析引用物品文件的元数据（品质 rarity / 最低使用等级）。
-    // 返回与 items 等长的数组，每项 { rarity, minLevel }（字段可缺省为 null）；引用无法解析的项为 null。
+    // 为 listLstItems 的结果批量解析引用物品文件的元数据（品质/使用等级/类型/品质细分/期限）。
+    // 返回与 items 等长的数组，每项 { rarity, minLevel, equipType, stackableType, itemCategory,
+    // hasRandomOption, usablePeriod, expirationDate, dailyDelete }（字段可缺省为 null）；
+    // 引用无法解析的项为 null。
     // 大多数条目在 extractNameTag 阶段已预填充 _itemMetaCache；缺失项走 getFilesData 批量读取
     // （按 chunk 分组，每个 chunk 仅解压一次），结果直接取自返回值，缓存仅作重复调用优化。
     async listLstItemMeta(lstFile, items) {
@@ -1948,6 +2028,113 @@ function extractIntFieldFromText(text, tag) {
     if (typeof res.value === "number") return res.value;
     const m = /^(\d+)/.exec(String(res.value));
     return m ? parseInt(m[1], 10) : null;
+}
+
+// 从 PVF 脚本文本中提取 [tag] 标签后的字符串值（如 [equipment type] / [expiration date]）。
+// 标签缺失返回 null；数值型内容转为字符串（保持与 token 快速路径 _readItemTagValue 一致的形态）。
+function extractStringFieldFromText(text, tag) {
+    const res = extractTagFromText(text, tag);
+    if (!res || res.value == null) return null;
+    return String(res.value);
+}
+
+// ==================== 物品发放解析规则（对齐 86JPGMTool，见 docs/pvf-item-grant-parsing.md） ====================
+
+// 去反引号、小写后取类型串的首个 [xxx] 标签（86JPGMTool PvfIndexService.Items.FirstTag）。
+// 如 "`[weapon]`" -> "weapon"；无标签返回 null。
+export function firstTypeTag(typeString) {
+    if (!typeString) return null;
+    const m = /\[([a-z ]+)\]/.exec(String(typeString).replace(/`/g, "").toLowerCase());
+    return m ? m[1].trim() : null;
+}
+
+// 堆叠物背包入格分段（86JPGMTool PvfIndexService.Items.StackSegment / ItemMetadataResolver.GetSlotRange 同语义）。
+export function stackSegment(stackableType) {
+    if (!stackableType || !String(stackableType).trim()) return "消耗品";
+    const st = String(stackableType).replace(/`/g, "").trim().toLowerCase();
+    if (st.startsWith("[material]")) return st.endsWith("4") ? "特殊材料" : "材料";
+    if (st.startsWith("[quest]")) return "任务品";
+    if (st.startsWith("[material expert job]")) return "副职业材料";
+    if (st.startsWith("[avatar emblem]")) return "徽章";
+    return "消耗品";
+}
+
+// 装备品质细分（86JPGMTool PvfIndexService.Items.EquipSpecial，均经实物验证）：
+//   [item category] legacy    -> 传承
+//   [item category] boss drop -> 领主神器
+//   含 [random option]        -> 魔法封印（前缀是客户端运行时加的）
+// 返回 'legacy' | 'boss' | 'sealed' | null
+export function equipSpecial(itemCategory, hasRandomOption) {
+    const value = itemCategory == null ? "" : String(itemCategory).trim();
+    if (value === "legacy") return "legacy";
+    if (value === "boss drop") return "boss";
+    if (hasRandomOption) return "sealed";
+    return null;
+}
+
+// 绝对期限解析（86JPGMTool PvfExpirationMetadata.TryParseUnixTime 同语义）：
+//   "yyyy-MM-dd HH:mm:ss" / "yyyy-MM-dd" -> 按服务器时区 UTC+8 转 Unix 秒
+//   纯数字 0 -> 无期限（返回 0）
+//   纯数字 >= 1e9 -> 本身即 Unix 秒
+//   其他 8 位数字 -> yyyyMMdd 日期（UTC+8）
+// 解析失败返回 null（调用方据此标记 invalid）。
+export function parsePvfExpirationDate(rawValue) {
+    const normalized = String(rawValue == null ? "" : rawValue)
+        .trim()
+        .replace(/^`|`$/g, "")
+        .trim();
+    if (!normalized) return null;
+    const m = /^(\d{4})-(\d{2})-(\d{2})(?:\s+(\d{2}):(\d{2}):(\d{2}))?$/.exec(normalized);
+    if (m) {
+        const [, y, mo, d, h = "0", mi = "0", s = "0"] = m;
+        return localToUnixUtc8(+y, +mo, +d, +h, +mi, +s);
+    }
+    if (!/^-?\d+$/.test(normalized)) return null;
+    const n = parseInt(normalized, 10);
+    if (n === 0) return 0;
+    if (n >= 1e9) return n;
+    if (n > 0 && n >= 10000000 && n <= 99991231) {
+        const y = Math.floor(n / 10000);
+        const mo = Math.floor((n % 10000) / 100);
+        const d = n % 100;
+        if (mo >= 1 && mo <= 12 && d >= 1 && d <= 31) return localToUnixUtc8(y, mo, d, 0, 0, 0);
+    }
+    return null;
+}
+
+// 服务器本地时间（UTC+8）-> Unix 秒；越界返回 null（对齐 C# TryConvertServerLocalTime）
+function localToUnixUtc8(y, mo, d, h, mi, s) {
+    const ms = Date.UTC(y, mo - 1, d, h, mi, s) - 8 * 3600 * 1000;
+    const sec = Math.floor(ms / 1000);
+    if (sec <= 0 || sec > 2147483647) return null;
+    return sec;
+}
+
+// 期限归类（86JPGMTool StackableExpirationPolicyResolver + 发放界面过滤语义）。
+// 入参为 listLstItemMeta 的元数据项；返回
+//   { kind: 'none'|'relative'|'absolute'|'daily'|'invalid', absoluteExpireTime, usablePeriodDays, dailyDelete }
+//   absolute/relative/daily 可叠加（kind 按 absolute > relative > daily 优先级取主类别，叠加细节看布尔字段）。
+export function classifyItemExpiration(meta) {
+    if (!meta) return { kind: "none", absoluteExpireTime: null, usablePeriodDays: null, dailyDelete: false, hasAbsolute: false, hasRelative: false, invalid: false };
+    const hasRawAbsolute = meta.expirationDate != null && String(meta.expirationDate).trim() !== "";
+    const absolute = hasRawAbsolute ? parsePvfExpirationDate(meta.expirationDate) : null;
+    const hasRelative = meta.usablePeriod != null && meta.usablePeriod > 0;
+    const dailyDelete = meta.dailyDelete != null && meta.dailyDelete > 0;
+    const invalid = (hasRawAbsolute && absolute == null) || (meta.usablePeriod != null && (isNaN(meta.usablePeriod) || meta.usablePeriod < 0));
+    let kind = "none";
+    if (invalid) kind = "invalid";
+    else if (absolute != null && absolute > 0) kind = "absolute";
+    else if (hasRelative) kind = "relative";
+    else if (dailyDelete) kind = "daily";
+    return {
+        kind,
+        absoluteExpireTime: absolute != null && absolute > 0 ? absolute : null,
+        usablePeriodDays: hasRelative ? meta.usablePeriod : null,
+        dailyDelete,
+        hasAbsolute: absolute != null && absolute > 0,
+        hasRelative,
+        invalid
+    };
 }
 
 // 剥离 .lst 增强解码追加在行尾的「缩略名称」，保留数字 token（数字与名称同形但不可剥离）。

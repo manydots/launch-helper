@@ -11,6 +11,7 @@
     "format": "prettier --write --experimental-cli src/"
   },
   "dependencies": {
+    "element-plus": "^2.14.4",
     "highlight.js": "^11.11.1",
     "pinia": "^3.0.4",
     "pinia-plugin-persistedstate": "^4.7.1",
