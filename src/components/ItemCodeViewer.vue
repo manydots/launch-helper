@@ -822,6 +822,24 @@ async function loadPvf(file) {
     overflow: auto;
     min-height: 0;
 }
+.ivc-scroll::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+.ivc-scroll::-webkit-scrollbar-track {
+    background: transparent;
+}
+.ivc-scroll::-webkit-scrollbar-thumb {
+    background-color: rgba(255, 255, 255, 0.15);
+    border-radius: 4px;
+}
+.ivc-scroll::-webkit-scrollbar-thumb:hover {
+    background-color: rgba(255, 255, 255, 0.25);
+}
+.ivc-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.15) transparent;
+}
 .ivc-spacer {
     position: absolute;
     top: 0;
