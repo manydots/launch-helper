@@ -7,14 +7,16 @@
 const PvfFormat = Object.freeze({
     ORIGINAL: "original", // 原版 PVF 包头（无 Guard 加密）
     GUARD: "guard", // Guard 包头（第 24~27 字节 0x55 XOR）
-    PROTECTED: "protected" // 新版 protected_nkpi（UTF-16 seed 密钥流）
+    PROTECTED: "protected", // 新版 protected_nkpi（UTF-16 seed 密钥流）
+    TW: "tw" // 繁体台服归档（ROR6 ^ key ^ checksum，无压缩）
 });
 
 // 枚举值 → 显示标签（后续新增格式只需在此追加映射）
 const PvfFormatLabels = Object.freeze({
     [PvfFormat.ORIGINAL]: "JP",
     [PvfFormat.GUARD]: "JPAG",
-    [PvfFormat.PROTECTED]: "CN"
+    [PvfFormat.PROTECTED]: "CN",
+    [PvfFormat.TW]: "TW"
 });
 
 // 默认优先尝试的解析格式（original 优先，兼容大多数原版 PVF 文件）
@@ -23,6 +25,10 @@ const PvfFormatDefault = PvfFormat.ORIGINAL;
 // ---- 魔数常量 ----
 const MAGIC_DECRYPT = 0x269ec3;
 const MAGIC_DECRYPT2 = 0x269ec9;
+
+// ---- 繁体 TW 格式常量（协议见 docs/pvf-tw-format.md）----
+const TW_DECRYPT_KEY = 0x81a79011; // 文件树与文件数据共用（加密/解密同 key）
+const TW_TAIL_MARKER = new Uint8Array([0, ...Array.from("This pvf Pack was created by pvfUtility.", c => c.charCodeAt(0))]); // 42 字节尾部标记（部分台服工具保存时附加，文件内真实字节）
 
 // ---- 二进制读写辅助 ----
 
@@ -158,6 +164,93 @@ function pvfDecryptProtected(key, buf, magic) {
     }
     return tail;
 }
+
+// ---- 繁体 TW 解密（逐 4 字节 ROR6 ^ key ^ checksum）----
+
+/**
+ * 繁体台服 PVF 解密：
+ *   解密：ROR6(dword ^ key ^ checksum)；加密：ROL6(dword) ^ checksum ^ key
+ * 文件树与文件数据共用该算法，仅 key（固定 0x81A79011）与 checksum（各自生成）不同。
+ * 注意：数据按 4 字节对齐（TrueLen = (DataLen + 3) & ~3），调用方需先补齐再调用。
+ * @param {Uint8Array} buf  待解密数据（原地修改）
+ * @param {number} key     常量 TW_DECRYPT_KEY
+ * @param {number} checksum 该块校验和（文件树 = CreateBuffKey(tree, treeLen, fileCount)；
+ *                          文件数据 = CreateBuffKey(data, TrueLen, 文件名哈希)）
+ */
+function pvfDecryptTw(buf, key, checksum) {
+    const len = buf.length & ~3;
+    for (let i = 0; i < len; i += 4) {
+        const dw = (buf[i] | (buf[i + 1] << 8) | (buf[i + 2] << 16) | (buf[i + 3] << 24)) >>> 0;
+        const r = ((dw ^ key ^ checksum) >>> 6) | ((dw ^ key ^ checksum) << 26);
+        buf[i] = r & 0xff;
+        buf[i + 1] = (r >>> 8) & 0xff;
+        buf[i + 2] = (r >>> 16) & 0xff;
+        buf[i + 3] = (r >>> 24) & 0xff;
+    }
+}
+
+/**
+ * 繁体 TW 加密（pvfDecryptTw 的逆方向）：逐 4 字节 ROL6(dword) ^ checksum ^ key。
+ * 保存重建时用；其余协议见 pvfDecryptTw 注释。
+ * @param {Uint8Array} buf  明文数据（原地修改为密文）
+ * @param {number} key     常量 TW_DECRYPT_KEY
+ * @param {number} checksum 该块校验和（与解密使用的同一 checksum）
+ */
+function pvfEncryptTw(buf, key, checksum) {
+    const len = buf.length & ~3;
+    for (let i = 0; i < len; i += 4) {
+        const dw = (buf[i] | (buf[i + 1] << 8) | (buf[i + 2] << 16) | (buf[i + 3] << 24)) >>> 0;
+        const r = (((dw << 6) | (dw >>> 26)) ^ key ^ checksum) >>> 0;
+        buf[i] = r & 0xff;
+        buf[i + 1] = (r >>> 8) & 0xff;
+        buf[i + 2] = (r >>> 16) & 0xff;
+        buf[i + 3] = (r >>> 24) & 0xff;
+    }
+}
+
+/**
+ * 繁体 TW 文件名哈希（GetFileNameHashCode）：
+ *   hash = 0x1505; 逐字节 hash = 0x21 * hash + byte（uint 环绕）；再 hash *= 0x21
+ * @param {Uint8Array} bytes  文件名编码字节
+ * @returns {number} uint32 哈希
+ */
+function twFileNameHash(bytes) {
+    let h = 0x1505;
+    for (let i = 0; i < bytes.length; i++) {
+        h = (Math.imul(0x21, h) + bytes[i]) >>> 0;
+    }
+    return Math.imul(0x21, h) >>> 0;
+}
+
+/**
+ * 繁体 TW 数据校验（CreateBuffKey，CRC32 变体）：
+ *   crc = ~文件名哈希；逐字节 crc = (crc >> 8) ^ table[(crc ^ b) & 0xFF]；return ~crc
+ * @param {Uint8Array} bytes  明文数据（TrueLen，4 对齐）
+ * @param {number} fileNameHash  文件名哈希（twFileNameHash 结果）
+ * @returns {number} uint32 校验和
+ */
+function twCreateBuffKey(bytes, fileNameHash) {
+    let crc = ~fileNameHash >>> 0;
+    for (let i = 0; i < bytes.length; i++) {
+        const t = (crc ^ bytes[i]) & 0xff;
+        crc = (crc >>> 8) ^ TW_CRC_TABLE[t];
+    }
+    return ~crc >>> 0;
+}
+
+// CRC32 表（多项式 0xEDB88320），懒构建
+let TW_CRC_TABLE = null;
+function _ensureTwCrcTable() {
+    if (TW_CRC_TABLE) return;
+    const t = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) {
+        let c = n;
+        for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+        t[n] = c >>> 0;
+    }
+    TW_CRC_TABLE = t;
+}
+_ensureTwCrcTable();
 
 // ---- Zlib 压缩 / 解压（via CompressionStream）----
 
@@ -331,6 +424,8 @@ export {
     PvfFormatDefault,
     MAGIC_DECRYPT,
     MAGIC_DECRYPT2,
+    TW_DECRYPT_KEY,
+    TW_TAIL_MARKER,
     readInt32LE,
     readUInt32LE,
     writeInt32LE,
@@ -338,6 +433,10 @@ export {
     pvfDecrypt,
     pvfDecryptGuard,
     pvfDecryptProtected,
+    pvfDecryptTw,
+    pvfEncryptTw,
+    twFileNameHash,
+    twCreateBuffKey,
     zlibCompress,
     zlibDecompress,
     encodeFileTableEntry,

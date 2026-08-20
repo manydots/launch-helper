@@ -2,6 +2,7 @@
 import hljs from "highlight.js/lib/core";
 import xmlLang from "highlight.js/lib/languages/xml";
 import { PvfArchive, PvfFormat, formatBytes, buildFileTree, sanitizeFilename } from "@/utils/pvfTool";
+import { TwPvfArchive } from "@/utils/pvfToolTw";
 import { registerPvfLanguage } from "@/utils/pvfHighlight";
 import { getTagInfo, parseTagName, renderTagTooltip, PVF_BLOCK_TAGS } from "@/utils/pvfTags";
 import { validatePvfText } from "@/utils/pvfValidator";
@@ -131,11 +132,13 @@ export default {
         headerStats() {
             if (!this.archive || !this.archive.header) return null;
             const h = this.archive.header;
-            const totalOrig = this.archive.groups.length > 0 ? this.archive.groups[this.archive.groups.length - 1].originalSize : 0;
+            // TW 无分块（bodySize 占位 0、groups 为空）：用 archive.bodySize（明文总字节）兜底
+            const body = this.archive.bodySize != null ? this.archive.bodySize : h.bodySize;
+            const totalOrig = this.archive.groups.length > 0 ? this.archive.groups[this.archive.groups.length - 1].originalSize : body;
             return {
                 fileCount: h.fileCount,
                 groupCount: h.groupCount,
-                bodySize: formatBytes(h.bodySize),
+                bodySize: formatBytes(body),
                 totalOrig: formatBytes(totalOrig),
                 format: this.archive.headerFormat,
                 formatLabel: this.archive.headerFormatLabel
@@ -162,6 +165,14 @@ export default {
         isLst() {
             const f = this.currentFile;
             return !!(f && this.archive && this.archive.isLstFile(f));
+        },
+        isStringTable() {
+            const f = this.currentFile;
+            return !!(f && this.archive && /^stringtable\.bin$/i.test(f.name));
+        },
+        isStrFile() {
+            const f = this.currentFile;
+            return !!(f && this.archive && /\.str$/i.test(f.name));
         },
         editLines() {
             return this.editText ? this.editText.split("\n") : [];
@@ -376,8 +387,21 @@ export default {
             try {
                 const buffer = await file.arrayBuffer();
                 this.loadingMessage = "正在解析中...";
-                const arch = new PvfArchive(buffer);
-                await arch.parse();
+                // 先按 JP/JPAG/CN（original/guard/protected）解析，失败则按繁体 TW 解析
+                let arch = null;
+                let loadError = null;
+                try {
+                    arch = new PvfArchive(buffer);
+                    await arch.parse();
+                } catch (err) {
+                    loadError = err;
+                    try {
+                        arch = new TwPvfArchive(buffer);
+                        await arch.parse();
+                    } catch (twErr) {
+                        throw loadError || twErr;
+                    }
+                }
                 this.archive = arch;
                 this._treeCache = null;
                 this.fileName = file.name;
@@ -394,9 +418,9 @@ export default {
                 this.largeFileLineCount = 0;
                 this.loading = false;
                 this.$nextTick(() => this.updateContainerHeight());
-                this.addLog(`加载 ${file.name} 成功：${arch.header.fileCount} 文件，${arch.header.groupCount} 分块，${arch.headerFormatLabel}`, "success");
+                this.addLog(`加载 ${file.name} 成功：${arch.header.fileCount} 文件，${arch.headerFormatLabel}${arch.header.groupCount ? `，${arch.header.groupCount} 分块` : ""}`, "success");
                 console.info(
-                    `[PVF] 加载 ${file.name} 成功，文件标识：${arch.headerFormat}（${arch.headerFormatLabel}），保存导出将使用${arch.headerFormat === PvfFormat.GUARD ? arch.headerFormatLabel + "（0x55 XOR）" : arch.headerFormatLabel}包头加密规则`
+                    `[PVF] 加载 ${file.name} 成功，文件标识：${arch.headerFormat}（${arch.headerFormatLabel}）${arch.headerFormat === PvfFormat.TW ? "" : `，保存导出将使用${arch.headerFormat === PvfFormat.GUARD ? arch.headerFormatLabel + "（0x55 XOR）" : arch.headerFormatLabel}包头加密规则`}`
                 );
             } catch (err) {
                 this.loading = false;
@@ -1113,7 +1137,7 @@ export default {
                         return;
                     }
                     this.saveProgress = Math.round((curr / total) * 100);
-                    this.saveProgressText = `重建分块 ${curr} / ${total}...`;
+                    this.saveProgressText = `${this.archive.headerFormat === PvfFormat.TW ? "重建文件" : "重建分块"} ${curr} / ${total}...`;
                 });
                 this.saveProgressText = "下载中...";
 
@@ -1258,14 +1282,16 @@ export default {
                 return;
             }
             let html;
-            if (!text || text.length > 500000) {
+            if (this.isStringTable || this.isStrFile) {
+                html = this._renderKeyValueText(text);
+            } else if (!text || text.length > 500000) {
                 html = this.annotateTagSpans(this.escapeHtml(text));
             } else if (mode === "pvf") {
                 try {
                     const result = hljs.highlight(text, { language: "pvf" });
-                    html = this.annotateRefs(this.grayLstNames(this.annotateTagSpans(result.value)));
+                    html = this.annotateRefs(this.grayLstNames(this.annotateTagSpans(result.value), text));
                 } catch (e) {
-                    html = this.annotateRefs(this.grayLstNames(this.annotateTagSpans(this.escapeHtml(text))));
+                    html = this.annotateRefs(this.grayLstNames(this.annotateTagSpans(this.escapeHtml(text)), text));
                 }
             } else if (mode === "xml") {
                 try {
@@ -1295,14 +1321,45 @@ export default {
         // 高亮文本 -> HTML（用于超大文件只读预览，不带折叠处理）
         _renderHighlighted(text) {
             if (!text) return "";
+            if (this.isStringTable || this.isStrFile) return this._renderKeyValueText(text);
             const mode = this.highlightMode;
             try {
-                if (mode === "pvf") return this.annotateRefs(this.grayLstNames(this.annotateTagSpans(hljs.highlight(text, { language: "pvf" }).value)));
+                if (mode === "pvf") return this.annotateRefs(this.grayLstNames(this.annotateTagSpans(hljs.highlight(text, { language: "pvf" }).value), text));
                 if (mode === "xml") return this.annotateTagSpans(hljs.highlight(text, { language: "xml" }).value);
             } catch (e) {
                 /* fall through to escaped text */
             }
             return this.annotateTagSpans(this.escapeHtml(text));
+        },
+        // .str 与 .bin（stringtable.bin）统一解析渲染规则：
+        // 每行 `前缀>内容` 拆为三部分，各部分内部颜色统一（前缀红 / > 淡蓝 / 内容灰）；
+        // `//` 开头行视为注释，整体灰色；无 `>` 的行整体按内容灰。
+        _renderKeyValueLine(line) {
+            const t = String(line).trimStart();
+            if (t.startsWith("//")) {
+                return '<span class="hljs-pvf-bin-text">' + this.escapeHtml(line) + "</span>";
+            }
+            const sep = line.indexOf(">");
+            if (sep > 0) {
+                return (
+                    '<span class="hljs-pvf-bin-id">' +
+                    this.escapeHtml(line.slice(0, sep)) +
+                    "</span>" +
+                    '<span class="hljs-pvf-bin-sep">' +
+                    this.escapeHtml(line[sep]) +
+                    "</span>" +
+                    '<span class="hljs-pvf-bin-text">' +
+                    this.escapeHtml(line.slice(sep + 1)) +
+                    "</span>"
+                );
+            }
+            return '<span class="hljs-pvf-bin-text">' + this.escapeHtml(line) + "</span>";
+        },
+        _renderKeyValueText(text) {
+            const lines = String(text || "").split("\n");
+            const out = new Array(lines.length);
+            for (let i = 0; i < lines.length; i++) out[i] = this._renderKeyValueLine(lines[i]);
+            return out.join("\n");
         },
         // 为 [xxx] 标签的 hljs-type span 注入 data-tag 属性，便于浮窗解析
         annotateTagSpans(html) {
@@ -1319,17 +1376,81 @@ export default {
         escapeAttr(s) {
             return String(s).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
         },
-        // .lst 增强解码在行尾追加的引用文件名称（裸词，高亮为 hljs-title）染为灰色，
-        // 与反引号字符串的引用路径区分开。仅对 .lst 文件生效。
-        grayLstNames(html) {
-            if (!this.isLst) return html;
-            return html.replace(
-                /(<span class="hljs-string">`(?:[^`]|``)*`<\/span>)(\s+)(<span class="hljs-number">[^<]*<\/span>)?<span class="hljs-title">([^<]*)<\/span>/g,
-                (m, strSpan, ws, numSpan, titleText) => {
-                    const nameText = (numSpan ? numSpan.replace(/<[^>]*>/g, "") : "") + titleText;
-                    return `${strSpan}${ws}<span class="hljs-pvf-name">${nameText}</span>`;
+        // 当前 .lst 文件解码时追加的引用文件名称映射（行号 -> 名称原文），
+        // 仅包含实际追加了名称的行；渲染时按行定位，不做高亮。
+        _currentLstNameMap() {
+            if (!this.isLst || !this.archive || !this.currentFile) return new Map();
+            return this.archive.getLstNameMap(this.currentFile) || new Map();
+        },
+        // 把 HTML 行内行尾的 nameText（可见文本）整体替换为灰色 span（不走 hljs 高亮，
+        // 名称内部的 [xxx] / 数字等不再产生高亮 token，整体统一灰色展示）；
+        // 行尾不匹配（如用户已编辑该行）则原样返回，避免误染。
+        // 注意：hljs 输出中转义了 & < >，比较与计数须用转义后的名称（escapeHtml(nameText)）。
+        _grayRowName(rowHtml, nameText) {
+            const escaped = this.escapeHtml(nameText);
+            let strip = "";
+            for (let j = 0; j < rowHtml.length; j++) {
+                if (rowHtml[j] === "<") {
+                    const k = rowHtml.indexOf(">", j);
+                    if (k < 0) break;
+                    j = k;
+                    continue;
                 }
-            );
+                strip += rowHtml[j];
+            }
+            const tailStart = strip.length - escaped.length;
+            if (tailStart < 0 || strip.slice(tailStart) !== escaped) return rowHtml;
+            let vis = 0;
+            let startIdx = -1;
+            for (let j = 0; j < rowHtml.length; j++) {
+                if (rowHtml[j] === "<") {
+                    const k = rowHtml.indexOf(">", j);
+                    if (k < 0) break;
+                    j = k;
+                    continue;
+                }
+                if (vis === tailStart) {
+                    startIdx = j;
+                    break;
+                }
+                vis++;
+            }
+            let endIdx = startIdx;
+            let vis2 = 0;
+            while (endIdx < rowHtml.length && vis2 < escaped.length) {
+                if (rowHtml[endIdx] === "<") {
+                    const k = rowHtml.indexOf(">", endIdx);
+                    if (k < 0) break;
+                    endIdx = k + 1;
+                    continue;
+                }
+                vis2++;
+                endIdx++;
+            }
+            if (startIdx < 0 || endIdx <= startIdx) return rowHtml;
+            return rowHtml.slice(0, startIdx) + '<span class="hljs-pvf-name">' + escaped + "</span>" + rowHtml.slice(endIdx);
+        },
+        // .lst 增强解码在行尾追加的引用文件名称：不走 highlight.js 高亮，
+        // 按解码器记录的行号映射整体替换为灰色 span 展示（路径/数字/标签仍正常高亮）。
+        grayLstNames(html, text) {
+            if (!this.isLst) return html;
+            const map = this._currentLstNameMap();
+            if (!map || map.size === 0) return html;
+            const textLines = String(text || "").split("\n");
+            const htmlLines = html.split("\n");
+            let changed = false;
+            for (const [lineNo, name] of map) {
+                const t = textLines[lineNo];
+                if (t == null || !name || !t.endsWith(name)) continue;
+                const rowHtml = htmlLines[lineNo];
+                if (rowHtml == null) continue;
+                const grayed = this._grayRowName(rowHtml, name);
+                if (grayed !== rowHtml) {
+                    htmlLines[lineNo] = grayed;
+                    changed = true;
+                }
+            }
+            return changed ? htmlLines.join("\n") : html;
         },
         // 为 .lst 反引号引用路径注入 data-ref 属性（仅 .lst 文件），供大文件预览区点击快捷跳转
         annotateRefs(html) {
@@ -1489,17 +1610,22 @@ export default {
             if (html !== undefined) return html;
             const line = this.largeFullLines[i] || "";
             const mode = this.highlightMode;
-            try {
-                if (mode === "pvf") html = hljs.highlight(line, { language: "pvf" }).value;
-                else if (mode === "xml") html = hljs.highlight(line, { language: "xml" }).value;
-                else html = this.escapeHtml(line);
-            } catch (err) {
-                html = this.escapeHtml(line);
-            }
-            html = this.annotateTagSpans(html);
-            if (this.isLst) {
-                html = this.grayLstNames(html);
-                html = this.annotateRefs(html);
+            if (this.isStringTable || this.isStrFile) {
+                html = this._renderKeyValueLine(line);
+            } else {
+                try {
+                    if (mode === "pvf") html = hljs.highlight(line, { language: "pvf" }).value;
+                    else if (mode === "xml") html = hljs.highlight(line, { language: "xml" }).value;
+                    else html = this.escapeHtml(line);
+                } catch (err) {
+                    html = this.escapeHtml(line);
+                }
+                html = this.annotateTagSpans(html);
+                if (this.isLst) {
+                    const name = this._currentLstNameMap().get(i);
+                    if (name && line.endsWith(name)) html = this._grayRowName(html, name);
+                    html = this.annotateRefs(html);
+                }
             }
             if (this.largeRowCache.size >= LARGE_ROW_CACHE_LIMIT) {
                 const first = this.largeRowCache.keys().next().value;
@@ -1637,7 +1763,7 @@ export default {
             this.validationTimer = setTimeout(() => this.runValidation(), delay);
         },
         runValidation() {
-            if (!this.isEditable || this.highlightMode !== "pvf") {
+            if (!this.isEditable || this.highlightMode !== "pvf" || (this.archive && this.archive.headerFormat === PvfFormat.TW)) {
                 this.validationErrors = [];
                 this._valCache = null;
                 return;
@@ -1862,7 +1988,8 @@ export default {
                         </span>
                         <span v-if="headerStats" class="pvf-topbar-stats">
                             <span :class="['pvf-format-badge', 'pvf-format-' + headerStats.format]" :title="'包头加密规则：' + headerStats.formatLabel">{{ headerStats.formatLabel }}</span>
-                            {{ headerStats.fileCount.toLocaleString() }} 文件 · {{ headerStats.groupCount.toLocaleString() }} 分块 · {{ headerStats.bodySize }} / {{ headerStats.totalOrig }}
+                            {{ headerStats.fileCount.toLocaleString() }} 文件<span v-if="headerStats.groupCount"> · {{ headerStats.groupCount.toLocaleString() }} 分块</span> ·
+                            {{ headerStats.bodySize }} / {{ headerStats.totalOrig }}
                         </span>
                         <div class="pvf-topbar-search">
                             <svg class="pvf-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -2443,6 +2570,11 @@ export default {
     border-color: #ff6b6055;
     background: linear-gradient(135deg, #e0524a28, #ff6b6018);
     box-shadow: 0 0 0 1px #ff6b6014 inset;
+}
+.pvf-format-tw {
+    color: #b57ef0;
+    border-color: #b57ef055;
+    background: #b57ef018;
 }
 .pvf-topbar-right {
     display: flex;
@@ -3085,6 +3217,18 @@ export default {
 }
 .pvf-code-highlight :deep(.hljs-pvf-name),
 .pvf-largefile-preview :deep(.hljs-pvf-name) {
+    color: #9a9a9a;
+}
+.pvf-code-highlight :deep(.hljs-pvf-bin-id),
+.pvf-largefile-preview :deep(.hljs-pvf-bin-id) {
+    color: #f92672;
+}
+.pvf-code-highlight :deep(.hljs-pvf-bin-sep),
+.pvf-largefile-preview :deep(.hljs-pvf-bin-sep) {
+    color: #4d4756;
+}
+.pvf-code-highlight :deep(.hljs-pvf-bin-text),
+.pvf-largefile-preview :deep(.hljs-pvf-bin-text) {
     color: #9a9a9a;
 }
 .pvf-code-highlight :deep(.hljs-pvf-ref),

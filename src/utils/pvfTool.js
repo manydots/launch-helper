@@ -90,6 +90,7 @@ class PvfArchive {
         this._headerFormat = PvfFormat.ORIGINAL; // 当前头部格式（original / guard / protected），parse 时自动探测
         this._nameTagCache = new Map(); // fileIndex -> [name] 标签值缓存（.lst 名称展示）
         this._lstTextCache = new Map(); // fileIndex -> decodeLstWithNames 结果缓存（.lst 展示文本）
+        this._lstNameMapCache = new Map(); // fileIndex -> Map<行号, 追加的引用文件名称>
         this._lstRefMap = new Map(); // fileIndex -> Map<引用路径, file>（.lst 引用快捷跳转）
         this._itemMetaCache = new Map(); // fileIndex -> { rarity, minLevel }（.lst 物品品质/使用等级解析缓存）
         this._tagOffsetCache = null; // 常用标签的字符串表偏移缓存（懒构建）
@@ -926,7 +927,8 @@ class PvfArchive {
         await this.extractNameTags(targets);
         let matched = 0;
         let named = 0;
-        const out = rows.map(({ line, target }) => {
+        const nameRows = new Map();
+        const out = rows.map(({ line, target }, lineNo) => {
             if (!target) return line;
             matched++;
             const name = this._nameTagCache.get(target.index) || "";
@@ -934,12 +936,14 @@ class PvfArchive {
             // 空格必须允许——英文版（如 90US）的名称几乎都含空格，之前误滤导致不显示
             if (name && !/[\n\r`{}\[\]#]/.test(name)) {
                 named++;
+                nameRows.set(lineNo, name);
                 return `${line.trim()} ${name}`;
             }
             return line;
         });
         const result = this._normalizeLines(out.join("\n"));
         this._lstTextCache.set(file.index, result);
+        this._lstNameMapCache.set(file.index, nameRows);
         console.info(
             `[PVF] ${file.name} 名称解析完成：引用 ${rows.length} 行，匹配 ${matched} 个文件，提取名称 ${named} 个，耗时 ${Date.now() - t0}ms` +
                 (missed.length ? `，未匹配示例：${missed.join(", ")}` : "")
@@ -952,6 +956,13 @@ class PvfArchive {
         if (!file || ref == null) return null;
         const map = this._lstRefMap.get(file.index);
         return map ? map.get(ref) || null : null;
+    }
+
+    // 返回 decodeLstWithNames 追加的引用文件名称映射（行号 -> 名称原文），
+    // 供渲染层精确染灰辅助展示的名称（仅包含实际追加名称的行）。
+    getLstNameMap(file) {
+        if (!file) return new Map();
+        return this._lstNameMapCache.get(file.index) || new Map();
     }
 
     // 结构化解析 .lst：返回 [{ code, ref, name }] 条目列表。
@@ -1289,6 +1300,7 @@ class PvfArchive {
         this._deleted.delete(fileIndex);
         if (this._nameTagCache.has(fileIndex)) this._nameTagCache.delete(fileIndex);
         this._lstTextCache.delete(fileIndex);
+        this._lstNameMapCache.delete(fileIndex);
         this._lstRefMap.delete(fileIndex);
         this._itemMetaCache.delete(fileIndex);
     }
@@ -1297,6 +1309,7 @@ class PvfArchive {
         this._overlay.set(fileIndex, data);
         this._deleted.delete(fileIndex);
         this._lstTextCache.delete(fileIndex);
+        this._lstNameMapCache.delete(fileIndex);
         this._lstRefMap.delete(fileIndex);
         this._itemMetaCache.delete(fileIndex);
     }
@@ -1391,6 +1404,7 @@ class PvfArchive {
         this._strWValueCache = null;
         this._nameTagCache.clear();
         this._lstTextCache.clear();
+        this._lstNameMapCache.clear();
         this._lstRefMap.clear();
         this._itemMetaCache.clear();
         this._tagOffsetCache = null;
@@ -1433,6 +1447,7 @@ class PvfArchive {
         this._pathIndex = null;
         this._nameIndex = null;
         this._lstTextCache.clear();
+        this._lstNameMapCache.clear();
         this._lstRefMap.clear();
         this._itemMetaCache.clear();
 
@@ -1460,6 +1475,7 @@ class PvfArchive {
         this._pathIndex = null;
         this._nameIndex = null;
         this._lstTextCache.clear();
+        this._lstNameMapCache.clear();
         this._lstRefMap.clear();
         this._itemMetaCache.clear();
     }
@@ -1656,6 +1672,7 @@ class PvfArchive {
             this._pathIndex = null;
             this._nameIndex = null;
             this._lstTextCache.clear();
+            this._lstNameMapCache.clear();
             this._lstRefMap.clear();
             this._itemMetaCache.clear();
         }
@@ -1680,6 +1697,7 @@ class PvfArchive {
         this._pathIndex = null;
         this._nameIndex = null;
         this._lstTextCache.clear();
+        this._lstNameMapCache.clear();
         this._lstRefMap.clear();
         this._itemMetaCache.clear();
     }
@@ -1960,7 +1978,11 @@ export {
     buildFileTree,
     detectEncoding,
     sanitizeFilename,
-    stripLstNameAnnotations
+    stripLstNameAnnotations,
+    extractTagFromText,
+    extractNameFromText,
+    extractIntFieldFromText,
+    extractStringFieldFromText
 };
 
 // 解析 PVF 脚本标签的一行内容值（见 extractTagFromText）：

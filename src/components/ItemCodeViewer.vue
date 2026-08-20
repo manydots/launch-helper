@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { PvfArchive, firstTypeTag, stackSegment, equipSpecial, classifyItemExpiration } from "@/utils/pvfTool.js";
+import { TwPvfArchive } from "@/utils/pvfToolTw.js";
 
 const ROW_H = 30;
 const ROW_BUFFER = 10;
@@ -368,8 +369,21 @@ async function loadPvf(file) {
     try {
         const buffer = await file.arrayBuffer();
         loadingMessage.value = "正在解析 PVF 归档...";
-        const arch = new PvfArchive(buffer);
-        await arch.parse();
+        // 先按 JP/JPAG/CN 解析，失败则按繁体 TW 解析
+        let arch = null;
+        let loadError = null;
+        try {
+            arch = new PvfArchive(buffer);
+            await arch.parse();
+        } catch (err) {
+            loadError = err;
+            try {
+                arch = new TwPvfArchive(buffer);
+                await arch.parse();
+            } catch (twErr) {
+                throw loadError || twErr;
+            }
+        }
         const allItems = [];
         for (const lstType of LST_TYPES) {
             const lst = arch.files.find(f => !f.isDir && lstType.path.test(f.fullpath || ""));
@@ -448,7 +462,7 @@ async function loadPvf(file) {
                 </div>
                 <h2>查看物品编码</h2>
                 <p>解析 Script.pvf 中的 stackable/equipment/creature 物品列表，映射展示物品编码与名称</p>
-                <p>支持 JP / JPAG（0x55 XOR）/ CN、US（protected_nkpi）三种格式的 PVF 解析</p>
+                <p>支持 JP / JPAG（0x55 XOR）/ CN、US（protected_nkpi）/ TW（繁体）四种格式的 PVF 解析</p>
                 <button class="btn btn-primary" @click="$refs.fileInputEl && $refs.fileInputEl.click()">
                     <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
@@ -627,6 +641,11 @@ async function loadPvf(file) {
     border-color: #ff6b6055;
     background: linear-gradient(135deg, #e0524a28, #ff6b6018);
     box-shadow: 0 0 0 1px #ff6b6014 inset;
+}
+.ivc-format-tw {
+    color: #b57ef0;
+    border-color: #b57ef055;
+    background: #b57ef018;
 }
 .ivc-file-name {
     flex: 1;

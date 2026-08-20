@@ -1,6 +1,7 @@
 // Encoding utilities using native browser TextDecoder/TextEncoder
 
 import { encodeGBK } from "./gbkEncoder.js";
+import { encodeBig5 } from "./big5Encoder.js";
 
 const ENCODING_ALIASES = {
     utf8: "utf-8",
@@ -55,6 +56,9 @@ export function encodeText(text, encoding) {
     }
     if (enc === "gbk" || enc === "gb2312") {
         return encodeGBK(text);
+    }
+    if (enc === "big5") {
+        return encodeBig5(text);
     }
     // Other encodings: fall back to UTF-8 (native TextEncoder limitation)
     return getEncoder("utf-8").encode(text);
