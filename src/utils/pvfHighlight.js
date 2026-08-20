@@ -22,6 +22,12 @@ export function registerPvfLanguage(hljs) {
                     begin: "#",
                     end: "$"
                 },
+                // `//` 行注释（#PVF_File 明文文本的注释行与 # 规则同色，见 docs/pvf-tw-format.md §9.3.1）
+                {
+                    className: "comment",
+                    begin: /\/\//,
+                    end: "$"
+                },
                 BACKTICK_STRING,
                 {
                     className: "keyword",

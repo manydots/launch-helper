@@ -45,3 +45,10 @@ export function encodeGBK(text) {
 
     return new Uint8Array(bytes);
 }
+
+// 单字符 GBK 编码查询：返回 16 位 GBK 码（高字节为区号）或 undefined（不可编码）
+export function gbkCode(ch) {
+    const code = ch.codePointAt(0);
+    if (code < 0x80) return code;
+    return getGbkMap().get(code);
+}

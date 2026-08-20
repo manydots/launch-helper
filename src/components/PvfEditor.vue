@@ -1333,11 +1333,12 @@ export default {
         },
         // .str 与 .bin（stringtable.bin）统一解析渲染规则：
         // 每行 `前缀>内容` 拆为三部分，各部分内部颜色统一（前缀红 / > 淡蓝 / 内容灰）；
-        // `//` 开头行视为注释，整体灰色；无 `>` 的行整体按内容灰。
+        // `#PVF_File` 头与 `//` 开头行视为注释，按注释绿（#6a9955）渲染（§9.3.1）；
+        // 无 `>` 的行整体按内容灰。
         _renderKeyValueLine(line) {
             const t = String(line).trimStart();
-            if (t.startsWith("//")) {
-                return '<span class="hljs-pvf-bin-text">' + this.escapeHtml(line) + "</span>";
+            if (t.startsWith("#") || t.startsWith("//")) {
+                return '<span class="hljs-comment">' + this.escapeHtml(line) + "</span>";
             }
             const sep = line.indexOf(">");
             if (sep > 0) {
@@ -2814,7 +2815,8 @@ export default {
 .pvf-code-highlight::-webkit-scrollbar,
 .pvf-code-textarea::-webkit-scrollbar,
 .pvf-syntax-panel::-webkit-scrollbar,
-.pvf-syntax-list::-webkit-scrollbar {
+.pvf-syntax-list::-webkit-scrollbar,
+.pvf-largefile-preview::-webkit-scrollbar {
     width: 8px;
     height: 8px;
 }
@@ -2822,14 +2824,16 @@ export default {
 .pvf-code-highlight::-webkit-scrollbar-track,
 .pvf-code-textarea::-webkit-scrollbar-track,
 .pvf-syntax-panel::-webkit-scrollbar-track,
-.pvf-syntax-list::-webkit-scrollbar-track {
+.pvf-syntax-list::-webkit-scrollbar-track,
+.pvf-largefile-preview::-webkit-scrollbar-track {
     background: transparent;
 }
 .pvf-list::-webkit-scrollbar-thumb,
 .pvf-code-highlight::-webkit-scrollbar-thumb,
 .pvf-code-textarea::-webkit-scrollbar-thumb,
 .pvf-syntax-panel::-webkit-scrollbar-thumb,
-.pvf-syntax-list::-webkit-scrollbar-thumb {
+.pvf-syntax-list::-webkit-scrollbar-thumb,
+.pvf-largefile-preview::-webkit-scrollbar-thumb {
     background: rgba(255, 255, 255, 0.12);
     border-radius: 4px;
 }
@@ -2837,7 +2841,8 @@ export default {
 .pvf-code-highlight::-webkit-scrollbar-thumb:hover,
 .pvf-code-textarea::-webkit-scrollbar-thumb:hover,
 .pvf-syntax-panel::-webkit-scrollbar-thumb:hover,
-.pvf-syntax-list::-webkit-scrollbar-thumb:hover {
+.pvf-syntax-list::-webkit-scrollbar-thumb:hover,
+.pvf-largefile-preview::-webkit-scrollbar-thumb:hover {
     background: rgba(255, 255, 255, 0.2);
 }
 .pvf-list-empty {
@@ -3309,6 +3314,8 @@ export default {
     overflow: auto;
     white-space: pre;
     user-select: text;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
 }
 .pvf-largefile-btn {
     margin-left: 8px;

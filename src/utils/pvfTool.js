@@ -4,7 +4,7 @@
 //  Supports: parse, decrypt, decode, edit, rebuild, save
 // ============================================================
 
-import { decodeText, encodeText, decodeUtf16LE, encodeUtf16LE, detectEncoding as iconvDetect } from "./encoding.js";
+import { decodeText, encodeText, decodeUtf16LE, encodeUtf16LE, detectEncoding as iconvDetect, decodeKoreanMojibake, decodeKoreanMojibakeUtf16, recoverKoreanNameFromGbkText } from "./encoding.js";
 
 import {
     readInt32LE,
@@ -289,7 +289,7 @@ class PvfArchive {
         if (!buffer || start < 0 || start >= buffer.length) return "";
         let end = start;
         while (end < buffer.length && buffer[end] !== 0) end++;
-        return decodeText(buffer.subarray(start, end), this.strEncoding);
+        return decodeKoreanMojibake(buffer.subarray(start, end), this.strEncoding);
     }
 
     _readUnicodeString(buffer, start) {
@@ -298,7 +298,7 @@ class PvfArchive {
         while (end + 1 < buffer.length && !(buffer[end] === 0 && buffer[end + 1] === 0)) end += 2;
         const len = end - start;
         if (len <= 0) return "";
-        return decodeUtf16LE(buffer.subarray(start, start + len));
+        return decodeKoreanMojibakeUtf16(buffer.subarray(start, start + len));
     }
 
     // ---- String offset management (for editing) ----
@@ -318,7 +318,7 @@ class PvfArchive {
         while (pos < this.strABuf.length) {
             let end = pos;
             while (end < this.strABuf.length && this.strABuf[end] !== 0) end++;
-            const value = end > pos ? decodeText(this.strABuf.subarray(pos, end), this.strEncoding) : "";
+            const value = end > pos ? decodeKoreanMojibake(this.strABuf.subarray(pos, end), this.strEncoding) : "";
             if (!this._strAOffsetCache.has(value)) this._strAOffsetCache.set(value, pos << 1);
             this._strAValueCache[pos] = value;
             pos = end + 1;
@@ -328,7 +328,7 @@ class PvfArchive {
         while (pos + 1 < this.strWBuf.length) {
             let end = pos;
             while (end + 1 < this.strWBuf.length && !(this.strWBuf[end] === 0 && this.strWBuf[end + 1] === 0)) end += 2;
-            const value = end > pos ? decodeUtf16LE(this.strWBuf.subarray(pos, end)) : "";
+            const value = end > pos ? decodeKoreanMojibakeUtf16(this.strWBuf.subarray(pos, end)) : "";
             if (!this._strWOffsetCache.has(value)) this._strWOffsetCache.set(value, ((pos >> 1) << 1) | 1);
             this._strWValueCache[pos >> 1] = value;
             pos = end + 2;
@@ -520,8 +520,14 @@ class PvfArchive {
     }
 
     // 格式化为反引号字符串：解析字符串表偏移并转义内部 `
-    _fmtBacktickStr(value) {
-        return "`" + this._escapeBacktick(this.resolveString(value)) + "`";
+    // loose=true 时对结果做名字型 .lst 的激进 GBK 韩文恢复（无空格要求）
+    _fmtBacktickStr(value, loose) {
+        let s = this.resolveString(value);
+        if (loose) {
+            const r = recoverKoreanNameFromGbkText(s);
+            if (r != null) s = r;
+        }
+        return "`" + this._escapeBacktick(s) + "`";
     }
 
     // 从索引 j 起合并连续数字 token 到 row，返回新的 { row, j }
@@ -596,10 +602,20 @@ class PvfArchive {
     // 「数字 + 反引号字符串」或「反引号字符串 + 数字」合并到同一行，每条独占一行。
     //   0  `Character/Character.chn.str`
     //   `G.S.D` 7
-    decodeLst(data) {
+    // opts.looseNames=true 时对行内名字做激进 GBK 韩文恢复（仅名字型 .lst 白名单使用）
+    decodeLst(data, opts = {}) {
+        const loose = !!opts.looseNames;
         const tokens = this._readTokens(data);
         if (tokens.length === 0) return "";
         const parts = [];
+        const nameStr = value => {
+            const s = this.resolveString(value);
+            if (loose) {
+                const r = recoverKoreanNameFromGbkText(s);
+                if (r != null) return r;
+            }
+            return s;
+        };
         let i = 0;
         while (i < tokens.length) {
             const { type, value } = tokens[i];
@@ -609,14 +625,14 @@ class PvfArchive {
                 let j;
                 ({ row, j } = this._appendNumRun(tokens, i + 1, row));
                 if (j < tokens.length && tokens[j].type === 6) {
-                    row += " " + this._fmtBacktickStr(tokens[j].value);
+                    row += " " + this._fmtBacktickStr(tokens[j].value, loose);
                     j++;
                 }
                 parts.push(row + "\n");
                 i = j;
             } else if (type === 6) {
                 // 反引号字符串与紧随其后的连续数字合并：`字符` 数字
-                let row = this._fmtBacktickStr(value);
+                let row = this._fmtBacktickStr(value, loose);
                 let j;
                 ({ row, j } = this._appendNumRun(tokens, i + 1, row));
                 parts.push(row + "\n");
@@ -627,10 +643,10 @@ class PvfArchive {
                         parts.push(this.resolveString(value) + "\n");
                         break;
                     case 5:
-                        parts.push("{5=`" + this._escapeBacktick(this.resolveString(value)) + "`}\n");
+                        parts.push("{5=`" + this._escapeBacktick(nameStr(value)) + "`}\n");
                         break;
                     case 7:
-                        parts.push("{7=`" + this._escapeBacktick(this.resolveString(value)) + "`}\n");
+                        parts.push("{7=`" + this._escapeBacktick(nameStr(value)) + "`}\n");
                         break;
                     default:
                         parts.push("?(" + type + "," + value + ")\n");
@@ -640,6 +656,18 @@ class PvfArchive {
             }
         }
         return this._normalizeLines(parts.join(""));
+    }
+
+    // 是否为名字型 .lst 白名单文件（行内名字可做无空格激进 GBK 韩文恢复）。
+    // 该名单经全表分类统计证明行内名字不含正常中文（见 docs/pvf-jp-korean-mojibake.md §4）：
+    // itemname.lst 行内 10695 条全为韩文（9911 条正常韩文 + 782 条乱码 + 2 条谚文汉字标注），
+    // 正常中文物品名（如 `破旧的绸缎护肩`）来自 .equ 的 [name] 标签追加，不走行内恢复路径；
+    // quest / epicquest 行内含正常中文，必须排除。
+    _isLooseNameLst(file) {
+        if (!file) return false;
+        // 用 fullpath（归档内规范化路径）判定：JPAG 等版本的根目录文件 name 带 `./` 前缀
+        // （如 `./aicharactername.lst`），仅匹配 name 会使白名单失效（见 docs/pvf-jp-korean-mojibake.md §8）
+        return /^(npcname|monstername|aicharactername|passiveobjectname|itemname|skillname\d*)\.lst$/i.test(String(file.fullpath || file.name || ""));
     }
 
     // 文件类型: dataType=3 UTF-16 文本
@@ -872,7 +900,7 @@ class PvfArchive {
         const t0 = Date.now();
         const data = await this.getFileData(file);
         if (!data || data.length === 0) return "";
-        const baseText = this.decodeLst(data);
+        const baseText = this.decodeLst(data, { looseNames: this._isLooseNameLst(file) });
         const lines = baseText.split("\n");
         const baseDir = String(file.fullpath || file.name || "")
             .replace(/\\/g, "/")

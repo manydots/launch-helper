@@ -566,6 +566,15 @@ export class TwPvfArchive {
 
     // TW 非脚本文件文本尝试：可打印率过低视为二进制
     _twDecodeBinaryText(data) {
+        // 明文 ani / 其它 pvfUtility 导出文本（#PVF_File 或 [FRAME 开头）按注释显示
+        const head = decodeText(data.subarray(0, 16), "latin1");
+        if (/^#PVF_File/.test(head) || /^\[FRAME/.test(head)) {
+            return this._normalizeLines(decodeText(data, this.twEncoding));
+        }
+        // strlst 明文检测：`key>text` 行（含韩文等多字节文本时可打印率不足 70% 而误判）
+        if (this._twLooksLikeStrList(data)) {
+            return this._normalizeLines(decodeText(data, this.twEncoding));
+        }
         // UTF-16LE 文本检测（如 .lua 源码）：偶数索引字节可打印、奇数索引字节大量为 0
         const n16 = Math.min(data.length - (data.length % 2), 4096);
         if (n16 >= 4) {
@@ -592,32 +601,187 @@ export class TwPvfArchive {
         return this._normalizeLines(decodeText(data, this.twEncoding));
     }
 
-    // .ani 动画文件解析：帧数 + 图像路径 + 帧数据 hex（纯二进制结构，无文本 token）。
-    // 头部 = u16 帧数 | u16 标记 | u32 路径长度 | 路径字节 | 帧数据。
+    // strlst 明文判定：行结构为 `key>text`、`// 注释` 或空行，且至少一条 key>text。
+    // 采样前 64 行即可判定（strlst 头部即符合特征），避免对大文件全量解码。
+    _twLooksLikeStrList(data) {
+        let lineStart = 0;
+        let kvLines = 0;
+        let otherLines = 0;
+        let lines = 0;
+        const maxBytes = Math.min(data.length, 4096);
+        for (let i = 0; i <= maxBytes && lines < 64; i++) {
+            if (i === maxBytes || data[i] === 10) {
+                if (i > lineStart) {
+                    lines++;
+                    const b = data[lineStart];
+                    if (b === 47 && data[lineStart + 1] === 47) {
+                        // // 注释行
+                    } else if (data.indexOf(62, lineStart) >= lineStart && data.indexOf(62, lineStart) < i) {
+                        kvLines++;
+                    } else {
+                        otherLines++;
+                    }
+                }
+                lineStart = i + 1;
+            }
+        }
+        return kvLines >= 1 && kvLines >= otherLines;
+    }
+
+    // .ani 动画文件解析（70 ANI 二进制格式，见 docs/pvf-tw-format.md §9.2）。
+    // 输出 pvfUtility 权威明文格式（对照 Ani70Encoder.cs Decrypt70Ani）：
+    //   #PVF_File / 全局项(LOOP/SHADOW/COORD/OPERATION/SPECTRUM 系列) /
+    //   [FRAME MAX] / 每帧 [FRAME000] [IMAGE] `路径` idx [IMAGE POS] x\ty 帧项 + 盒。
+    // 明文 ani（#PVF_File 开头，或直接 [FRAME MAX] 文本）按注释文本原样展示（不加前缀）。
     _twDecodeAni(data) {
+        const head = decodeText(data.subarray(0, 16), "latin1");
+        if (/^#PVF_File/.test(head) || /^\[FRAME/.test(head)) {
+            return this._normalizeLines(decodeText(data, this.twEncoding));
+        }
+        const out = ["#PVF_File"];
+        try {
+            const rd = this._twAniReader(data);
+            const frameMax = rd.u16();
+            if (frameMax > 5000) throw new Error("frameMax implausible " + frameMax);
+            const imgCount = rd.u16();
+            if (imgCount > 1000) throw new Error("imgCount implausible " + imgCount);
+            const imgList = [];
+            for (let i = 0; i < imgCount; i++) {
+                const len = rd.i32();
+                if (len <= 0 || len > 512) throw new Error("img " + i + " len " + len);
+                imgList.push(rd.str(len));
+            }
+            const overallCount = rd.u16();
+            for (let j = 0; j < overallCount; j++) {
+                const tag = rd.u16();
+                if (tag === 0 || tag === 1) out.push(`[${this._twAniTagName(tag)}]`, String(rd.byte()));
+                else if (tag === 3 || tag === 28) out.push(`[${this._twAniTagName(tag)}]`, String(rd.u16()));
+                else if (tag === 18) {
+                    out.push("[SPECTRUM]", String(rd.byte()));
+                    out.push("[SPECTRUM TERM]", String(rd.i32()));
+                    out.push("[SPECTRUM LIFE TIME]", String(rd.i32()));
+                    out.push("[SPECTRUM COLOR]", [this._twPct(rd.byte()), this._twPct(rd.byte()),
+                        this._twPct(rd.byte()), this._twPct(rd.byte())].join("\t"));
+                    const se = rd.u16();
+                    out.push("[SPECTRUM EFFECT]", `\`${this._twAniEffectName(se)}\``);
+                } else throw new Error("overall tag " + tag + " (" + j + "/" + overallCount + ")");
+            }
+            out.push("[FRAME MAX]", String(frameMax));
+            for (let k = 0; k < frameMax; k++) {
+                out.push("", `[FRAME${String(k).padStart(3, "0")}]`);
+                const boxLines = [];
+                const boxCount = rd.u16();
+                for (let l = 0; l < boxCount; l++) {
+                    const tag = rd.u16();
+                    if (tag !== 15 && tag !== 14) throw new Error("frame" + k + " box tag " + tag);
+                    const six = [];
+                    for (let b = 0; b < 6; b++) six.push(rd.i32());
+                    boxLines.push(`[${this._twAniTagName(tag)}]`, six.join("\t"));
+                }
+                const imgIndex = rd.i16();
+                out.push("[IMAGE]");
+                if (imgIndex >= 0) {
+                    if (imgIndex > imgList.length - 1) throw new Error("frame" + k + " imgIndex " + imgIndex + " oob");
+                    out.push(`\`${imgList[imgIndex]}\``, String(rd.u16()));
+                } else out.push("``", "0");
+                out.push("[IMAGE POS]", `${rd.i32()}\t${rd.i32()}`);
+                const frameItemCount = rd.u16();
+                for (let i = 0; i < frameItemCount; i++) {
+                    const tag = rd.u16();
+                    const t = this._twAniTagName(tag);
+                    switch (tag) {
+                        case 0: case 1: case 10: out.push(`[${t}]`, String(rd.byte())); break;
+                        case 3: out.push(`[${t}]`, String(rd.u16())); break;
+                        case 17: out.push(`[${t}]`, "1"); break;
+                        case 7: out.push(`[${t}]`, `${this._twFmtF(rd.f32())}\t${this._twFmtF(rd.f32())}`); break;
+                        case 8: out.push(`[${t}]`, this._twFmtF(rd.f32())); break;
+                        case 9: out.push(`[${t}]`, [this._twPct(rd.byte()), this._twPct(rd.byte()),
+                            this._twPct(rd.byte()), this._twPct(rd.byte())].join("\t")); break;
+                        case 11: {
+                            const e = rd.u16();
+                            out.push(`[${t}]`, `\`${this._twAniEffectName(e)}\``);
+                            if (e === 5) out.push([this._twPct(rd.byte()), this._twPct(rd.byte()),
+                                this._twPct(rd.byte())].join("\t"));
+                            if (e === 6) out.push(`${rd.i16()}\t${rd.i16()}`);
+                            break;
+                        }
+                        case 12: out.push(`[${t}]`, String(rd.i32())); break;
+                        case 13: { const v = rd.u16(); out.push(`[${t}]`, `\`${this._twAniDamageName(v)}\``); break; }
+                        case 16: {
+                            const len = rd.i32();
+                            if (len <= 0 || len > 512) throw new Error("frame" + k + " sound len " + len);
+                            out.push(`[${t}]`, `\`${rd.str(len)}\``);
+                            break;
+                        }
+                        case 23: out.push(`[${t}]`, String(rd.i32())); break;
+                        case 24: { const v = rd.u16(); out.push(`[${t}]`, `\`${this._twAniFlipName(v)}\``); break; }
+                        case 25: out.push(`[${t}]`); break;
+                        case 26: out.push(`[${t}]`, String(rd.i32())); break;
+                        case 27: out.push(`[${t}]`, `${rd.i16()}\t${rd.i16()}\t${rd.i16()}\t${rd.i16()}`); break;
+                        default: throw new Error("frame" + k + " item tag " + tag);
+                    }
+                }
+                out.push(...boxLines);
+            }
+            const consumed = rd.pos();
+            if (consumed > data.length) throw new Error("overrun");
+        } catch (e) {
+            // 解析失败回退 hex（含 3 字节尾部零填充等容差由 reader 边界处理）
+            return this._twAniHexFallback(data);
+        }
+        return out.join("\n") + "\n";
+    }
+
+    _twPct(b) { return String((256.0 + b) % 256.0); }
+
+    _twFmtF(v) { return Number(v.toPrecision(7)).toString(); }
+
+    _twAniTagName(tag) {
+        const ANI_TAGS = ["LOOP", "SHADOW", "?", "COORD", "?", "?", "?", "IMAGE RATE",
+            "IMAGE ROTATE", "RGBA", "INTERPOLATION", "GRAPHIC EFFECT", "DELAY", "DAMAGE TYPE",
+            "DAMAGE BOX", "ATTACK BOX", "PLAY SOUND", "PRELOAD", "SPECTRUM", "?", "?", "?", "?",
+            "SET FLAG", "FLIP TYPE", "LOOP START", "LOOP END", "CLIP", "OPERATION"];
+        return ANI_TAGS[tag] ?? ("TAG" + tag);
+    }
+
+    _twAniEffectName(e) {
+        const names = ["NONE", "DODGE", "LINEARDODGE", "DARK", "XOR", "MONOCHROME", "SPACEDISTORT"];
+        return names[e] ?? String(e);
+    }
+
+    _twAniDamageName(v) {
+        return ["NORMAL", "SUPERARMOR", "UNBREAKABLE"][v] ?? String(v);
+    }
+
+    _twAniFlipName(v) {
+        return ["", "HORIZON", "VERTICAL", "ALL"][v] ?? String(v);
+    }
+
+    // 二进制读取器（小端）
+    _twAniReader(data) {
+        let i = 0;
+        const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
+        return {
+            pos: () => i,
+            byte() { return dv.getUint8(i++); },
+            u16() { const v = dv.getUint16(i, true); i += 2; return v; },
+            i16() { const v = dv.getInt16(i, true); i += 2; return v; },
+            i32() { const v = dv.getInt32(i, true); i += 4; return v; },
+            f32() { const v = dv.getFloat32(i, true); i += 4; return v; },
+            str(len) { let s = ""; for (let p = i, e = i + len; p < e; p++) { const b = data[p]; s += b < 0x80 ? String.fromCharCode(b) : "?"; } i += len; return s; }
+        };
+    }
+
+    _twAniHexFallback(data) {
         const out = [];
         const frameCount = data.length >= 2 ? data[0] | (data[1] << 8) : 0;
         out.push("[ani] 帧数: " + frameCount);
-        let start = 8;
-        if (data.length >= 8) {
-            const pathLen = readInt32LE(data, 4);
-            if (pathLen > 0 && pathLen < 4096 && 8 + pathLen <= data.length) {
-                const path = decodeText(data.subarray(8, 8 + pathLen), this.twEncoding).replace(/\0+$/g, "");
-                if (path.length >= 3 && /^[\x20-\x7e%\x5b\x5d(){}]+$/.test(path)) {
-                    out.push("图像: " + path);
-                    start = 8 + pathLen;
-                }
-            }
-        }
-        const rest = data.length - start;
-        if (rest > 0) {
-            out.push("数据 (" + rest + " 字节):");
-            for (let i = start; i < data.length; i += 16) {
-                const chunk = Array.from(data.subarray(i, Math.min(i + 16, data.length)))
-                    .map(b => b.toString(16).padStart(2, "0"))
-                    .join(" ");
-                out.push("  " + chunk);
-            }
+        out.push("数据 (" + data.length + " 字节):");
+        for (let i = 0; i < data.length; i += 16) {
+            const chunk = Array.from(data.subarray(i, Math.min(i + 16, data.length)))
+                .map(b => b.toString(16).padStart(2, "0"))
+                .join(" ");
+            out.push("  " + chunk);
         }
         return out.join("\n");
     }
@@ -625,6 +789,11 @@ export class TwPvfArchive {
     // 原始字节 -> 文本总入口（对齐 PvfArchive.decodeContent）
     decodeContent(file, data) {
         if (!data || data.length === 0) return "";
+        // #PVF_File 明文（pvfUtility 导出的 ani/其它类型文本）不解析，按注释文本原样展示；
+        // 编辑/导出按源文件处理（_twDecodeBinaryText 同规则，见 docs/pvf-tw-format.md §9）
+        if (/^#PVF_File/.test(decodeText(data.subarray(0, 16), "latin1"))) {
+            return this._normalizeLines(decodeText(data, this.twEncoding));
+        }
         if (file && /^stringtable\.bin$/i.test(file.name)) return this._twStringTableView();
         if (file && /\.ani$/i.test(file.name)) return this._twDecodeAni(data);
         if (data.length >= 2 && data[0] === 0xb0 && data[1] === 0xd0) {
@@ -1034,6 +1203,10 @@ export class TwPvfArchive {
 
     // 文本 -> 原始字节总入口（对齐 PvfArchive.encodeContent）
     encodeContent(file, text) {
+        // #PVF_File 明文（导出文本）：按源文件格式原样编码（区域编码字节），不做 token 化
+        if (/^#PVF_File/.test(String(text || ""))) {
+            return encodeText(text, this.twEncoding);
+        }
         if (dataTypeIsLst(file)) return this.encodeTwLst(text);
         return this.encodeTwToken(text);
     }
