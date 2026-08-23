@@ -110,7 +110,15 @@ message AccountResetPasswordRequest {
 message MailAttachment {
   int32 item_id               = 1; // 物品模板ID
   int32 count                 = 2; // 堆叠数量（消耗品/材料可 >1，装备/宠物建议 1）
-  int32 kind                  = 3; // 物品种类（必填，1-11）：1=装备 2=消耗品 3=材料 5=宠物 6=宠物装备 7=宠物系 8=时装 ...；0 非法
+  // 物品种类（对齐服务端 ItemCore 枚举，0-14）：
+  //   0=未知 1=装备 2=消耗品 3=材料 4=任务 5=宠物(本体) 6=宠物装备 7=宠物消耗品
+  //   8=时装 9=时装徽章 10=副职业材料 11=特殊材料 12=公会勋章 13=守护珠 14=史诗碎片
+  // 非堆叠类型（Value=InstanceValue/Uid，count 固定 1）：1=装备 5=宠物 6=宠物装备 8=时装 12=公会勋章；
+  // 其余为堆叠类型（Value=Count）。网关当前仅接受合法组合：
+  //   主背包(0)配 kind=1/2/3；时装(1)配 kind=8；宠物(3|7)配 kind=5/6/7。
+  //   4 任务/9 时装徽章/10 副职业材料/11 特殊材料/12 公会勋章/13 守护珠/14 史诗碎片
+  //   暂不支持邮件投递（12/13 属公会列表 38 无邮箱入口，14 走服务端账号级特殊通道）。
+  int32 kind                  = 3; // 必填，1-11；0 非法
   int32 upgrade_level         = 4; // 强化/增幅等级（0-31，仅装备）
   int32 amplify_type          = 5; // 红字类型/增幅类型（仅装备）
   // 来源列表类型：决定客户端将该物品放入哪个背包列表。与 kind 是两个独立维度，
@@ -120,6 +128,9 @@ message MailAttachment {
   //   3|7 = 宠物列表（Pet）：须配 kind=5/6/7 宠物系
   // 映射（对齐 GMTool MapMailboxItemType / InventoryListType 枚举）：
   //   0->0(Main) 1->1(Avatar) 3|7->7(Pet)，其余取值非法（code=1014）
+  // 服务端 InventoryListType 完整枚举（邮箱入口仅用到 Main/Avatar/Pet）：
+  //   0=Main(主背包) 1=Avatar(时装) 2=PersonalCargo(个人金库) 3=Equipment(穿戴装备)
+  //   7=Pet(宠物) 12=AccountCargo(账号金库) 29=QuickSlot(快捷栏) 38=GuildMedal(公会勋章) 等
   int32 item_type             = 6;
   // 宠物序列号/句柄：仅对宠物类物品（kind=5 宠物本体）有意义；装备/消耗品/材料/时装等应保持 0。
   // 写入 mailbox_attachments.pet_serial_or_handle 列，同时编入 99B item_core BLOB 的 Value 字段（CreatureUid）。
