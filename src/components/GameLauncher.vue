@@ -324,7 +324,7 @@ export default {
                     return [8];
                 case 3:
                 case 7:
-                    return [6, 7]; // 5
+                    return [5, 6, 7];
                 default:
                     return [1, 2, 3];
             }
