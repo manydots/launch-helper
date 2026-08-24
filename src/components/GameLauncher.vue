@@ -326,11 +326,19 @@ export default {
                 case 7:
                     return [5, 6, 7];
                 default:
-                    return [1, 2, 3];
+                    // item_type 0 与 2（主背包次要入口）允许集一致
+                    return [1, 2, 3, 9, 10, 12, 13];
             }
         },
+        isNonStackable(kind) {
+            return kind === 1 || kind === 5 || kind === 6 || kind === 8 || kind === 12;
+        },
+        // 协议 expire_time 仅对限时时装（item_type=1）与限时宠物本体（宠物背包 kind=5）开放，其余恒永久
+        expireEnabled(att) {
+            return att.item_type === 1 || ((att.item_type === 3 || att.item_type === 7) && att.kind === 5);
+        },
         kindName(kind) {
-            const names = { 0: "未知", 1: "装备", 2: "消耗品", 3: "材料", 5: "宠物本体", 6: "宠物装备", 7: "宠物消耗品", 8: "时装" };
+            const names = { 0: "未知", 1: "装备", 2: "消耗品", 3: "材料", 5: "宠物本体", 6: "宠物装备", 7: "宠物消耗品", 8: "时装", 9: "时装徽章", 10: "副职业材料", 12: "公会勋章", 13: "守护珠" };
             return names[kind] || `种类${kind}`;
         },
         updateAttachment(att, field, value) {
@@ -339,25 +347,29 @@ export default {
             if (field === "item_type") {
                 const valid = this.validKinds(num);
                 if (!valid.includes(att.kind)) att.kind = valid[0] || 0;
-                if (att.kind === 1 || att.kind === 5 || att.kind === 6 || att.kind === 8) att.count = 1;
+                if (this.isNonStackable(att.kind)) att.count = 1;
                 att.upgrade_level = 0;
                 att.amplify_type = 0;
-                if (num !== 1) {
+                if (!this.expireEnabled(att)) {
                     att.expire_days = 0;
                     att.expire_time = 0;
                 }
             }
             if (field === "kind") {
-                if (num === 1 || num === 5 || num === 6 || num === 8) att.count = 1;
+                if (this.isNonStackable(num)) att.count = 1;
                 att.upgrade_level = 0;
                 att.amplify_type = 0;
                 if (num !== 5) {
                     att.pet_serial_or_handle = 0;
                 }
+                if (!this.expireEnabled(att)) {
+                    att.expire_days = 0;
+                    att.expire_time = 0;
+                }
             }
             if (field === "expire_days") {
-                att.expire_time = att.item_type === 1 && num > 0 ? Math.floor(Date.now() / 1000) + num * 86400 : 0;
-                if (att.item_type !== 1 && num > 0) att.expire_days = 0;
+                att.expire_time = this.expireEnabled(att) && num > 0 ? Math.floor(Date.now() / 1000) + num * 86400 : 0;
+                if (!this.expireEnabled(att) && num > 0) att.expire_days = 0;
             }
             if (field === "amplify_type" && num === 128) {
                 att.upgrade_level = 0;
@@ -384,9 +396,9 @@ export default {
                 await alertModal({ title: "附件不完整", message: "每个附件都需要填写物品ID、选择物品种类，且数量不能小于 1。" });
                 return;
             }
-            const overLimit = this.itemsList.find(a => (a.kind === 1 || a.kind === 5 || a.kind === 6 || a.kind === 8 ? a.count !== 1 : a.count > this.stackableCountLimit));
+            const overLimit = this.itemsList.find(a => (this.isNonStackable(a.kind) ? a.count !== 1 : a.count > this.stackableCountLimit));
             if (overLimit) {
-                await alertModal({ title: "数量超限", message: `不可堆叠物品（装备/时装/宠物本体/宠物装备）数量必须为 1；堆叠物品单个附件数量不能超过 ${this.stackableCountLimit}。` });
+                await alertModal({ title: "数量超限", message: `不可堆叠物品（装备/时装/宠物本体/宠物装备/公会勋章）数量必须为 1；堆叠物品单个附件数量不能超过 ${this.stackableCountLimit}。` });
                 return;
             }
             const mismatch = this.itemsList.find(a => !this.validKinds(a.item_type).includes(a.kind));
@@ -396,7 +408,7 @@ export default {
             }
             this.loading = true;
             this.itemsList.forEach(a => {
-                a.expire_time = a.item_type === 1 && a.expire_days > 0 ? Math.floor(Date.now() / 1000) + a.expire_days * 86400 : 0;
+                a.expire_time = this.expireEnabled(a) && a.expire_days > 0 ? Math.floor(Date.now() / 1000) + a.expire_days * 86400 : 0;
             });
             const data = await this.callApi(api.sendItems(this.itemsMid.trim(), Number(this.itemsRoleId), this.itemsTitle.trim(), this.itemsBody.trim(), this.itemsList, this.itemsKey.trim()), {
                 errorTitle: "发放失败"
@@ -811,13 +823,13 @@ export default {
                                             class="att-input"
                                             :value="att.count"
                                             min="1"
-                                            :max="att.kind === 1 || att.kind === 5 || att.kind === 6 || att.kind === 8 ? 1 : stackableCountLimit"
-                                            :disabled="att.kind === 1 || att.kind === 5 || att.kind === 6 || att.kind === 8"
+                                            :max="isNonStackable(att.kind) ? 1 : stackableCountLimit"
+                                            :disabled="isNonStackable(att.kind)"
                                             @input="updateAttachment(att, 'count', $event.target.value)" />
                                     </label>
                                     <label class="att-field">
                                         <span class="att-label">红字类型</span>
-                                        <select class="att-input" :value="att.amplify_type" :disabled="att.kind !== 1" @change="updateAttachment(att, 'amplify_type', $event.target.value)">
+                                        <select class="att-input" :value="att.amplify_type" :disabled="att.kind !== 1 && att.kind !== 12" @change="updateAttachment(att, 'amplify_type', $event.target.value)">
                                             <option value="" disabled>请选择红字类型</option>
                                             <option :value="0">无红字</option>
                                             <option :value="1">体力</option>
@@ -835,7 +847,7 @@ export default {
                                             :value="att.upgrade_level"
                                             min="0"
                                             :max="att.amplify_type === 128 ? 0 : 31"
-                                            :disabled="att.kind !== 1 || att.amplify_type === 128"
+                                            :disabled="(att.kind !== 1 && att.kind !== 12) || att.amplify_type === 128"
                                             @input="updateAttachment(att, 'upgrade_level', $event.target.value)" />
                                     </label>
                                     <label class="att-field">
@@ -845,12 +857,12 @@ export default {
                                             class="att-input"
                                             :value="att.expire_days"
                                             min="0"
-                                            placeholder="0=永久（仅时装）"
-                                            :disabled="att.item_type !== 1"
+                                            placeholder="0=永久（仅时装/宠物本体）"
+                                            :disabled="!expireEnabled(att)"
                                             @input="updateAttachment(att, 'expire_days', $event.target.value)" />
                                     </label>
                                 </div>
-                                <p class="att-tip">物品种类必须与物品 ID 的实际类型一致，否则领取后会落入错误的背包列表；限时天数仅对时装（时装背包）生效；宠物发送宠物胶囊（主背包-消耗品）</p>
+                                <p class="att-tip">物品种类必须与物品 ID 的实际类型一致，否则领取后会落入错误的背包列表；限时天数仅对时装（时装背包）与宠物本体（宠物背包）生效；宠物本体领取时由服务端分配 UID；公会勋章/守护珠经主背包投递，领取后由服务端路由到公会列表</p>
                             </div>
                         </div>
 
