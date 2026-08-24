@@ -19,8 +19,7 @@ const searchQuery = ref("");
 const error = ref("");
 const labelNameMap = {
     Stackable: "物品",
-    Equipment: "装备",
-    Creature: "宠物"
+    Equipment: "装备"
 };
 
 // 品级体系依客户端串表(dstr 35103-35105): 勇者=红色仅出自异界, 传说=6
@@ -41,8 +40,7 @@ const EXPIRATION_OPTIONS = [
 
 const LST_TYPES = [
     { id: "stackable", label: "Stackable", path: /^stackable\/stackable\.lst$/i },
-    { id: "equipment", label: "Equipment", path: /^equipment\/equipment\.lst$/i },
-    { id: "creature", label: "Creature", path: /^creature\/creature\.lst$/i }
+    { id: "equipment", label: "Equipment", path: /^equipment\/equipment\.lst$/i }
 ];
 
 // 筛选条件
@@ -136,11 +134,11 @@ function tagLabel(tag) {
 }
 
 // 分类路径：返回 [groupKey, subKey]。一级=give.js 业务分组，二级=组内标签/分段。
-// 装备按部位标签归组，堆叠物按背包分段（stack 组），creature.lst 物品归宠物组，
-// 未列出的装备标签落入"其他"（give.js 同款）。
+// 装备按部位标签归组（宠物=equipment 四宠物标签，creature.lst 不入物品来源，
+// A21 权威 GM 工具同口径，见 docs/pvf-item-grant-parsing.md §14.1 第 6 条），
+// 堆叠物按背包分段（stack 组），未列出的装备标签落入"其他"（give.js 同款）。
 function resolveCategoryPath(it) {
     if (it.type === "Stackable") return ["stack", it.segment || "消耗品"];
-    if (it.type === "Creature") return ["pet", "creature"];
     const tag = it.typeTag || "(无标签)";
     for (const g of EQUIP_GROUPS) {
         if (g.tags.includes(tag)) return [g.key, tag];
@@ -470,7 +468,7 @@ async function loadPvf(file) {
                     </svg>
                 </div>
                 <h2>查看物品编码</h2>
-                <p>解析 Script.pvf 中的 stackable/equipment/creature 物品列表，映射展示物品编码与名称</p>
+                <p>解析 Script.pvf 中的 stackable/equipment 物品列表，映射展示物品编码与名称</p>
                 <p>支持 JP / JPAG（0x55 XOR）/ CN、US（protected_nkpi）/ TW（繁体）四种格式的 PVF 解析</p>
                 <button class="btn btn-primary" @click="$refs.fileInputEl && $refs.fileInputEl.click()">
                     <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -901,9 +899,6 @@ async function loadPvf(file) {
 }
 .ivc-type.type-Equipment {
     color: #e8a33d;
-}
-.ivc-type.type-Creature {
-    color: #4db86b;
 }
 /* 分类列（装备部位标签 / 堆叠物背包分段） */
 .ivc-category {

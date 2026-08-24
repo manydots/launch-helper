@@ -242,16 +242,44 @@ IsWeapon            = 类型为 [weapon]
      `EQUIP_GROUPS` 装备组增加 `flag`、`TAG_LABELS` 补充上述四个翻译。
 5. **不变项**：品级体系 `RARITY_LABELS`、品质细分 `SPECIAL_LABELS`、期限过滤
    `EXPIRATION_OPTIONS` 与 A21 版一致，无需调整。
+6. **发放物品来源口径收敛（移除 creature.lst，2026-08-24）**：
+   - **问题现象**：launch-helper 物品编码查看器将 `creature/creature.lst` 全量纳入
+     物品来源并整体归入宠物分组；A21 权威 GM 工具仅索引
+     `equipment/equipment.lst` 与 `stackable/stackable.lst` 两清单
+     （`PvfIndexService.cs` `Build` 仅两处 `BuildKind` 调用，无 creature 来源），
+     其「宠物」分组全部来自 equipment 类型首标签 `[creature]` /
+     `[artifact red]` / `[artifact blue]` / `[artifact green]`。
+     86JPL 基线对账：权威宠物组合计 850（组内 `creature` 标签 707），
+     launch-helper 宠物组合计 1336（组内 creature 二级 1193），差额恰为
+     creature.lst 条目数 486。
+   - **定性**：口径不一致（非解析错误）。creature.lst 条目指向 `.cre`
+     宠物召唤物定义（如 `Petit_Tiger/Petit_Tiger.cre`），非可发放物品；
+     86JPL 上其 486 行中 144 行引用不可解析、228 行 lst 附名为空，
+     仅 342 行可匹配到文件。
+   - **解决**：`src/components/ItemCodeViewer.vue` `LST_TYPES` 移除 creature 项；
+     `resolveCategoryPath()` 移除 `it.type === "Creature"` 特判；
+     同步清理 `labelNameMap` 的 `Creature` 映射、`.ivc-type.type-Creature`
+     样式及界面描述文案。`EQUIP_GROUPS` 宠物组四标签与 `TAG_LABELS` 对应翻译
+     保留（equipment 中宠物类装备仍归宠物组，此即权威口径）。
+   - **已知残余口径差（登记备查，不作改动）**：A21 构建索引时丢弃名称为空或
+     解析失败的条目（`BuildKind` 内 `Name` 为空即跳过）；launch-helper 为保留
+     查看能力对 lst 全量展示，故消耗品等其他分组的计数仍可能大于权威工具。
+     宠物分组不受影响（86JPL 上 equipment 四宠物标签条目在权威索引中全部有效，
+     计数一致）。
 
 ### 14.2 测试脚本
 
 | 脚本 | 验证内容 | 运行方式 |
 |---|---|---|
-| `test/item-grant-category-sync.mjs` | ① 函数级断言：`stackSegment` 七段规则（含守护珠三种标签开头与两种子串命中）；`firstTypeTag` 对 `flag` / `flag gem` / `guild gem` 的提取。② 可选全量统计：传入 PVF 路径时统计 stackable 各分段计数、守护珠段样例、equipment 中 `flag` 标签计数 | `node test/item-grant-category-sync.mjs [PVF路径]`；不传路径仅跑断言 |
+| `test/item-grant-category-sync.mjs` | ① 函数级断言：`stackSegment` 七段规则（含守护珠三种标签开头与两种子串命中）；`firstTypeTag` 对 `flag` / `flag gem` / `guild gem` 的提取。② 源码口径断言：`ItemCodeViewer.vue` 的 `LST_TYPES` 不含 creature 来源、`resolveCategoryPath()` 无 `Creature` 特判、宠物组四标签保留。③ 可选全量统计：传入 PVF 路径时统计 stackable 各分段计数、守护珠段样例、equipment 中 `flag` 标签计数及宠物四标签（`creature` / `artifact red` / `artifact blue` / `artifact green`）计数与合计，另输出 creature.lst 行数仅作参考（不入来源） | `node test/item-grant-category-sync.mjs [PVF路径]`；不传路径仅跑断言 |
 
 ### 14.3 验证结果
 
 - 函数级断言：16 项全部 PASS（2026-08-24，Node 本机运行，改码前守护珠 5 项按预期 FAIL，改码后全绿）。
+- 源码口径断言（§14.1 第 6 条）：3 项。2026-08-24 改码前 `LST_TYPES 不含
+  creature/creature.lst 来源`、`resolveCategoryPath 无 Creature 特判` 两项按预期 FAIL；
+  `ItemCodeViewer.vue` 收敛后与函数级断言合计 19 项全部 PASS
+  （六个基线运行均含）。
 - 全量统计（2026-08-24，基线 `PVF/<版本>/Script.pvf`，
   运行 `node test/item-grant-category-sync.mjs <pvf路径>`）：
 
@@ -273,3 +301,21 @@ IsWeapon            = 类型为 [weapon]
   - 特殊材料大多为 0 属各档案真实数据特征（无 `[material] ... 4` 结尾条目；
     70TW 有 8 条）；服务端 ID 白名单 3033-3037、3262 仅用于入格判定，
     不在发放分类归段内。
+- 宠物分组口径对账（§14.1 第 6 条，2026-08-24）：既有统计数字与上表登记值
+  逐一复核一致（无回归）；下表为收敛后宠物分组的 equipment 四标签计数
+  （即 A21 权威发放口径，creature.lst 不入来源，其行数仅作参考）：
+
+| 基线 | creature | artifact red | artifact blue | artifact green | 宠物组合计 | creature.lst 行数（参考） |
+|---|---|---|---|---|---|---|
+| 70TW | 64 | 27 | 20 | 5 | 116 | 38 |
+| 86JP | 608 | 63 | 45 | 29 | 745 | 408 |
+| 86JPAG | 608 | 63 | 45 | 29 | 745 | 408 |
+| 86JPL | **707** | 65 | 47 | 31 | **850** | 486 |
+| 90CN | 872 | 70 | 52 | 36 | 1030 | 632 |
+| 90US | 731 | 27 | 20 | 10 | 788 | 513 |
+
+- 对账判读：86JPL 上宠物组合计 **850**、组内 `creature` 标签 **707**，与 A21 权威
+  GM 工具发放界面显示一致；收敛前 launch-helper 宠物组为 1336 / 组内 creature
+  二级 1193（= 权威值 + creature.lst 的 486 行），差额全部来自 creature.lst 来源。
+  宠物装备样例（86JPL）：63000「佛拉斯」、63006「宠物蛋 (佛拉斯)」等，
+  均为 equipment.lst 中 `[creature]` 标签装备。
