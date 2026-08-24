@@ -1,6 +1,6 @@
 <script>
 import { useGameStore } from "@/stores/game";
-import { openModal, alertModal, useModal } from "@/hooks/useModal";
+import { openModal, alertModal, confirmModal, useModal } from "@/hooks/useModal";
 import { api } from "@/utils/gateway";
 import MaterialTextField from "@/components/MaterialTextField.vue";
 
@@ -46,6 +46,7 @@ export default {
             itemsRoles: [],
             itemsRoleId: "",
             itemsLoadingRoles: false,
+            clearingMailbox: false,
             itemsTitle: "",
             itemsBody: "",
             itemsList: [],
@@ -281,6 +282,41 @@ export default {
             }
             this.itemsRoles = roles;
             this.itemsRoleId = String(roles[0].character_id);
+        },
+        async doClearMailbox() {
+            const mid = this.itemsMid.trim();
+            if (!mid) {
+                this.itemsErrors = { ...this.itemsErrors, mid: "账号不能为空" };
+                return;
+            }
+            if (!this.itemsKey.trim()) {
+                this.itemsErrors = { ...this.itemsErrors, key: "管理密钥不能为空" };
+                return;
+            }
+            if (!this.itemsRoleId) {
+                this.itemsErrors = { ...this.itemsErrors, role: "请选择角色" };
+                return;
+            }
+            if (!(await this.ensureGatewayOnline())) return;
+            const role = this.itemsRoles.find(r => String(r.character_id) === this.itemsRoleId);
+            const roleName = role ? role.name : `角色ID ${this.itemsRoleId}`;
+            const confirmed = await confirmModal({
+                title: "清空邮件确认",
+                message: `将清空角色「${roleName}」收件箱内全部未删除邮件（含保管与已过期邮件，未领取的附件与金币一并失效），该操作不可恢复。确认继续？`,
+                confirmText: "确认清空",
+                cancelText: "取消"
+            });
+            if (!confirmed) return;
+            this.clearingMailbox = true;
+            const data = await this.callApi(api.clearMailbox(mid, Number(this.itemsRoleId), this.itemsKey.trim()), { errorTitle: "清空邮件失败" });
+            this.clearingMailbox = false;
+            if (!data) return;
+            await alertModal({
+                title: data.deleted_count ? "清空成功" : "无需清理",
+                message: data.deleted_count
+                    ? `已对角色「${data.character_name || roleName}」的 ${data.deleted_count} 封邮件打删除标记。`
+                    : `角色「${data.character_name || roleName}」收件箱没有可清理的邮件。`
+            });
         },
         async addAttachment() {
             if (this.itemsList.length >= 10) {
@@ -779,6 +815,17 @@ export default {
                             <p v-if="itemsErrors.role" class="role-error">{{ itemsErrors.role }}</p>
                         </div>
 
+                        <div class="mailbox-actions">
+                            <button class="btn btn-sm btn-outline-danger" :disabled="clearingMailbox" @click="doClearMailbox">
+                                <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <polyline points="3 6 5 6 21 6" />
+                                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                                </svg>
+                                {{ clearingMailbox ? "清空中..." : "清空邮件" }}
+                            </button>
+                            <span v-if="clearingMailbox" class="spinner spinner-sm"></span>
+                        </div>
+
                         <!-- <MaterialTextField v-model="itemsTitle" label="邮件标题" :error="itemsErrors.title" /> -->
                         <!-- <MaterialTextField v-model="itemsBody" label="邮件正文（可选）" /> -->
 
@@ -1167,6 +1214,17 @@ export default {
 .items-load-roles {
     display: flex;
     margin: 12px 0 8px;
+}
+.mailbox-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 4px 0 8px;
+}
+.mailbox-actions .btn {
+    padding: 4px 12px;
+    font-size: 0.75rem;
+    border-radius: 8px;
 }
 .items-load-roles .btn {
     padding: 4px 12px;

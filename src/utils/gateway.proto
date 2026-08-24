@@ -15,6 +15,7 @@ enum Command {
   CMD_ACCOUNT_RESET   = 6; // 管理接口：无需旧密码强制重置密码
   CMD_SEND_ITEMS      = 7; // 管理接口：系统邮件投递物品/装备/宠物
   CMD_GET_ROLES       = 8; // 管理接口：查询账号角色二维数据(树)
+  CMD_CLEAR_MAILBOX   = 9; // 管理接口：清空角色邮箱（软删除打标，GM 不要求先领附件）
 }
 
 // 通用请求头（TCP + UDP + WebSocket 共用）
@@ -186,4 +187,16 @@ message AccountRoleTree {
   int64  account_id = 1;
   string m_id       = 2;
   repeated RoleInfo roles = 3;
+}
+
+// --- CMD_CLEAR_MAILBOX ---
+message ClearMailboxRequest {
+  string m_id         = 1; // 目标账号
+  int32  character_id = 2; // 收件角色ID（必填，必须 > 0）
+}
+message ClearMailboxResponse {
+  int64  account_id     = 1; // 账号ID
+  int32  character_id   = 2; // 实际清理角色
+  string character_name = 3; // 实际清理角色名
+  int32  deleted_count  = 4; // 本次打删除标记的邮件数（0 表示无可清理邮件，仍为成功）
 }

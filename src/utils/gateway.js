@@ -19,6 +19,8 @@ const SendItemsRequest = root.lookupType("gateway.SendItemsRequest");
 const SendItemsResponse = root.lookupType("gateway.SendItemsResponse");
 const GetRolesRequest = root.lookupType("gateway.GetRolesRequest");
 const AccountRoleTree = root.lookupType("gateway.AccountRoleTree");
+const ClearMailboxRequest = root.lookupType("gateway.ClearMailboxRequest");
+const ClearMailboxResponse = root.lookupType("gateway.ClearMailboxResponse");
 
 const CMD = {
     HEALTH: 1,
@@ -28,7 +30,8 @@ const CMD = {
     ACCOUNT_INFO: 5,
     ACCOUNT_RESET: 6,
     SEND_ITEMS: 7,
-    GET_ROLES: 8
+    GET_ROLES: 8,
+    CLEAR_MAILBOX: 9
 };
 
 const RESPONSE_TYPES = {
@@ -39,7 +42,8 @@ const RESPONSE_TYPES = {
     [CMD.ACCOUNT_INFO]: AccountInfoResponse,
     [CMD.ACCOUNT_RESET]: null,
     [CMD.SEND_ITEMS]: SendItemsResponse,
-    [CMD.GET_ROLES]: AccountRoleTree
+    [CMD.GET_ROLES]: AccountRoleTree,
+    [CMD.CLEAR_MAILBOX]: ClearMailboxResponse
 };
 
 const CMD_NAMES = {
@@ -50,7 +54,8 @@ const CMD_NAMES = {
     [CMD.ACCOUNT_INFO]: "ACCOUNT_INFO",
     [CMD.ACCOUNT_RESET]: "ACCOUNT_RESET",
     [CMD.SEND_ITEMS]: "SEND_ITEMS",
-    [CMD.GET_ROLES]: "GET_ROLES"
+    [CMD.GET_ROLES]: "GET_ROLES",
+    [CMD.CLEAR_MAILBOX]: "CLEAR_MAILBOX"
 };
 
 const REQUEST_TYPES = {
@@ -61,7 +66,8 @@ const REQUEST_TYPES = {
     [CMD.ACCOUNT_INFO]: AccountInfoRequest,
     [CMD.ACCOUNT_RESET]: AccountResetPasswordRequest,
     [CMD.SEND_ITEMS]: SendItemsRequest,
-    [CMD.GET_ROLES]: GetRolesRequest
+    [CMD.GET_ROLES]: GetRolesRequest,
+    [CMD.CLEAR_MAILBOX]: ClearMailboxRequest
 };
 
 const TIMEOUT_MS = 15000;
@@ -258,6 +264,11 @@ class GatewayClient {
         const body = GetRolesRequest.encode(GetRolesRequest.create({ m_id })).finish();
         return this.send(CMD.GET_ROLES, body, authKey);
     }
+
+    async clearMailbox(m_id, character_id, authKey) {
+        const body = ClearMailboxRequest.encode(ClearMailboxRequest.create({ m_id, character_id })).finish();
+        return this.send(CMD.CLEAR_MAILBOX, body, authKey);
+    }
 }
 
 const client = new GatewayClient();
@@ -271,6 +282,7 @@ export const api = {
     accountResetPassword: (m_id, new_password, new_password_confirm, authKey) => client.accountResetPassword(m_id, new_password, new_password_confirm, authKey),
     sendItems: (m_id, character_id, title, body, attachments, authKey) => client.sendItems(m_id, character_id, title, body, attachments, authKey),
     getRoles: (m_id, authKey) => client.getRoles(m_id, authKey),
+    clearMailbox: (m_id, character_id, authKey) => client.clearMailbox(m_id, character_id, authKey),
     // 向后兼容别名
     adminResetPassword: (m_id, new_password, new_password_confirm, authKey) => client.accountResetPassword(m_id, new_password, new_password_confirm, authKey)
 };
