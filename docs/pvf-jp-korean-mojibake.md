@@ -2,7 +2,7 @@
 
 ## 1. 问题现象
 
-`C:\Users\Administrator\Desktop\PVF\86JP\Script.pvf`（格式识别为 **JP / original**，sTrA 全局编码自动探测为 **gbk**）的 `npcname.lst`、`monstername.lst`、`aicharactername.lst`、`passiveobjectname.lst`、`skillname0~10.lst` 等 .lst 文件中，NPC 名 / 怪物名 / 技能名出现「汉字乱码」（实际为未翻译韩文被双重转码）：
+`PVF/86JP/Script.pvf`（格式识别为 **JP / original**，sTrA 全局编码自动探测为 **gbk**）的 `npcname.lst`、`monstername.lst`、`aicharactername.lst`、`passiveobjectname.lst`、`skillname0~10.lst` 等 .lst 文件中，NPC 名 / 怪物名 / 技能名出现「汉字乱码」（实际为未翻译韩文被双重转码）：
 
 ```
 `菜 阜腮 粮` 34
@@ -136,8 +136,8 @@ GBK 的 B0~C8 区（GB2312 一级汉字前 25 行）与 EUC-KR 韩文音节区**
 
 | 脚本 | 用途 |
 |------|------|
-| `test/pvf-jp-mojibake-verify.mjs` | 86JP 主回归（默认 `C:/Users/Administrator/Desktop/PVF/86JP/Script.pvf`）：sTrW 全表变更统计 + npcname/aicharactername 等 .lst 显示验证 + itemname/quest 不受激进恢复影响 + 误伤面统计（% 0 / 换行 0，拒绝规则生效）+ 谚文汉字标注恢复核对（`체이서 : 화(火)`、`십문자도 - 자(者)`）+ 关键字 GBK 码 ↔ euc-kr 实测断言；输出 `test/strw-odd.txt`、`test/lst-hanja-rows-skillname3.txt`、`test/lst-hanja-rows-itemname.txt` |
-| `test/pvf-us-mojibake-regress.mjs` | 90US 回归（默认 `C:/Users/Administrator/Desktop/PVF/90US/Script.pvf`）：sTrW 变更基线 95168 核对 + monstername/itemname/npcname 显示 + box-drawing 残留检查 |
+| `test/pvf-jp-mojibake-verify.mjs` | 86JP 主回归（默认 `PVF/86JP/Script.pvf`）：sTrW 全表变更统计 + npcname/aicharactername 等 .lst 显示验证 + itemname/quest 不受激进恢复影响 + 误伤面统计（% 0 / 换行 0，拒绝规则生效）+ 谚文汉字标注恢复核对（`체이서 : 화(火)`、`십문자도 - 자(者)`）+ 关键字 GBK 码 ↔ euc-kr 实测断言；输出 `test/strw-odd.txt`、`test/lst-hanja-rows-skillname3.txt`、`test/lst-hanja-rows-itemname.txt` |
+| `test/pvf-us-mojibake-regress.mjs` | 90US 回归（默认 `PVF/90US/Script.pvf`）：sTrW 变更基线 95168 核对 + monstername/itemname/npcname 显示 + box-drawing 残留检查 |
 
 已删除的探针脚本（功能并入上述主脚本，勿重建）：`pvf-jp-mojibake-lst-stat.mjs`、`pvf-jp-mojibake-lst-samples.mjs`、`pvf-jp-euckr-range.mjs`、`pvf-jp-hanja-verify.mjs`、`pvf-jp-chars.mjs`、`pvf-jp-widen.mjs`、`pvf-jp-widen2.mjs`、`pvf-jp-lst-hanja.mjs`、`pvf-jp-odd-scan.mjs`、`pvf-jp-probe.mjs`、`pvf-jp-probe2.mjs`、`pvf-us-gbk-diff.mjs`。
 
@@ -151,7 +151,7 @@ GBK 的 B0~C8 区（GB2312 一级汉字前 25 行）与 EUC-KR 韩文音节区**
 
 ### 8.1 问题现象
 
-`C:\Users\Administrator\Desktop\PVF\86JPAG\Script.pvf`（格式识别为 **JPAG / guard**）的
+`PVF/86JPAG/Script.pvf`（格式识别为 **JPAG / guard**）的
 `aicharactername.lst`、`itemname.lst`、`monstername.lst`、`npcname.lst`、
 `passiveobjectname.lst`、`skillname0.lst` 等名字型 .lst 行内名字出现汉字乱码，
 与 86JP 同源同链路但**修复未生效**：

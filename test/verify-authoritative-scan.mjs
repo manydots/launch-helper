@@ -1,9 +1,58 @@
 import { readFileSync } from "node:fs";
 import { TwPvfArchive } from "../src/utils/pvfToolTw.js";
+import { pvfDecryptTw, TW_DECRYPT_KEY } from "../src/utils/pvfCodec.js";
 import hljs from "highlight.js/lib/core";
 import { registerPvfLanguage } from "../src/utils/pvfHighlight.js";
 
 const PVF_PATH = process.argv[2] || "C:/Users/Administrator/Desktop/PVF/70TW/Script.pvf";
+
+// ================= 净化损坏 strlst 特征断言（§8.7；仅留存样本 + 登记 checksum，不读取归档） =================
+// 样本一次性提取（AGENTS.md「样本一次性提取（门控）」）：test/70TW/event/event.kor.str
+// 为归档数据区原样未解密切片；现场还原所需 checksum 与 dataSize 登记于
+// docs/pvf-tw-format.md §8.7（CreateBuffKey 含明文输入，无法由密文离线推导）。
+const CORR_CHECKSUM = 0x47273696;
+const CORR_DATA_SIZE = 99952;
+let scorrRaw; // 样本原始未解密字节，供归档加载后做登记一致性核对
+{
+    try {
+        scorrRaw = new Uint8Array(readFileSync(new URL("./70TW/event/event.kor.str", import.meta.url)));
+    } catch {
+        console.log("\n净化损坏 strlst 断言: 留存样本 test/70TW/event/event.kor.str 缺失，按 AGENTS.md 样本留存规则自归档一次性提取");
+        process.exit(1);
+    }
+    const dec0 = new Uint8Array(scorrRaw);
+    pvfDecryptTw(dec0, TW_DECRYPT_KEY, CORR_CHECKSUM);
+    const plain0 = dec0.subarray(0, CORR_DATA_SIZE);
+    let ff0 = 0;
+    for (let i = 0; i + 2 < plain0.length; i++)
+        if (plain0[i] === 0xEF && plain0[i+1] === 0xBF && plain0[i+2] === 0xBD) { ff0++; i += 2; }
+    let utf8Ok0 = true;
+    try { new TextDecoder("utf-8", { fatal: true }).decode(plain0); } catch { utf8Ok0 = false; }
+    // 行结构（原始字节）：802 条 key>text + 103 条 // 注释 + 282 个 CR 空行
+    let kv0 = 0, cm0 = 0, crOnly0 = 0;
+    {
+        let a = 0;
+        for (let i = 0; i <= plain0.length; i++) {
+            if (i !== plain0.length && plain0[i] !== 10) continue;
+            if (i > a) {
+                if (plain0[a] === 47 && plain0[a + 1] === 47) cm0++;
+                else {
+                    let hasGt = false;
+                    for (let k = a; k < i; k++) if (plain0[k] === 62) { hasGt = true; break; }
+                    if (hasGt) kv0++;
+                    else if (i - a === 1 && plain0[a] === 13) crOnly0++;
+                }
+            }
+            a = i + 1;
+        }
+    }
+    console.log("\n净化损坏 strlst 特征断言(留存样本独立,不读归档):");
+    console.log("  EF BF BD 序列计数:", ff0, ff0 === 18021 ? "PASS" : "FAIL (期望 18021)");
+    console.log("  全文件合法 UTF-8:", utf8Ok0 ? "PASS" : "FAIL",
+        "| 行结构:", kv0 + "+" + cm0 + "+" + crOnly0,
+        kv0 === 802 && cm0 === 103 && crOnly0 === 282 ? "PASS (802 key>text + 103 注释 + 282 空)" : "FAIL");
+}
+
 const buf = readFileSync(PVF_PATH);
 const arch = new TwPvfArchive(buf);
 await arch.parse();
@@ -215,21 +264,47 @@ if (!rb.ok) {
   console.log("  [DELAY] 80 数:", delayCount, delayCount === 12 ? "PASS" : "FAIL");
 }
 
-// ================= 损坏 strlst 已知特征断言（§8.7：保持原始 Big5 解析） =================
+// ================= 净化损坏 strlst 展示层断言（§8.7 逆净化还原；归档加载后补核对） =================
 const fcorr = arch.files.find(x => x.name.toLowerCase() === "event/event.kor.str");
-if (fcorr) {
-    const dcorr = await arch.getFileData(fcorr);
-    const textCorr = arch.decodeContent(fcorr, dcorr);
-    // 制作时损坏的 strlst：按 Big5 解码显示伪中文（嚙篁嚙課度無…），非解析器问题，保持原始解析
-    const pseudoCn = /嚙篁嚙課度無/.test(textCorr);
-    const asciiOk = textCorr.includes("event_id_1_start>") && textCorr.includes("LEVEL UP");
-    const notBinary = !/^\[二进制文件/.test(textCorr);
-    console.log("\n损坏 strlst 断言: 保持 Big5 原始解析(伪中文):", pseudoCn ? "PASS" : "FAIL",
-        "| key/ASCII 保留:", asciiOk ? "PASS" : "FAIL",
-        "| 不误判二进制:", notBinary ? "PASS" : "FAIL");
-} else {
-    console.log("\n损坏 strlst 断言: event/event.kor.str NOT FOUND");
+if (!fcorr) {
+    console.log("\n净化损坏 strlst 展示层断言: event/event.kor.str NOT FOUND");
+    process.exit(1);
 }
+console.log("\n净化损坏 strlst 展示层断言(归档补核对):");
+console.log("  fcorr.checksum == 登记 0x47273696:",
+    (fcorr.checksum >>> 0) === CORR_CHECKSUM ? "PASS" : "FAIL (" + (fcorr.checksum >>> 0).toString(16) + ")");
+const dcorr = await arch.getFileData(fcorr);
+// 断言 1：留存样本 == 归档数据区对应区段原样切片（未解密形态逐字节一致）
+const trueLen = (fcorr.dataSize + 3) & ~3;
+const rawStart = arch._twDataBase + fcorr.dataOffset;
+const rawSlice = buf.subarray(rawStart, rawStart + trueLen);
+let rawSame = scorrRaw.length === rawSlice.length;
+if (rawSame) for (let i = 0; i < scorrRaw.length; i++) if (scorrRaw[i] !== rawSlice[i]) { rawSame = false; break; }
+console.log("  留存样本=归档数据区原样切片(未解密,逐字节一致):", rawSame ? "PASS" : "FAIL",
+    `(${scorrRaw.length}B vs ${rawSlice.length}B)`);
+// 断言 2：解析层同款算法 + 登记 checksum 现场还原，与 getFileData 结果一致
+const dec = new Uint8Array(scorrRaw);
+pvfDecryptTw(dec, TW_DECRYPT_KEY, CORR_CHECKSUM);
+const decPlain = dec.subarray(0, fcorr.dataSize);
+let decSame = decPlain.length === dcorr.length;
+if (decSame) for (let i = 0; i < decPlain.length; i++) if (decPlain[i] !== dcorr[i]) { decSame = false; break; }
+console.log("  现场还原(pvfDecryptTw+登记checksum) == 解析层 getFileData:", decSame ? "PASS" : "FAIL",
+    `(${decPlain.length}B vs ${dcorr.length}B)`);
+// 断言 3：展示层走真实 decodeContent——保持区域编码直接解码
+// （§8.7：数据本体损坏、U+FFFD 处不可逆丢失，展示层无法真正修复，不修改源码；
+//   伪中文为文件本体损坏的必然结果）
+const textCorr = arch.decodeContent(fcorr, dcorr);
+const pseudoCn = /嚙篁嚙課度無/.test(textCorr);
+const asciiOk = textCorr.includes("event_id_1_start>") && textCorr.includes("LEVEL UP") && textCorr.includes("DNF");
+const notBinary = !/^\[二进制文件/.test(textCorr);
+console.log("  保持 Big5 直接解码(伪中文存在):", pseudoCn ? "PASS" : "FAIL",
+    "| key/ASCII 保留:", asciiOk ? "PASS" : "FAIL",
+    "| 不误判二进制:", notBinary ? "PASS" : "FAIL");
+// 断言 4：正常 strlst 不命中净化检测，保持 Big5 中文解码不变
+const fnorm = arch.files.find(x => x.name.toLowerCase() === "etc/etc.kor.str");
+const tnorm = fnorm ? arch.decodeContent(fnorm, await arch.getFileData(fnorm)) : "";
+const normOk = tnorm.includes("活動") && !/嚙篁/.test(tnorm) && !/^\[二进制文件/.test(tnorm);
+console.log("  正常 strlst 不受影响(etc/etc.kor.str 繁体可读):", normOk ? "PASS" : "FAIL");
 
 // ================= 全量：明文 ani（#PVF_File / [FRAME MAX] 开头）展示验证 =================
 let plainAni = 0;

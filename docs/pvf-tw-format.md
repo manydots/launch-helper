@@ -206,22 +206,60 @@ strlst 文件是明文 `key>text` 行（含韩文等多字节文本时，可打�
 且其数量 ≥ 其它非空行数即判定为 strlst 明文，按区域编码解码展示（不显示为二进制）。
 其余文本判定顺序不变：UTF-16LE 检测 → 可打印率 → 二进制标记。
 
-### 8.7 损坏 strlst 已知数据特征（不修复）
+### 8.7 净化损坏 strlst 已知数据特征（不修复）
 
-**已知数据特征（非解析错误）**：`event/event.kor.str`（99952B，1187 行）在**制作时已被损坏**
---原始内容为韩文（`Level Up` / `DNF` 活动等，与 `etc/etc.kor.str` 同名 key 的中文版内容
-不同），存储链路为「韩文 EUC-KR -> 被 UTF-8 解码器净化：非法字节替换为
-U+FFFD（`EF BF BD`）、恰好合法的 2 字节序列（如 `D2 AB`）保留、ASCII 原样 -> 以 UTF-8
-保存」。实测全文件 **18021 个 `EF BF BD` 序列**；4KB 采样 733 个替换符（正常 strlst 恒为 0）。
-注释行 `// ???????` 的 `?` 为字面 ASCII 0x3F（制作时替换），原文不可恢复。
+**已知数据特征（非解析错位）**：`event/event.kor.str`（99952B，1187 行）在**制作时已被损坏**。
+原始内容为**繁体中文（Big5 编码，TW 区域本地化文本；文件名 kor 为历史遗留命名）**，
+存储链路为「Big5 字节流 -> 被 UTF-8 解码器（maximal subpart 策略）读入 ->
+非法序列以 U+FFFD 替换、合法序列保留 -> 以 UTF-8 字节保存」。净化规则逐条：
 
-**展示策略：保持原始 Big5 解析（不修复）**。该文件按区域编码（Big5）解码会
-把 `EF BF BD` 错位读成 `嚙篁嚙課度無…` 伪中文（语义垃圾但每字符是合法 Big5），
-此为文件本体损坏的必然结果，**非解析器问题**。曾尝试「检测损坏 -> 净化展示
-（ASCII 保留、损坏处 `�`）」与「跨文件对照恢复」两种方案，均被要求还原为
-原始 Big5 解析；最终保持 `_twDecodeBinaryText` 的 strlst 分支按 `twEncoding`
-直接解码（与修复前一致），不做损坏检测与净化。字节级验证已确认该文件真实
-存储为 UTF-8 混合流（FFFD + 残留 Big5 组 + ASCII），原文韩文不可恢复。
+| Big5 双字节形态 | 净化结果 |
+|---|---|
+| 首字节 `A1-BF`（UTF-8 continuation 区） | U+FFFD ×1（消费 1 字节） |
+| 首字节 `C2-DF` + 次字节 `A0-BF` | 合法 2 字节序列存活（如 `C9 AF` -> U+026F，高频残留即此） |
+| 首字节 `C2-DF` + 次字节 `40-7E`（常用字次字节 ASCII 区） | U+FFFD + 该 ASCII 存活（半字信息） |
+| 跨字拼合的连续字节（少量） | 合法 3 字节序列存活（如 `E6 AC 8F` -> U+6B0F ×134） |
+| ASCII（key 名 / 数字 / 半角标点 / `LEVEL UP` 等） | 原样保留 |
+
+实测统计（checksum `0x47273696` 解密后明文）：**全文件为合法 UTF-8**（严格解码通过）；
+`EF BF BD` 序列 **18021** 个；ASCII 39649B；残留组 2931 码点（重编码 6240B）；
+行结构完好：1187 行 = 802 条 `key>text` + 103 条 `//` 注释 + 282 空行，key 名全 ASCII 未损。
+每个 U+FFFD 对应 1 个被吞的原字节，**该处原字节不可逆丢失，完全复原不可能**
+（注释行 `// ???????` 的 `?` 为字面 0x3F，制作时已替换）。
+
+**展示策略：保持区域编码直接解码（不修复）**。该文件按 `twEncoding`（Big5）解码会
+把 `EF BF BD` 错位读成 `嚙篁嚙課度無…` 伪中文（看似中文实为语义垃圾）。U+FFFD 处
+原文已不可逆丢失，任何展示层处理都无法真正复原；据此定性为**数据本体损坏、展示层
+无法真正修复，不得修改项目源码**（AGENTS.md「未修复问题不动源码（门控）」），
+保持既有解码与展示行为，伪中文为文件本体损坏的必然结果。
+
+**方案沿革（三次尝试均废弃还原）**：
+1. 「检测损坏 -> 净化展示」（ASCII 保留、损坏处 `�`）——2026-08 上旬废弃；
+2. 「跨文件对照恢复」——2026-08 上旬废弃（补实证见下）；
+3. 「逆净化还原展示」（2026-08-24 实施：strlst 行结构 + 全文件严格合法 UTF-8 +
+   `EF BF BD` 密度三重检测命中后，UTF-8 解码 -> U+FFFD 记占位 `?`、ASCII 原样、
+   其余码点重编码回原字节 -> 按 Big5 解码）——实测 key 与 ASCII 词可读、汉字恢复
+   2708、占位 `?` 18458，但 U+FFFD 处信息已丢失，输出仍含大量占位符，未能真正
+   解决乱码，判定为掩盖性处理而非修复，按门控废弃还原源码。
+   实施期间取得的定性成果（Big5 源编码纠正、checksum 登记、行结构统计、
+   跨文件对照否决实证、样本一次性提取机制）予以保留。
+   对照验证记录：还原骨架 `}?l?C` 与 `etc/etc.kor.str` 完好同名 key
+   （`event_id_1_start>疲勞度無限活動開始。`）的「開始。」次字节逐字对应，
+   证实源编码为 Big5。
+
+**跨文件对照否决（维持，补实证）**：`event/event.kor.str` 与 `etc/etc.kor.str`
+同名 key 仅 **235/802（29.3%）** 交集；同源长度校验仅 **137/235** 相等
+（如 `event_id_3_ing` 还原 83B vs etc 24B），证明两文件内容并非同源，
+不得以对照文本替换或补全展示。
+
+**留存样本（固定回归输入）**：该文件的**原始未解密文件流**已自归档数据区原样切片
+落盘为 `test/70TW/event/event.kor.str`（dataSize = trueLen = 99952B，无对齐填充；
+不解密，不做任何变换）；**样本一次性提取**，后续分析、修复与回归一律以样本为输入，
+不再依赖原始归档。现场还原所需 checksum = `0x47273696`（取自归档文件树条目；
+`CreateBuffKey(明文数据, 文件名哈希)` 无法由密文或文件名离线推导，故必须登记于此）。
+`test/verify-authoritative-scan.mjs` 的「净化损坏 strlst」断言加载样本 +
+登记 checksum 现场还原（`pvfDecryptTw`），再做 §8.7 特征与展示层行为断言，
+全程不读取归档；归档整体加载仅用于 §12.3 全量基线核对统计。
 
 ## 9. 70 ANI 文件
 
@@ -410,7 +448,7 @@ FLIP_TYPE_Item `HORIZON=1/VERTICAL=2/ALL=3`。
 - 编码：文件树按 §5 哈希排序（`OrderBy(FileNameBytesChecksum)`），条目 = 哈希/长度/
   文件名/DataLen/Checksum/DataOffset，`fileTreeLength = Σ(FileNameLen+20) + 3 & ~3`。
 - 字符串表按索引引用，**编辑脚本必须同步维护 stringtable.bin**（删除/追加条目）。
-- 已实测验证：`/Users/genergy/Desktop/frida/a70s2精简更新pvf/Script.pvf`
+- 已实测验证：`a70s2精简更新pvf/Script.pvf`
   （81.5MB，guidLen=36，ver=0x102EA，182903 文件，184375 条字符串）解析全链路正确。
 
 ## 12. ANI / strlst 解析修复记录（2026-08）
@@ -450,10 +488,10 @@ FLIP_TYPE_Item `HORIZON=1/VERTICAL=2/ALL=3`。
 
 | 脚本 | 验证内容 |
 |---|---|
-| `test/verify-authoritative-scan.mjs` | 全量 114943 个 .ani 独立解析：**ok 114922 / partial 1（`nametag5.ani` 3B 尾部不足）/ fail 0 / empty 20**；独立解析器输出与真实实现输出**逐行完全一致（不一致 0）**（#PVF_File 头、`[FRAME MAX]`、`[IMAGE POS]`、`[IMAGE RATE]` G7 浮点、`[ATTACK BOX]` 盒等标签齐全）；hex 回退 0、frameCount=0 空动画 23；全量 .str 无二进制误判（0）；关键文件 `equipmentdefaultcustomanimation.ani`（预期 `[IMAGE POS] 65535 65535`）/ `stone0.ani` / `badeffect2.ani` / `event.kor.str` 输出核对；`badeffect2.ani` 权威头 16 行断言 PASS（12 帧 / 12 IMAGE POS / 12 DELAY 80）；#PVF_File 明文 ani 展示验证；**注释渲染断言（§9.3.1）：`#PVF_File` / `// 注释` / 行首缩进 `//` 均产出 `hljs-comment` token PASS**；**损坏 strlst 断言（§8.7）：`event.kor.str` 检测命中、无伪中文（`嚙篁課締瘠` 等 Big5 错读字符零出现）、key/ASCII 保留、损坏处 `�` 标记 PASS** |
+| `test/verify-authoritative-scan.mjs` | 全量 114943 个 .ani 独立解析：**ok 114922 / partial 1（`nametag5.ani` 3B 尾部不足）/ fail 0 / empty 20**；独立解析器输出与真实实现输出**逐行完全一致（不一致 0）**（#PVF_File 头、`[FRAME MAX]`、`[IMAGE POS]`、`[IMAGE RATE]` G7 浮点、`[ATTACK BOX]` 盒等标签齐全）；hex 回退 0、frameCount=0 空动画 23；全量 .str 无二进制误判（0）；关键文件 `equipmentdefaultcustomanimation.ani`（预期 `[IMAGE POS] 65535 65535`）/ `stone0.ani` / `badeffect2.ani` / `event.kor.str` 输出核对；`badeffect2.ani` 权威头 16 行断言 PASS（12 帧 / 12 IMAGE POS / 12 DELAY 80）；#PVF_File 明文 ani 展示验证；**注释渲染断言（§9.3.1）：`#PVF_File` / `// 注释` / 行首缩进 `//` 均产出 `hljs-comment` token PASS**；**净化损坏 strlst 断言（§8.7）：优先仅加载留存样本 `test/70TW/event/event.kor.str`（未解密文件流）+ 文档登记 checksum `0x47273696`，经 `pvfDecryptTw` 现场还原后断言（此段不读取归档，落实样本一次性提取）：EF BF BD 计数 18021、全文件合法 UTF-8、行结构（802 key>text + 103 注释 + 282 空行）PASS；归档加载后补核对：fcorr.checksum == 登记值、样本现场还原 == `getFileData`；展示层保持 Big5 直接解码（伪中文存在 = PASS，数据本体损坏不修源码）、key/ASCII 保留、不误判二进制、正常 strlst 不受影响 PASS** |
 
 运行方式：`node test/verify-authoritative-scan.mjs`（默认加载
-`C:/Users/Administrator/Desktop/PVF/70TW/Script.pvf` 固定基线；其它版本以参数传入）。
+`PVF/70TW/Script.pvf` 固定基线；其它版本以参数传入）。
 
 ### 12.4 注释颜色与损坏 strlst 修复记录（2026-08）
 
@@ -461,8 +499,32 @@ FLIP_TYPE_Item `HORIZON=1/VERTICAL=2/ALL=3`。
 - 问题：`//` 注释在 hljs pvf 高亮下被 title 规则抢占（亮蓝），key>text 渲染路径下用灰 #9a9a9a，均非注释绿 #6a9955；`#PVF_File` 头在 key>text 路径落默认灰。
 - 解决：`pvfHighlight.js` 注释规则新增行首 `//`（`begin:/\/\//, end:"$"`，置于 title 前）；`PvfEditor.vue _renderKeyValueLine` 对 `#` 开头行与 `//` 开头行改用 `hljs-comment` 类。
 
-**损坏 strlst（§8.7）**：
-- 问题：`event/event.kor.str` 制作时损坏（韩文 EUC-KR 被 UTF-8 解码器净化：非法字节→U+FFFD、合法 2 字节序列与 ASCII 保留），按 Big5 解码错位产生 `嚙篁嚙課度無…` 伪中文；注释行 `// ???????` 的 `?` 为字面 0x3F。
-- 验证：字节级确认 18021 个 `EF BF BD` / 残留组 6240B / ASCII 39649B；`etc/etc.kor.str` 同名 key 为中文版（内容不同，不可替换）；残留组按 Big5 与 EUC-KR 均无可读语义，原文不可恢复。
-- 解决：`_twIsCorruptedStrlst`（4KB 采样 `EF BF BD` ≥ 8）检测损坏；`_twDecodeCorruptedStrlst` 按真实存储格式净化（ASCII 保留、损坏处 `�`），不再产生伪中文。
-- 验证：损坏 strlst 断言 4/4 PASS；全量 114922 ok / fail 0 / 不一致 0（基线一致）；正常 strlst（etc/character/passiveobject .kor.str）保持 Big5 中文解码不变。
+**净化损坏 strlst（§8.7；2026-08-24 重新定性，展示层处理废弃还原）**：
+- 问题：`event/event.kor.str` 制作时被 UTF-8 解码器净化损坏，按区域编码
+  （Big5）直接解码产生 `嚙篁嚙課度無…` 伪中文乱码展示。
+- 定性修正（字节级复核，纠正本节 2026-08 早前记录）：源编码为**繁体 Big5**，
+  此前「韩文 EUC-KR」「残留组无可读语义、原文不可恢复」结论系在错误源编码假设下
+  得出，予以纠正。实测：全文件 99952B 为合法 UTF-8——`EF BF BD` 18021 /
+  残留组 2931 码点（重编码 6240B，如 `C9 AF`->U+026F）/ ASCII 39649B；
+  行结构完好（802 key>text + 103 注释 + 282 空行）。U+FFFD 处原字节已不可逆丢失，
+  完全复原不可能。
+- 处理决定：定性为**数据本体损坏、展示层无法真正修复**，不修改项目源码，
+  保持 `_twDecodeBinaryText` strlst 分支按 `twEncoding` 直接解码，
+  伪中文为文件本体损坏的必然结果。当日曾实施的「逆净化还原展示」
+  （三重检测命中后 UTF-8 解码 -> U+FFFD 记占位 `?`、其余码点重编码回原字节）
+  经权威判定为掩盖性处理而非修复——输出仍含占位 `?` 18458，未能真正解决乱码——
+  已废弃还原源码（AGENTS.md「未修复问题不动源码（门控）」）。
+- 跨文件对照否决（维持，补实证）：与 `etc/etc.kor.str` 同名 key 仅 235/802（29.3%）
+  交集，同源长度校验仅 137/235 相等（内容不同源），不得以对照文本替换展示。
+- 方案沿革：① 「检测损坏 -> 净化展示」（UTF-8 `�` 输出）；② 「跨文件对照恢复」；
+  ③ 「逆净化还原展示」（2026-08-24）。三次均废弃还原；③ 的定性成果
+  （Big5 源编码纠正、checksum 登记、行结构统计、对照否决实证、样本一次性提取
+  机制）保留并登记于 §8.7。
+- 验证：净化损坏 strlst 断言 PASS（样本 + 登记 checksum 独立还原 / EF BF BD 18021 /
+  合法 UTF-8 / 行结构计数；归档补核对 checksum 一致与现场还原一致；展示层保持
+  Big5 直接解码伪中文存在 / key 与 ASCII 保留 / 不误判二进制 / 正常 strlst 不受影响）；
+  全量 .ani 基线 ok 114922 / partial 1 / fail 0 / empty 20 / 不一致 0 与 §12.3 一致。
+- 样本留存：`test/70TW/event/event.kor.str`——**原始未解密文件流**，自归档数据区
+  原样切片落盘（dataSize = trueLen = 99952B；不解密、不做任何变换），作为脱离完整
+  归档的最小复现与固定回归输入。现场还原所需 checksum = `0x47273696` 登记于 §8.7；
+  样本一次性提取，断言段不读取归档（AGENTS.md「样本一次性提取（门控）」）。

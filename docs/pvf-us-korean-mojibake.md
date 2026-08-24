@@ -2,7 +2,7 @@
 
 ## 1. 问题现象
 
-`C:\Users\Administrator\Desktop\PVF\90US\Script.pvf`（格式识别为 **CN / protected_nkpi**，sTrA 全局编码自动探测为 **gbk**）中，`itemname.lst`、`monstername.lst` 等 .lst 文件的物品名 / 怪物名出现韩文乱码：
+`PVF/90US/Script.pvf`（格式识别为 **CN / protected_nkpi**，sTrA 全局编码自动探测为 **gbk**）中，`itemname.lst`、`monstername.lst` 等 .lst 文件的物品名 / 怪物名出现韩文乱码：
 
 ```
 `(▒╕)1 ~ 10╖╣║º ░í┴╫ ╣µ╛ε▒╕ ╖╣░í╜├` 7012
