@@ -2098,7 +2098,7 @@ export function firstTypeTag(typeString) {
     return m ? m[1].trim() : null;
 }
 
-// 堆叠物背包入格分段（86JPGMTool PvfIndexService.Items.StackSegment / ItemMetadataResolver.GetSlotRange 同语义）。
+// 堆叠物背包入格分段（A21 权威 GM 工具 PvfIndexService.Items.StackSegment 同语义，见 docs/pvf-item-grant-parsing.md §7/§14）。
 export function stackSegment(stackableType) {
     if (!stackableType || !String(stackableType).trim()) return "消耗品";
     const st = String(stackableType).replace(/`/g, "").trim().toLowerCase();
@@ -2106,6 +2106,7 @@ export function stackSegment(stackableType) {
     if (st.startsWith("[quest]")) return "任务品";
     if (st.startsWith("[material expert job]")) return "副职业材料";
     if (st.startsWith("[avatar emblem]")) return "徽章";
+    if (st.startsWith("[flag gem]") || st.startsWith("[guardian gem]") || st.startsWith("[guild gem]") || st.includes("guardian gem") || st.includes("守护珠")) return "守护珠";
     return "消耗品";
 }
 

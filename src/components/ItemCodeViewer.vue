@@ -26,10 +26,10 @@ const labelNameMap = {
 // 品级体系依客户端串表(dstr 35103-35105): 勇者=红色仅出自异界, 传说=6
 const RARITY_LABELS = ["普通", "高级", "稀有", "神器", "史诗", "勇者", "传说"];
 
-// 品质细分标签（86JPGMTool EquipSpecial，见 docs/pvf-item-grant-parsing.md）
+// 品质细分标签（A21 权威 GM 工具 EquipSpecial，见 docs/pvf-item-grant-parsing.md）
 const SPECIAL_LABELS = { legacy: "传承", boss: "领主神器", sealed: "魔法封印" };
 
-// 期限过滤选项（86JPGMTool 发放界面 MatchesExpirationFilter 同语义）；不限由 placeholder 承担
+// 期限过滤选项（A21 权威 GM 工具 发放界面 MatchesExpirationFilter 同语义）；不限由 placeholder 承担
 const EXPIRATION_OPTIONS = [
     { id: "limited", label: "有限期" },
     { id: "none", label: "无期限" },
@@ -58,9 +58,13 @@ const listScrollTop = ref(0);
 const listViewH = ref(0);
 let listResizeObserver = null;
 
-// 装备侧栏分组（参考 86JPGMTool give.js EQUIP_GROUPS，固定顺序，未列出的装备标签落入"其他"）
+// 装备侧栏分组（参考 A21 权威 GM 工具 give.js EQUIP_GROUPS，固定顺序，未列出的装备标签落入"其他"）
 const EQUIP_GROUPS = [
-    { key: "equip", title: "装备", tags: ["weapon", "coat", "shoulder", "pants", "shoes", "waist", "amulet", "wrist", "ring", "support", "magic stone", "support weapon", "title name", "name tag"] },
+    {
+        key: "equip",
+        title: "装备",
+        tags: ["weapon", "coat", "shoulder", "pants", "shoes", "waist", "amulet", "wrist", "ring", "support", "magic stone", "support weapon", "title name", "name tag", "flag"]
+    },
     { key: "pet", title: "宠物", tags: ["creature", "artifact red", "artifact blue", "artifact green"] },
     {
         key: "avatar",
@@ -68,10 +72,10 @@ const EQUIP_GROUPS = [
         tags: ["hat avatar", "hair avatar", "face avatar", "coat avatar", "breast avatar", "waist avatar", "pants avatar", "shoes avatar", "skin avatar", "aurora avatar", "weapon avatar"]
     }
 ];
-// 堆叠物背包六段（参考 give.js STACK_SEGMENTS，与服务端入格语义一致，固定顺序）
-const STACK_SEGMENTS = ["消耗品", "材料", "任务品", "副职业材料", "徽章", "特殊材料"];
+// 堆叠物背包七段（参考 A21 权威 give.js STACK_SEGMENTS，与服务端入格语义一致，固定顺序）
+const STACK_SEGMENTS = ["消耗品", "材料", "任务品", "副职业材料", "徽章", "守护珠", "特殊材料"];
 
-// 类型标签中文名（取自 86JPGMTool give.js TAG_LABELS；含义未经实物确认的不硬翻，显示原始标签）
+// 类型标签中文名（取自 A21 权威 give.js TAG_LABELS；含义未经实物确认的不硬翻，显示原始标签）
 const TAG_LABELS = {
     // 装备部位
     weapon: "武器",
@@ -88,10 +92,14 @@ const TAG_LABELS = {
     "support weapon": "副武器",
     "title name": "称号",
     "name tag": "名称装饰卡",
+    flag: "公会勋章",
     creature: "宠物",
     "artifact red": "宠物装备·红",
     "artifact blue": "宠物装备·蓝",
     "artifact green": "宠物装备·绿",
+    "flag gem": "守护珠",
+    "guardian gem": "守护珠",
+    "guild gem": "守护珠",
     // 装扮部位
     "hat avatar": "帽子装扮",
     "hair avatar": "头发装扮",
@@ -176,7 +184,7 @@ const filterType = computed(() => filterCategoryPath.value?.[1] || "");
 
 const filteredItems = computed(() => {
     const q = searchQuery.value.trim().toLowerCase();
-    // 纯数字 query 精确匹配物品ID（86JPGMTool SearchItems 同语义），避免输入 1 命中全部
+    // 纯数字 query 精确匹配物品ID（A21 权威 GM 工具 SearchItems 同语义），避免输入 1 命中全部
     const numericId = /^\d+$/.test(q) ? q : null;
     const minLevel = filterMinLevel.value != null ? Number(filterMinLevel.value) : null;
     const maxLevel = filterMaxLevel.value != null ? Number(filterMaxLevel.value) : null;
@@ -200,7 +208,7 @@ const filteredItems = computed(() => {
     });
 });
 
-// 期限过滤（86JPGMTool MatchesExpirationFilter 同语义）
+// 期限过滤（A21 权威 GM 工具 MatchesExpirationFilter 同语义）
 function matchesExpirationFilter(exp, filter, now) {
     if (!exp) return filter === "none";
     const hasAbsolute = exp.hasAbsolute;
@@ -400,7 +408,7 @@ async function loadPvf(file) {
                     const meta = metaList[i];
                     it.rarity = meta && meta.rarity >= 0 ? meta.rarity : null;
                     it.minLevel = meta && meta.minLevel >= 0 ? meta.minLevel : null;
-                    // 类型标签/品质细分/期限（86JPGMTool 发放语义，见 docs/pvf-item-grant-parsing.md）
+                    // 类型标签/品质细分/期限（A21 权威 GM 工具 发放语义，见 docs/pvf-item-grant-parsing.md）
                     const typeString = meta ? meta.equipType || meta.stackableType : null;
                     it.typeTag = firstTypeTag(typeString);
                     it.segment = meta && meta.stackableType ? stackSegment(meta.stackableType) : null;

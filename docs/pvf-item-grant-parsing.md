@@ -1,6 +1,9 @@
-# PVF 物品发放解析规则（源自 86JPGMTool）
+# PVF 物品发放解析规则（源自 86JPGMTool，已同步 A21 版权威 GM 工具）
 
-> 来源项目：`/Users/genergy/Documents/code/localcode/JP/86JPGMTool`（C# GM 工具，DfoGmTool + GmPvfLib）。
+> 来源项目：`JP/86JPGMTool`（C# GM 工具，DfoGmTool + GmPvfLib）。
+> **权威源升级**：A21 版 GM 工具 `JP/S4A21GmTool`
+> （C# DfoGmTool + ServerCore，发放界面 `wwwroot/js/give.js`）。本文 §1-§13 提炼自旧版
+> 86JPGMTool，语义仍适用；与 A21 版的差异及同步记录见 §14，launch-helper 以 §14 为准。
 > 本文提炼其中「物品发放」链路对 PVF（Script.pvf）的解析规则，供 launch-helper 的物品编码查看 / 发放校验参考。
 > launch-helper 已有 PVF 二进制格式解析（见 `src/utils/pvfCodec.js`、`pvfTool.js`），本文聚焦其**上层脚本内容的语义解析**，二者互补。
 
@@ -78,7 +81,7 @@ PvfArchive.Open(pvfPath)
 - **防具**：`[coat] [shoulder] [pants] [shoes] [waist]`
 - **首饰**：`[amulet] [wrist] [ring]`
 - **特殊装备**：`[support] [magic stone]`
-- 其他：各部位 avatar、`[title name]`、`[creature]`（宠物）、`[artifact red/blue/green]`（宠物装备）、`[name tag]`、`[charm]`、`[support weapon]` 等
+- 其他：各部位 avatar、`[title name]`、`[creature]`（宠物）、`[artifact red/blue/green]`（宠物装备）、`[name tag]`、`[charm]`、`[support weapon]` 等；A21 版新增 `[flag]`（公会勋章，见 §14.1）
 
 **可强化/增幅能力判定**（`EquipmentGrantPolicy.Evaluate`）：
 
@@ -134,9 +137,10 @@ IsWeapon            = 类型为 [weapon]
 | `[quest]` | 任务品 | 177-232 |
 | `[material expert job]` | 副职业材料 | 233-288 |
 | `[avatar emblem]` | 徽章 | 289-344 |
-| 装备（非堆叠物） | 装备 | 9-64 |
+| `[flag gem]` / `[guardian gem]` / `[guild gem]` 开头，或类型串含 `guardian gem` / `守护珠` 子串（A21 新增，见 §14.1） | 守护珠 | 49-97（仅首标签精确为 `flag gem`） |
+| 装备（非堆叠物） | 装备 | 9-64；A21 中 `[flag]` 公会勋章装备为 0-48（见 §14.1） |
 
-判定规则：去掉反引号、小写后取首个 `[...]` 标签；`[material]` 需再判断类型串是否以 `4` 结尾来区分特殊材料。另有硬编码特殊材料 ID 白名单：3033-3037、3262。
+判定规则：去掉反引号、小写后取首个 `[...]` 标签；`[material]` 需再判断类型串是否以 `4` 结尾来区分特殊材料。另有硬编码特殊材料 ID 白名单：3033-3037、3262。守护珠归段（A21 `StackSegment`）不要求首标签精确匹配——`[flag gem]`/`[guardian gem]`/`[guild gem]` 开头或类型串含 `guardian gem`、`守护珠` 子串均归入；槽位区间（`GetSlotRange`）则要求首标签精确为 `[flag gem]`。
 
 主背包其他保留段：0-2 货币（金币/复活币/胜点）、3-8 快捷栏、354-359 账号晶块。
 
@@ -208,3 +212,64 @@ IsWeapon            = 类型为 [weapon]
 | 元数据/槽位 | `ServerCore/Game/Inventory/ItemMetadataResolver.cs` |
 | 装备类型/强化策略 | `ServerCore/Game/ItemUpgrade/EquipmentType.cs`、`Services/EquipmentGrantOptions.cs` |
 | 发放入口 | `Services/GmService.Inventory.cs` |
+
+## 14. A21 版权威 GM 工具同步记录（2026-08）
+
+> 权威源：`JP/S4A21GmTool`。发放界面分类枚举位于
+> `wwwroot/js/give.js`；堆叠物归段逻辑位于 `Services/PvfIndexService.Items.cs` 的
+> `StackSegment`；槽位区间位于 `ServerCore/Game/Inventory/ItemMetadataResolver.cs` 的
+> `GetSlotRange`。launch-helper 的物品编码查看（`src/components/ItemCodeViewer.vue`）
+> 与解析层（`src/utils/pvfTool.js`）按本节与其对齐。
+
+### 14.1 与旧版（§1-§13）的差异及同步内容
+
+1. **堆叠物分段新增「守护珠」（六段 → 七段）**：A21 `STACK_SEGMENTS` 为
+   `['消耗品', '材料', '任务品', '副职业材料', '徽章', '守护珠', '特殊材料']`
+   （守护珠位于徽章与特殊材料之间；give.js 内"六段"注释为旧文案，实际七段）。
+   归段判定（`PvfIndexService.Items.StackSegment`）：类型串以 `[flag gem]`、
+   `[guardian gem]`、`[guild gem]` 开头，或含 `guardian gem` / `守护珠` 子串
+   （大小写不敏感）→ 守护珠。
+2. **装备分组新增 `[flag]`（公会勋章）**：A21 `EQUIP_GROUPS` 装备组 tags 在
+   `name tag` 之后追加 `'flag'`；服务端槽位语义为装备且 `IsFlagEquipmentType()`
+   → 槽位 0-48（`GetSlotRange`）。网关侧对应 kind=12 公会勋章经主背包投递、
+   领取后由服务端路由到公会列表（见 `gateway.proto` MailAttachment 注释）。
+3. **类型标签中文映射新增**（`TAG_LABELS`）：`flag`=公会勋章；
+   `flag gem` / `guardian gem` / `guild gem`=守护珠。
+4. **launch-helper 同步改动**：
+   - `src/utils/pvfTool.js` `stackSegment()` 增加守护珠分支（判定顺序与 A21 一致：
+     material → quest → material expert job → avatar emblem → 守护珠 → 默认消耗品）；
+   - `src/components/ItemCodeViewer.vue` `STACK_SEGMENTS` 增加「守护珠」、
+     `EQUIP_GROUPS` 装备组增加 `flag`、`TAG_LABELS` 补充上述四个翻译。
+5. **不变项**：品级体系 `RARITY_LABELS`、品质细分 `SPECIAL_LABELS`、期限过滤
+   `EXPIRATION_OPTIONS` 与 A21 版一致，无需调整。
+
+### 14.2 测试脚本
+
+| 脚本 | 验证内容 | 运行方式 |
+|---|---|---|
+| `test/item-grant-category-sync.mjs` | ① 函数级断言：`stackSegment` 七段规则（含守护珠三种标签开头与两种子串命中）；`firstTypeTag` 对 `flag` / `flag gem` / `guild gem` 的提取。② 可选全量统计：传入 PVF 路径时统计 stackable 各分段计数、守护珠段样例、equipment 中 `flag` 标签计数 | `node test/item-grant-category-sync.mjs [PVF路径]`；不传路径仅跑断言 |
+
+### 14.3 验证结果
+
+- 函数级断言：16 项全部 PASS（2026-08-24，Node 本机运行，改码前守护珠 5 项按预期 FAIL，改码后全绿）。
+- 全量统计（2026-08-24，基线 `PVF/<版本>/Script.pvf`，
+  运行 `node test/item-grant-category-sync.mjs <pvf路径>`）：
+
+| 基线 | stackable 总数 | 消耗品 | 材料 | 特殊材料 | 任务品 | 副职业材料 | 徽章 | 守护珠 | equipment 总数 | flag 公会勋章 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 70TW | 5720 | 4764 | 249 | 8 | 509 | 190 | 0 | **0** | 27254 | **0** |
+| 86JP | 34542 | 25430 | 1136 | 0 | 1210 | 5598 | 1168 | **0** | 101868 | **0** |
+| 86JPAG | 34583 | 25471 | 1136 | 0 | 1210 | 5598 | 1168 | **0** | 102774 | **0** |
+| 86JPL | 42272 | 31698 | 2085 | 0 | 1268 | 5940 | 1229 | **52** | 118479 | **47** |
+| 90CN | 54790 | 42611 | 2890 | 0 | 1468 | 6238 | 1531 | **52** | 140862 | **47** |
+| 90US | 45861 | 35247 | 2219 | 0 | 1169 | 5688 | 1486 | **52** | 138768 | **47** |
+
+- 结果判读：
+  - 守护珠段样例（86JPL/90CN）：90000「微弱之光守护珠 (物理防御力)」等 90000 系列；
+    90US 名称缺失回退显示引用路径 `flaggem/90000.stk`。flag 装备样例：
+    100380017「古老的勋章」（90US 为 Old Insignia）等，归段/归组语义均正确。
+  - 70TW / 86JP / 86JPAG 守护珠与公会勋章为 0 属**真实数据特征（非解析错误）**：
+    该三份为早期版本档案，公会勋章/守护珠系统尚未实装。
+  - 特殊材料大多为 0 属各档案真实数据特征（无 `[material] ... 4` 结尾条目；
+    70TW 有 8 条）；服务端 ID 白名单 3033-3037、3262 仅用于入格判定，
+    不在发放分类归段内。
