@@ -3,7 +3,7 @@
 // GetSlotRange）的分类语义一致：
 //   ① 函数级断言：stackSegment 七段规则（含守护珠三种标签开头与两种子串命中）、
 //      firstTypeTag 对 flag / flag gem / guild gem 的提取。
-//   ② 源码口径断言：ItemCodeViewer 发放物品来源不含 creature.lst，
+//   ② 源码口径断言：ItemCodeView 发放物品来源不含 creature.lst，
 //      宠物分组仅来自 equipment 类型首标签 creature / artifact red / blue / green
 //      （§14.1 第 6 条）。
 //   ③ 可选全量统计：传入 PVF 路径时统计 stackable 各分段计数、守护珠段样例、
@@ -11,7 +11,7 @@
 //      creature.lst 行数仅作参考输出（不入来源）。
 // 运行方式：node test/item-grant-category-sync.mjs [PVF路径]
 //   不传参数仅跑 ①②；传回归基线路径（如 AGENTS.md §2 清单）附加 ③。
-// 依赖：src/utils/pvfTool.js、src/components/ItemCodeViewer.vue（Node 直接运行，无第三方依赖）。
+// 依赖：src/utils/pvfTool.js、src/components/ItemCodeView.vue（Node 直接运行，无第三方依赖）。
 import { readFileSync } from "node:fs";
 import { PvfArchive, firstTypeTag, stackSegment } from "../src/utils/pvfTool.js";
 import { TwPvfArchive } from "../src/utils/pvfToolTw.js";
@@ -51,7 +51,7 @@ eq(firstTypeTag("`[guild gem]`"), "guild gem", "firstTypeTag [guild gem] -> guil
 // ---- ② 源码口径断言：发放物品来源与 A21 权威 GM 工具一致
 // （docs/pvf-item-grant-parsing.md §14.1 第 6 条：creature.lst 不入物品来源，
 //   宠物分组仅来自 equipment 类型首标签 creature / artifact red / blue / green）----
-const viewerSource = readFileSync(new URL("../src/components/ItemCodeViewer.vue", import.meta.url), "utf8");
+const viewerSource = readFileSync(new URL("../src/components/ItemCodeView.vue", import.meta.url), "utf8");
 eq(viewerSource.includes("creature\\/creature"), false, "LST_TYPES 不含 creature/creature.lst 来源");
 eq(viewerSource.includes('it.type === "Creature"'), false, "resolveCategoryPath 无 Creature 特判");
 eq(
@@ -72,7 +72,7 @@ if (!pvfPath) {
 
 console.log(`\n加载 PVF: ${pvfPath}`);
 const buf = readFileSync(pvfPath);
-// 先按 JP/JPAG/CN 解析，失败则按繁体 TW 解析（与 ItemCodeViewer 同降级顺序）
+// 先按 JP/JPAG/CN 解析，失败则按繁体 TW 解析（与 ItemCodeView 同降级顺序）
 let arch = null;
 try {
     arch = new PvfArchive(buf);

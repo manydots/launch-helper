@@ -218,7 +218,7 @@ IsWeapon            = 类型为 [weapon]
 > 权威源：`JP/S4A21GmTool`。发放界面分类枚举位于
 > `wwwroot/js/give.js`；堆叠物归段逻辑位于 `Services/PvfIndexService.Items.cs` 的
 > `StackSegment`；槽位区间位于 `ServerCore/Game/Inventory/ItemMetadataResolver.cs` 的
-> `GetSlotRange`。launch-helper 的物品编码查看（`src/components/ItemCodeViewer.vue`）
+> `GetSlotRange`。launch-helper 的物品编码查看（`src/components/ItemCodeView.vue`）
 > 与解析层（`src/utils/pvfTool.js`）按本节与其对齐。
 
 ### 14.1 与旧版（§1-§13）的差异及同步内容
@@ -238,7 +238,7 @@ IsWeapon            = 类型为 [weapon]
 4. **launch-helper 同步改动**：
    - `src/utils/pvfTool.js` `stackSegment()` 增加守护珠分支（判定顺序与 A21 一致：
      material → quest → material expert job → avatar emblem → 守护珠 → 默认消耗品）；
-   - `src/components/ItemCodeViewer.vue` `STACK_SEGMENTS` 增加「守护珠」、
+   - `src/components/ItemCodeView.vue` `STACK_SEGMENTS` 增加「守护珠」、
      `EQUIP_GROUPS` 装备组增加 `flag`、`TAG_LABELS` 补充上述四个翻译。
 5. **不变项**：品级体系 `RARITY_LABELS`、品质细分 `SPECIAL_LABELS`、期限过滤
    `EXPIRATION_OPTIONS` 与 A21 版一致，无需调整。
@@ -256,7 +256,7 @@ IsWeapon            = 类型为 [weapon]
      宠物召唤物定义（如 `Petit_Tiger/Petit_Tiger.cre`），非可发放物品；
      86JPL 上其 486 行中 144 行引用不可解析、228 行 lst 附名为空，
      仅 342 行可匹配到文件。
-   - **解决**：`src/components/ItemCodeViewer.vue` `LST_TYPES` 移除 creature 项；
+   - **解决**：`src/components/ItemCodeView.vue` `LST_TYPES` 移除 creature 项；
      `resolveCategoryPath()` 移除 `it.type === "Creature"` 特判；
      同步清理 `labelNameMap` 的 `Creature` 映射、`.ivc-type.type-Creature`
      样式及界面描述文案。`EQUIP_GROUPS` 宠物组四标签与 `TAG_LABELS` 对应翻译
@@ -271,14 +271,14 @@ IsWeapon            = 类型为 [weapon]
 
 | 脚本 | 验证内容 | 运行方式 |
 |---|---|---|
-| `test/item-grant-category-sync.mjs` | ① 函数级断言：`stackSegment` 七段规则（含守护珠三种标签开头与两种子串命中）；`firstTypeTag` 对 `flag` / `flag gem` / `guild gem` 的提取。② 源码口径断言：`ItemCodeViewer.vue` 的 `LST_TYPES` 不含 creature 来源、`resolveCategoryPath()` 无 `Creature` 特判、宠物组四标签保留。③ 可选全量统计：传入 PVF 路径时统计 stackable 各分段计数、守护珠段样例、equipment 中 `flag` 标签计数及宠物四标签（`creature` / `artifact red` / `artifact blue` / `artifact green`）计数与合计，另输出 creature.lst 行数仅作参考（不入来源） | `node test/item-grant-category-sync.mjs [PVF路径]`；不传路径仅跑断言 |
+| `test/item-grant-category-sync.mjs` | ① 函数级断言：`stackSegment` 七段规则（含守护珠三种标签开头与两种子串命中）；`firstTypeTag` 对 `flag` / `flag gem` / `guild gem` 的提取。② 源码口径断言：`ItemCodeView.vue` 的 `LST_TYPES` 不含 creature 来源、`resolveCategoryPath()` 无 `Creature` 特判、宠物组四标签保留。③ 可选全量统计：传入 PVF 路径时统计 stackable 各分段计数、守护珠段样例、equipment 中 `flag` 标签计数及宠物四标签（`creature` / `artifact red` / `artifact blue` / `artifact green`）计数与合计，另输出 creature.lst 行数仅作参考（不入来源） | `node test/item-grant-category-sync.mjs [PVF路径]`；不传路径仅跑断言 |
 
 ### 14.3 验证结果
 
 - 函数级断言：16 项全部 PASS（2026-08-24，Node 本机运行，改码前守护珠 5 项按预期 FAIL，改码后全绿）。
 - 源码口径断言（§14.1 第 6 条）：3 项。2026-08-24 改码前 `LST_TYPES 不含
   creature/creature.lst 来源`、`resolveCategoryPath 无 Creature 特判` 两项按预期 FAIL；
-  `ItemCodeViewer.vue` 收敛后与函数级断言合计 19 项全部 PASS
+  `ItemCodeView.vue` 收敛后与函数级断言合计 19 项全部 PASS
   （六个基线运行均含）。
 - 全量统计（2026-08-24，基线 `PVF/<版本>/Script.pvf`，
   运行 `node test/item-grant-category-sync.mjs <pvf路径>`）：

@@ -270,7 +270,7 @@ src/
 ├── components/
 │   ├── GameLauncher.vue          # 启动器主界面（登录、配置、注册表、状态探测）
 │   ├── PvfEditor.vue             # PVF 文件编辑器（解析、编辑、重打包，TW 三色渲染 / 虚拟滚动）
-│   ├── ItemCodeViewer.vue        # 物品编码查看页（stackable/equipment/creature.lst、品质/等级、虚拟滚动、搜索、TW 解析）
+│   ├── ItemCodeView.vue          # 物品编码查看页（stackable/equipment/creature.lst、品质/等级、虚拟滚动、搜索、TW 解析）
 │   ├── MaterialTextField.vue     # Material 风格输入框
 │   └── ModalHost.vue             # 全局弹窗挂载点
 ├── hooks/

@@ -17,7 +17,7 @@ const routes = [
     {
         path: "/ItemCode",
         name: "ItemCode",
-        component: () => import("@/components/ItemCodeViewer.vue"),
+        component: () => import("@/components/ItemCodeView.vue"),
         meta: { title: "物品编码" }
     }
 ];

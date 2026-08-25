@@ -1,7 +1,7 @@
 // ============================================================
 //  繁体 TW PVF Archive（独立层）
 //  二进制协议见 docs/pvf-tw-format.md；与 PvfArchive（JP/JPAG/CN）互补互斥。
-//  公共 API 对齐 PvfArchive 子集，PvfEditor / ItemCodeViewer 可无感切换。
+//  公共 API 对齐 PvfArchive 子集，PvfEditor / ItemCodeView 可无感切换。
 // ============================================================
 
 import { decodeText, encodeText } from "./encoding.js";
