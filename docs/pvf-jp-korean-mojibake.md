@@ -15,13 +15,12 @@
 
 ## 2. 根因分析（已用实际文件字节验证）
 
-- 乱码**全部位于 sTrW（UTF-16 字符串表）**：全表 205019 条中 204930 条含 CJK，乱码集中在偏移 4380000~4383000 连续区（技能名 / NPC 名 / 地名等，均为汉化版未翻译部分）；sTrA（128 万条）CJK 条目 0，无需改动。
+- 乱码**全部位于 sTrW（UTF-16 字符串表）**：全表条目绝大多数含 CJK，乱码集中在偏移 4380000~4383000 连续区（技能名 / NPC 名 / 地名等，均为汉化版未翻译部分）；sTrA 无 CJK 条目，无需改动。
 - 存储链路（与 90US 的 CP437 链路不同，本文件为 GBK 链路）：
   ```
   韩文 EUC-KR/CP949 字节 → 按 GBK 解码成汉字乱码 → 按 UTF-16LE 写入 sTrW
   ```
-- 例：偏移 4382180 的 `肺历 饭后`，`肺`=GBK B7CE、`历`=C0FA、`饭`=B7B9、`后`=BAF3；
-  以 EUC-KR 解码 `B7CE C0FA B7B9 BAF3` = `로저 레빈`。
+- 例：偏移 4382180 的 `肺历 饭后`，`肺`=GBK B7CE、`历`=C0FA、`饭`=B7B9、`后`=BAF3；以 EUC-KR 解码 `B7CE C0FA B7B9 BAF3` = `로저 레빈`。
 - 正常中文（如 `破旧的绸缎护肩`）与乱码**混存于同一张表**，乱码区前后紧邻正常中文条目（如偏移 85510 `卡妮娜` 与 85856 `飞盘 3`），故不能按偏移区域粗粒度判定。
 
 ## 3. 恢复链路（已用真实字节验证）
@@ -117,18 +116,18 @@ GBK 的 B0~C8 区（GB2312 一级汉字前 25 行）与 EUC-KR 韩文音节区**
 
 | 检查项 | 结果 |
 |--------|------|
-| sTrW 全表回归 | 205019 条，**49779 条变更，非法变更 0**（50137 − 358 条中文属性文本误伤，见下） |
-| sTrA 全表回归 | 790868 条，**变更 0** |
+| sTrW 全表回归 | 全表恢复生效，**非法变更 0**（中文属性文本误伤由防护规则修复，见下） |
+| sTrA 全表回归 | **变更 0** |
 | 中文属性文本防护 | `攻击力 +8%%`/`成长胶囊 (1%%)`/多行属性串共 **358 条误伤被修复**（恢复结果含 `%`/换行 → 拒绝，韩文乱码不受影响） |
 | npcname.lst | `菜 阜腮 粮`→`꽉 막힌 존`、`肺历 饭后`→`로저 레빈`、`趁扁狼 荤具`→`냉기의 사야`、`技府酒 虐福刮`→`세리아 키르민`、`沫唱狼 PC规 磊魄扁`→`칸나의 PC방 자판기`；`G.S.D`/`dnf open 3th anniversary cake` 英文保持 |
-| monstername.lst | 512 条，`绊喉赴`→`고블린`、`榜府掸`/`傍绢`/`备匡` 等无空格短词全部恢复韩文 |
-| aicharactername.lst | 104 条，`阿卡莎` 系列、`크리스챤 호나우두`、`피바람의 랄프` 等全部正确 |
+| monstername.lst | `绊喉赴`→`고블린`、`榜府掸`/`傍绢`/`备匡` 等无空格短词全部恢复韩文 |
+| aicharactername.lst | `阿卡莎` 系列、`크리스챤 호나우두`、`피바람의 랄프` 等全部正确 |
 | passiveobjectname.lst / skillname0~10 | 无空格乱码（`累篮唱公A`、`啊靛`、`惯档` 等）恢复韩文；含标点条目（`眉捞舷- 气`）按规则拒绝、保持原样 |
-| itemname.lst（行内） | 782 条乱码全部恢复：`(备)碍锋肯`→`(구)강룡완`、`(备)扒胶葛农`→`(구)건스모크`、`(备)堡劳牢`→`(구)광익인`、`(备)CZ75`→`(구)CZ75`、`带颇⒔秦乔后`→`던파♡해피빈`；装饰文本 `≠GBL背 疙抗 脚档≠`→`☆GBL교 명예 신도☆`、`≮馋扁乐绰 磊≮`→`★끈기있는 자★`、`⒂己胶矾款 荐龋磊⒂`→`†성스러운 수호자†`、`铰府≮抗皑`→`승리★예감`；[name] 追加中文（`破旧的绸缎护肩`）保持原样 |
+| itemname.lst（行内） | 行内乱码全部恢复：`(备)碍锋肯`→`(구)강룡완`、`(备)扒胶葛农`→`(구)건스모크`、`(备)堡劳牢`→`(구)광익인`、`(备)CZ75`→`(구)CZ75`、`带颇⒔秦乔后`→`던파♡해피빈`；装饰文本 `≠GBL背 疙抗 脚档≠`→`☆GBL교 명예 신도☆`、`≮馋扁乐绰 磊≮`→`★끈기있는 자★`、`⒂己胶矾款 荐龋磊⒂`→`†성스러운 수호자†`、`铰府≮抗皑`→`승리★예감`；[name] 追加中文（`破旧的绸缎护肩`）保持原样 |
 | itemname.lst（谚文汉字标注） | `绞巩磊档 - 磊(砗)`→`십문자도 - 자(者)`、`绞巩磊档 - 捧(縻)`→`십문자도 - 투(鬪)` |
 | skillname3.lst（谚文汉字标注） | `眉捞辑 : 公(夙)`→`체이서 : 무(無)`、`眉捞辑 : 荐(猢)`→`체이서 : 수(水)`、`眉捞辑 : 疙(佶)`→`체이서 : 명(明)`、`眉捞辑 : 鞠(滢)`→`체이서 : 암(暗)`、`眉捞辑 : 拳(胓)`→`체이서 : 화(火)` |
 | quest / epicquest | 不激进恢复，正常中文（`迷妄之塔`、任务文本）保持原样 |
-| 90US（CN 格式）回归 | sTrW 变更 95168（与修复前基线一致）；GBK 误伤 0——正规韩文文本内嵌汉字（`改`/`赤`/`美人`/`孤恩`）因含韩文字符被「韩文模式」门控拒绝、保持原样 |
+| 90US（CN 格式）回归 | sTrW 变更与修复前基线一致；GBK 误伤 0——正规韩文文本内嵌汉字（`改`/`赤`/`美人`/`孤恩`）因含韩文字符被「韩文模式」门控拒绝、保持原样 |
 
 ### 测试脚本位置（`test/` 目录，Node 直接加载 `pvfTool.js` 运行）
 
@@ -136,8 +135,8 @@ GBK 的 B0~C8 区（GB2312 一级汉字前 25 行）与 EUC-KR 韩文音节区**
 
 | 脚本 | 用途 |
 |------|------|
-| `test/pvf-jp-mojibake-verify.mjs` | 86JP 主回归（默认 `PVF/86JP/Script.pvf`）：sTrW 全表变更统计 + npcname/aicharactername 等 .lst 显示验证 + itemname/quest 不受激进恢复影响 + 误伤面统计（% 0 / 换行 0，拒绝规则生效）+ 谚文汉字标注恢复核对（`체이서 : 화(火)`、`십문자도 - 자(者)`）+ 关键字 GBK 码 ↔ euc-kr 实测断言；输出 `test/strw-odd.txt`、`test/lst-hanja-rows-skillname3.txt`、`test/lst-hanja-rows-itemname.txt` |
-| `test/pvf-us-mojibake-regress.mjs` | 90US 回归（默认 `PVF/90US/Script.pvf`）：sTrW 变更基线 95168 核对 + monstername/itemname/npcname 显示 + box-drawing 残留检查 |
+| `test/pvf-jp-mojibake-verify.mjs` | 86JP 主回归（默认 86JP 路径）：sTrW 变更统计 + npcname/aicharactername 等 .lst 显示验证 + itemname/quest 不受激进恢复影响 + 误伤面检查（% / 换行拒绝规则生效）+ 谚文汉字标注恢复核对（`체이서 : 화(火)`、`십문자도 - 자(者)`）+ 关键字 GBK 码 ↔ euc-kr 实测断言；输出 `test/strw-odd.txt`、`test/lst-hanja-rows-skillname3.txt`、`test/lst-hanja-rows-itemname.txt` |
+| `test/pvf-us-mojibake-regress.mjs` | 90US 回归（默认 `PVF/90US/Script.pvf`）：sTrW 变更回归 + monstername/itemname/npcname 显示 + box-drawing 残留检查 |
 
 已删除的探针脚本（功能并入上述主脚本，勿重建）：`pvf-jp-mojibake-lst-stat.mjs`、`pvf-jp-mojibake-lst-samples.mjs`、`pvf-jp-euckr-range.mjs`、`pvf-jp-hanja-verify.mjs`、`pvf-jp-chars.mjs`、`pvf-jp-widen.mjs`、`pvf-jp-widen2.mjs`、`pvf-jp-lst-hanja.mjs`、`pvf-jp-odd-scan.mjs`、`pvf-jp-probe.mjs`、`pvf-jp-probe2.mjs`、`pvf-us-gbk-diff.mjs`。
 
@@ -151,10 +150,7 @@ GBK 的 B0~C8 区（GB2312 一级汉字前 25 行）与 EUC-KR 韩文音节区**
 
 ### 8.1 问题现象
 
-`PVF/86JPAG/Script.pvf`（格式识别为 **JPAG / guard**）的
-`aicharactername.lst`、`itemname.lst`、`monstername.lst`、`npcname.lst`、
-`passiveobjectname.lst`、`skillname0.lst` 等名字型 .lst 行内名字出现汉字乱码，
-与 86JP 同源同链路但**修复未生效**：
+`PVF/86JPAG/Script.pvf`（格式识别为 **JPAG / guard**）的`aicharactername.lst`、`itemname.lst`、`monstername.lst`、`npcname.lst`、`passiveobjectname.lst`、`skillname0.lst` 等名字型 .lst 行内名字出现汉字乱码，与 86JP 同源同链路但**修复未生效**：
 
 ```
 `奔扼切胶,倔绢磷篮八荤` 601
@@ -169,47 +165,33 @@ GBK 的 B0~C8 区（GB2312 一级汉字前 25 行）与 EUC-KR 韩文音节区**
 
 ### 8.2 根因分析（已用实际文件字节验证）
 
-- 乱码条目与 86JP 相同，全部位于 **sTrW**（如 `奔扼切胶,倔绢磷篮八荤` 位于 idx 29252，
-  原始字节 `54 59 7C 62 07 52 F6 80 2C 00 14 50 ...`），经 GBK 反向编码 → EUC-KR 解码
-  链路可完整恢复为韩文（`굴라학스,얼어죽은검사`、`샤스라`、`번드피닉스`）。
-- 行内激进恢复依赖 `_isLooseNameLst` 白名单，其正则匹配 `file.name`；
-  **JPAG 根目录文件的 `name` 字段带 `./` 前缀**（`./aicharactername.lst`，
-  共 17 个根 .lst 受影响，其中 15 个为名字型白名单文件），
-  正则 `/^(npcname|...|skillname\d*)\.lst$/i` 不匹配 → 白名单全部失效 →
-  行内恢复未启用；而 `fullpath` 字段干净（`aicharactername.lst`），与 86JP 一致。
+- 乱码条目与 86JP 相同，全部位于 **sTrW**（如 `奔扼切胶,倔绢磷篮八荤` 位于 idx 29252，原始字节 `54 59 7C 62 07 52 F6 80 2C 00 14 50 ...`），经 GBK 反向编码 → EUC-KR 解码链路可完整恢复为韩文（`굴라학스,얼어죽은검사`、`샤스라`、`번드피닉스`）。
+- 行内激进恢复依赖 `_isLooseNameLst` 白名单，其正则匹配 `file.name`；**JPAG 根目录文件的 `name` 字段带 `./` 前缀**（`./aicharactername.lst`，共 17 个根 .lst 受影响，其中 15 个为名字型白名单文件），正则 `/^(npcname|...|skillname\d*)\.lst$/i` 不匹配 → 白名单全部失效 → 行内恢复未启用；而 `fullpath` 字段干净（`aicharactername.lst`），与 86JP 一致。
 - 其余版本不受影响：86JP / 90CN / 90US 的根 .lst `name` 均无 `./` 前缀（白名单 15/15 命中）。
 
 ### 8.3 解决
 
-- `PvfArchive._isLooseNameLst(file)` 判定基准由 `file.name` 改为
-  **`file.fullpath || file.name`**（fullpath 为归档内规范化路径，无 `./` 前缀），
-  兼容 JPAG 根目录文件的 `./` 前缀 name 表示；正则本身不变。
-- `test/pvf-jp-mojibake-verify.mjs` 的文件查找同步由 `x.name === f` 改为
-  `x.fullpath === f`（JPAG 下 name 带前缀会 NOT FOUND），并新增 JPAG 断言段。
+- `PvfArchive._isLooseNameLst(file)` 判定基准由 `file.name` 改为**`file.fullpath || file.name`**（fullpath 为归档内规范化路径，无 `./` 前缀），兼容 JPAG 根目录文件的 `./` 前缀 name 表示；正则本身不变。
+- `test/pvf-jp-mojibake-verify.mjs` 的文件查找同步由 `x.name === f` 改为`x.fullpath === f`（JPAG 下 name 带前缀会 NOT FOUND），并新增 JPAG 断言段。
 
-### 8.4 验证结果（全量统计数字）
+### 8.4 验证结果
 
 | 检查项 | 86JPAG 结果 |
 |--------|------|
 | 白名单命中 | 修复前 isLoose(name)=0/15；修复后 15/15（fullpath 判定） |
 | 名字型 .lst 行内恢复 | aicharactername 3 条、itemname 2 条、monstername 5 条、npcname 14 条、passiveobjectname 6 条、skillname0 12 条，全部恢复为可读韩文（`굴라학스,얼어죽은검사`、`(구)강룡완`、`고블린`、`만진`、`데스매치:날개`、`혈십자` 等） |
-| sTrW 全表回归 | 86JPAG 实测 **total=208160, changed=49785, invalidChanged=0**（非法变更 0） |
+| sTrW 全表回归 | 86JPAG 实测**非法变更 0**，变更全部生效 |
 | 误伤面 | 恢复含 % / 换行 0，拒绝规则生效 |
 | 90US / 90CN / 86JP 回归 | 白名单命中保持 15/15，输出与修复前一致，零回归 |
 | 70TW | 独立 TW 解析层（TwPvfArchive），不涉及该白名单与 GBK 恢复链路 |
 
-**已知数据特征（非解析错误，不在本次修复范围）**：86JPAG 的 sTrA 含 42 条方括号
-CJK 标签（86JP sTrA 同类为 0），其中正常中文标签（`[致命射击]`、`[念气波]`）经全局
-规则判定为 null 保持原样；带空格乱码标签（`[积己 谅钎]`→`[생성 좌표]`）被全局
-requireSpace 规则恢复；**无空格乱码标签（`[雀傈阿]`、`[荐疙]`、`[X绵]` 等 14 条）**
-受全局规则拒绝保持乱码——它们是 .etc 文件的节标签（非名字型 .lst 行内路径），
-与 86JP 已知限制（无空格短词全局不恢复）一致，字节级验证确认是文件真实数据。
+**已知数据特征（非解析错误，不在本次修复范围）**：86JPAG 的 sTrA 含 42 条方括号 CJK 标签（86JP sTrA 同类为 0），其中正常中文标签（`[致命射击]`、`[念气波]`）经全局规则判定为 null 保持原样；带空格乱码标签（`[积己 谅钎]`→`[생성 좌표]`）被全局 requireSpace 规则恢复；**无空格乱码标签（`[雀傈阿]`、`[荐疙]`、`[X绵]` 等 14 条）**受全局规则拒绝保持乱码——它们是 .etc 文件的节标签（非名字型 .lst 行内路径），与 86JP 已知限制（无空格短词全局不恢复）一致，字节级验证确认是文件真实数据。
 
 ### 8.5 测试脚本位置
 
 | 脚本 | 验证内容 |
 |------|------|
-| `test/pvf-jp-mojibake-verify.mjs` | 86JP 主回归（默认 86JP 路径）；**传 `86JPAG` 路径参数时执行 JPAG 断言段**：白名单 15/15、6 个名字型 .lst 行内恢复样例核对、sTrW 变更统计、误伤面 % / 换行 0、谚文汉字标注与关键字 GBK 码断言；其余版本（90CN / 90US）以路径参数传入跑回归段 |
+| `test/pvf-jp-mojibake-verify.mjs` | 86JP 主回归（默认 86JP 路径）；**传 `86JPAG` 路径参数时执行 JPAG 断言段**：白名单 15/15、6 个名字型 .lst 行内恢复样例核对、sTrW 变更统计、误伤面检查（% / 换行拒绝规则生效）、谚文汉字标注与关键字 GBK 码断言；其余版本（90CN / 90US）以路径参数传入跑回归段 |
 
 运行方式：`node test/pvf-jp-mojibake-verify.mjs <pvf路径>`（默认 86JP）。
 | 中文属性文本（`攻击力 +8%%`、`成长胶囊 (1%%)`、多行属性） | 恢复结果含 `%`/换行 → 拒绝（86JP 实测修复 358 条误伤） |

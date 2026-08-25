@@ -63,8 +63,7 @@ end   = min(total, ceil((scrollTop + viewHeight) / LINE_H) + BUFFER)
 
 ### 4.5 行级高亮与缓存
 
-- 对可见行逐行执行 `hljs.highlight(line, { language: mode })`，再依次套用
-  `annotateTagSpans` → `grayLstNames`（仅 `.lst`）→ `annotateRefs`（仅 `.lst`，注入 `data-ref`）。
+- 对可见行逐行执行 `hljs.highlight(line, { language: mode })`，再依次套用 `annotateTagSpans` → `grayLstNames`（仅 `.lst`）→ `annotateRefs`（仅 `.lst`，注入 `data-ref`）。
 - 按行号 LRU 缓存渲染结果（上限 6,000 行），滚动回看秒开，且控制内存膨胀。
 - 若某行内容变化（本视图只读，不会发生），缓存按需清空。
 

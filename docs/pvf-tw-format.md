@@ -48,8 +48,7 @@
 | 16 + guidLen | int32 | fileCount（文件数） |
 | 20 + guidLen | byte[] | 文件树（已加密） |
 
-**无魔数**：头部首 4 字节是 guidLen（真实 TW 文件为 36），无法用固定签名识别，
-只能靠布局合理性 + 文件树解密结果校验（见 §7 探测策略）。
+**无魔数**：头部首 4 字节是 guidLen（真实 TW 文件为 36），无法用固定签名识别，只能靠布局合理性 + 文件树解密结果校验（见 §7 探测策略）。
 
 ## 3. 文件树条目（每条 20 + FileNameLen 字节）
 
@@ -62,12 +61,9 @@
 | 12 + FileNameLen | uint32 | Checksum（数据校验，见 §6） |
 | 16 + FileNameLen | int32 | DataOffset（相对数据区起点的偏移） |
 
-遍历推进：`index += FileNameLen + 20`；读到第 fileCount 条结束。
-文件数据实际长度 `TrueLen = (DataLen + 3) & ~3`（4 字节对齐，解密块按 TrueLen 读）。
+遍历推进：`index += FileNameLen + 20`；读到第 fileCount 条结束。文件数据实际长度 `TrueLen = (DataLen + 3) & ~3`（4 字节对齐，解密块按 TrueLen 读）。
 
-**数据区起点**：实现约定 `dirTreeOffset = fileTreeLength + 0x38`。
-严格推导应为 `20 + guidLen + fileTreeLength`，二者仅在 guidLen == 36 时相等。
-TW 目标文件 guidLen 实测 = 36，与约定一致。
+**数据区起点**：实现约定 `dirTreeOffset = fileTreeLength + 0x38`。严格推导应为 `20 + guidLen + fileTreeLength`，二者仅在 guidLen == 36 时相等。TW 目标文件 guidLen 实测 = 36，与约定一致。
 
 ## 4. 数据区加密（PvfAlgorithmOrigin.cs）
 
@@ -91,8 +87,7 @@ foreach (byte t in 文件名编码字节) hash = 0x21 * hash + t;   // uint 环�
 return hash * 0x21;
 ```
 
-即 Horner 多项式 ×33，初值 0x1505，结果再乘 0x21。实测与文件树中的
-FileNameBytesChecksum 一致（`passiveobject/.../subdodgenotarget.ani` → 0x662E）。
+即 Horner 多项式 ×33，初值 0x1505，结果再乘 0x21。实测与文件树中的 FileNameBytesChecksum 一致（`passiveobject/.../subdodgenotarget.ani` → 0x662E）。
 
 ## 6. 数据校验 CreateBuffKey（CRC32 变体）
 
@@ -110,12 +105,9 @@ return ~crc
 由于头部无固定签名，建议按以下顺序尝试，全部通过才算 TW：
 
 1. `guidLen` 在合理区间（如 4 ~ 4096）且 `4 + guidLen + 20` 不越界；
-2. fileVersion / fileTreeLength / fileCount 非负，fileCount 合理（>0 且 < 10^7），
-   布局总长不超文件大小；
-3. 用 §4 解密文件树后，**首条目校验**：`FileNameLen` 在 (0, 4096] 且首条
-   FileNameBytesChecksum 与 §5 对首文件名重算结果一致；
-4. （可选加分项）文件尾部 42 字节等于 `\0This pvf Pack was created by pvfUtility.`
-   则说明文件被台服工具链重打包过（服务端原版无此标记）。
+2. fileVersion / fileTreeLength / fileCount 非负，fileCount 合理（>0 且 < 10^7），布局总长不超文件大小；
+3. 用 §4 解密文件树后，**首条目校验**：`FileNameLen` 在 (0, 4096] 且首条 FileNameBytesChecksum 与 §5 对首文件名重算结果一致；
+4. （可选加分项）文件尾部 42 字节等于 `\0This pvf Pack was created by pvfUtility.` 则说明文件被台服工具链重打包过（服务端原版无此标记）。
 
 ## 8. 脚本文件格式（*.etc / *.lst / *.str 等）
 
@@ -138,14 +130,12 @@ return ~crc
 | 9 | StringLink 前置 | （合并到 10） | data = stringlist 文件 id（strlst id） |
 | 10 | StringLinkIndex | `<id::name`text`>` | data = 字符串表索引（引用名）；文本取自 strlst 文件 |
 
-- type 9 + type 10 固定成对出现（编译时 `CompileType10Item` 写入 10 字节：
-  `[9][int32:id][10][int32:strtable_idx]`）。
+- type 9 + type 10 固定成对出现（编译时 `CompileType10Item` 写入 10 字节：`[9][int32:id][10][int32:strtable_idx]`）。
 - type 5 出现时若有同名闭合标签，中间内容为节的子项，可嵌套。
 
 ### 8.3 字符串表引用（Stringtable.bin）
 
-脚本条目中的字符串 data 一律是 `stringtable.bin` 的**索引**（非偏移）。该文件本身
-是归档内普通文件，结构：
+脚本条目中的字符串 data 一律是 `stringtable.bin` 的**索引**（非偏移）。该文件本身是归档内普通文件，结构：
 
 ```
 +4 字节: count（字符串数）
@@ -154,10 +144,8 @@ return ~crc
 字符串 i 字节区间: [offset[i] + 4, offset[i+1] + 4)
 ```
 
-- 解码用区域编码（EncodingType）：TW=950(Big5) / CN=936(GBK) / KR=949 / JP=932 / UTF8=65001，
-  解码后 TrimEnd('\0')。
-- 实测 TW 文件：184375 条，`[0] = "[name]"`（NameLabel 即为 `[name]` 索引，
-  脚本里节名/`[name]` 都通过该索引匹配）。
+- 解码用区域编码（EncodingType）：TW=950(Big5) / CN=936(GBK) / KR=949 / JP=932 / UTF8=65001，解码后 TrimEnd('\0')。
+- 实测 TW 文件：184375 条，`[0] = "[name]"`（NameLabel 即为 `[name]` 索引，脚本里节名/`[name]` 都通过该索引匹配）。
 - 新字符串追加时写入新偏移并重建整表（`CreateStringTable`）。
 
 ### 8.4 文本表示（#PVF_File 方言）
@@ -174,21 +162,18 @@ return ~crc
 ```
 
 - 节/字符串/命令各占一行；数字（int/float）以 \t 追加同行。
-- 字符串链接 `<id::name`text`>`：id 为 strlst 文件 id，name 为引用键名，
-  text 是 strlst 文件里 `name>text` 行的内容；可配置是否自动内联文本。
+- 字符串链接 `<id::name`text`>`：id 为 strlst 文件 id，name 为引用键名，text 是 strlst 文件里 `name>text` 行的内容；可配置是否自动内联文本。
 - 解析器从偏移 2 步进 5 字节逐条目扫描，未知类型报错但继续。
 
 ### 8.5 strlst 文件（StringView，默认 n_string.lst）
 
-字符串链接引用的是归档内一组 strlst 文件。`n_string.lst` 本身是脚本文件
-（0xD0B0 头），从偏移 2 起每 **10 字节**一组：
+字符串链接引用的是归档内一组 strlst 文件。`n_string.lst` 本身是脚本文件（0xD0B0 头），从偏移 2 起每 **10 字节**一组：
 
 ```
 [9][int32: strlst 文件 id][10][int32: 字符串表索引 = strlst 文件名]
 ```
 
-按文件名（归档内真实路径 = 该 lst 所在目录 + 文件名）读取对应 strlst 文件，
-其内容为明文文本（区域编码），格式：
+按文件名（归档内真实路径 = 该 lst 所在目录 + 文件名）读取对应 strlst 文件，其内容为明文文本（区域编码），格式：
 
 ```
 name>内容
@@ -200,72 +185,37 @@ other>另一条
 
 ### 8.6 strlst 明文识别（`_twLooksLikeStrList`）
 
-strlst 文件是明文 `key>text` 行（含韩文等多字节文本时，可打印率可能不足 70%，
-会被 `_twDecodeBinaryText` 误判为二进制）。识别规则：采样前 64 行，按字节扫描行结构，
-`//` 注释行忽略，`key>text` 行（含 `>`）计数，空行忽略；至少 1 行 `key>text`
-且其数量 ≥ 其它非空行数即判定为 strlst 明文，按区域编码解码展示（不显示为二进制）。
-其余文本判定顺序不变：UTF-16LE 检测 → 可打印率 → 二进制标记。
+strlst 文件是明文 `key>text` 行（含韩文等多字节文本时，可打印率可能不足 70%，会被 `_twDecodeBinaryText` 误判为二进制）。识别规则：采样前 64 行，按字节扫描行结构，`//` 注释行忽略，`key>text` 行（含 `>`）计数，空行忽略；至少 1 行 `key>text` 且其数量 ≥ 其它非空行数即判定为 strlst 明文，按区域编码解码展示（不显示为二进制）。其余文本判定顺序不变：UTF-16LE 检测 → 可打印率 → 二进制标记。
 
 ### 8.7 净化损坏 strlst 已知数据特征（不修复）
 
-**已知数据特征（非解析错位）**：`event/event.kor.str`（99952B，1187 行）在**制作时已被损坏**。
-原始内容为**繁体中文（Big5 编码，TW 区域本地化文本；文件名 kor 为历史遗留命名）**，
-存储链路为「Big5 字节流 -> 被 UTF-8 解码器（maximal subpart 策略）读入 ->
-非法序列以 U+FFFD 替换、合法序列保留 -> 以 UTF-8 字节保存」。净化规则逐条：
+**已知数据特征（非解析错位）**：`event/event.kor.str`（99952B）在**制作时已被损坏**。原始内容为**繁体中文（Big5 编码，TW 区域本地化文本；文件名 kor 为历史遗留命名）**，存储链路为「Big5 字节流 -> 被 UTF-8 解码器（maximal subpart 策略）读入 -> 非法序列以 U+FFFD 替换、合法序列保留 -> 以 UTF-8 字节保存」。净化规则逐条：
 
 | Big5 双字节形态 | 净化结果 |
 |---|---|
 | 首字节 `A1-BF`（UTF-8 continuation 区） | U+FFFD ×1（消费 1 字节） |
 | 首字节 `C2-DF` + 次字节 `A0-BF` | 合法 2 字节序列存活（如 `C9 AF` -> U+026F，高频残留即此） |
 | 首字节 `C2-DF` + 次字节 `40-7E`（常用字次字节 ASCII 区） | U+FFFD + 该 ASCII 存活（半字信息） |
-| 跨字拼合的连续字节（少量） | 合法 3 字节序列存活（如 `E6 AC 8F` -> U+6B0F ×134） |
+| 跨字拼合的连续字节（少量） | 合法 3 字节序列存活（如 `E6 AC 8F` -> U+6B0F） |
 | ASCII（key 名 / 数字 / 半角标点 / `LEVEL UP` 等） | 原样保留 |
 
-实测统计（checksum `0x47273696` 解密后明文）：**全文件为合法 UTF-8**（严格解码通过）；
-`EF BF BD` 序列 **18021** 个；ASCII 39649B；残留组 2931 码点（重编码 6240B）；
-行结构完好：1187 行 = 802 条 `key>text` + 103 条 `//` 注释 + 282 空行，key 名全 ASCII 未损。
-每个 U+FFFD 对应 1 个被吞的原字节，**该处原字节不可逆丢失，完全复原不可能**
-（注释行 `// ???????` 的 `?` 为字面 0x3F，制作时已替换）。
+实测统计（checksum `0x47273696` 解密后明文）：**全文件为合法 UTF-8**（严格解码通过）；`EF BF BD` 序列大量存在（U+FFFD 净化痕迹）；残留组为 Big5 双字节跨字拼合成合法 UTF-8 序列的存活产物；行结构完好（`key>text` / `//` 注释 / 空行俱全），key 名全 ASCII 未损。每个 U+FFFD 对应 1 个被吞的原字节，**该处原字节不可逆丢失，完全复原不可能**（注释行 `// ???????` 的 `?` 为字面 0x3F，制作时已替换）。
 
-**展示策略：保持区域编码直接解码（不修复）**。该文件按 `twEncoding`（Big5）解码会
-把 `EF BF BD` 错位读成 `嚙篁嚙課度無…` 伪中文（看似中文实为语义垃圾）。U+FFFD 处
-原文已不可逆丢失，任何展示层处理都无法真正复原；据此定性为**数据本体损坏、展示层
-无法真正修复，不得修改项目源码**（AGENTS.md「未修复问题不动源码（门控）」），
-保持既有解码与展示行为，伪中文为文件本体损坏的必然结果。
+**展示策略：保持区域编码直接解码（不修复）**。该文件按 `twEncoding`（Big5）解码会把 `EF BF BD` 错位读成 `嚙篁嚙課度無…` 伪中文（看似中文实为语义垃圾）。U+FFFD 处原文已不可逆丢失，任何展示层处理都无法真正复原；据此定性为**数据本体损坏、展示层无法真正修复，不得修改项目源码**（AGENTS.md「未修复问题不动源码（门控）」），保持既有解码与展示行为，伪中文为文件本体损坏的必然结果。
 
 **方案沿革（三次尝试均废弃还原）**：
 1. 「检测损坏 -> 净化展示」（ASCII 保留、损坏处 `�`）——2026-08 上旬废弃；
 2. 「跨文件对照恢复」——2026-08 上旬废弃（补实证见下）；
-3. 「逆净化还原展示」（2026-08-24 实施：strlst 行结构 + 全文件严格合法 UTF-8 +
-   `EF BF BD` 密度三重检测命中后，UTF-8 解码 -> U+FFFD 记占位 `?`、ASCII 原样、
-   其余码点重编码回原字节 -> 按 Big5 解码）——实测 key 与 ASCII 词可读、汉字恢复
-   2708、占位 `?` 18458，但 U+FFFD 处信息已丢失，输出仍含大量占位符，未能真正
-   解决乱码，判定为掩盖性处理而非修复，按门控废弃还原源码。
-   实施期间取得的定性成果（Big5 源编码纠正、checksum 登记、行结构统计、
-   跨文件对照否决实证、样本一次性提取机制）予以保留。
-   对照验证记录：还原骨架 `}?l?C` 与 `etc/etc.kor.str` 完好同名 key
-   （`event_id_1_start>疲勞度無限活動開始。`）的「開始。」次字节逐字对应，
-   证实源编码为 Big5。
+3. 「逆净化还原展示」（2026-08-24 实施：strlst 行结构 + 全文件严格合法 UTF-8 + `EF BF BD` 密度三重检测命中后，UTF-8 解码 -> U+FFFD 记占位 `?`、ASCII 原样、其余码点重编码回原字节 -> 按 Big5 解码）——实测 key 与 ASCII 词可读、汉字部分恢复但占位 `?` 大量存在，U+FFFD 处信息已丢失，未能真正解决乱码，判定为掩盖性处理而非修复，按门控废弃还原源码。实施期间取得的定性成果（Big5 源编码纠正、checksum 登记、行结构统计、跨文件对照否决实证、样本一次性提取机制）予以保留。对照验证记录：还原骨架 `}?l?C` 与 `etc/etc.kor.str` 完好同名 key（`event_id_1_start>疲勞度無限活動開始。`）的「開始。」次字节逐字对应，证实源编码为 Big5。
 
-**跨文件对照否决（维持，补实证）**：`event/event.kor.str` 与 `etc/etc.kor.str`
-同名 key 仅 **235/802（29.3%）** 交集；同源长度校验仅 **137/235** 相等
-（如 `event_id_3_ing` 还原 83B vs etc 24B），证明两文件内容并非同源，
-不得以对照文本替换或补全展示。
+**跨文件对照否决（维持，补实证）**：`event/event.kor.str` 与 `etc/etc.kor.str` 同名 key 仅 **235/802（29.3%）** 交集；同源长度校验仅 **137/235** 相等（如 `event_id_3_ing` 还原 83B vs etc 24B），证明两文件内容并非同源，不得以对照文本替换或补全展示。
 
-**留存样本（固定回归输入）**：该文件的**原始未解密文件流**已自归档数据区原样切片
-落盘为 `test/70TW/event/event.kor.str`（dataSize = trueLen = 99952B，无对齐填充；
-不解密，不做任何变换）；**样本一次性提取**，后续分析、修复与回归一律以样本为输入，
-不再依赖原始归档。现场还原所需 checksum = `0x47273696`（取自归档文件树条目；
-`CreateBuffKey(明文数据, 文件名哈希)` 无法由密文或文件名离线推导，故必须登记于此）。
-`test/verify-authoritative-scan.mjs` 的「净化损坏 strlst」断言加载样本 +
-登记 checksum 现场还原（`pvfDecryptTw`），再做 §8.7 特征与展示层行为断言，
-全程不读取归档；归档整体加载仅用于 §12.3 全量基线核对统计。
+**留存样本（固定回归输入）**：该文件的**原始未解密文件流**已自归档数据区原样切片落盘为 `test/70TW/event/event.kor.str`（dataSize = trueLen = 99952B，无对齐填充；不解密，不做任何变换）；**样本一次性提取**，后续分析、修复与回归一律以样本为输入，不再依赖原始归档。现场还原所需 checksum = `0x47273696`（取自归档文件树条目；`CreateBuffKey(明文数据, 文件名哈希)` 无法由密文或文件名离线推导，故必须登记于此）。`test/verify-authoritative-scan.mjs` 的「净化损坏 strlst」断言加载样本 + 登记 checksum 现场还原（`pvfDecryptTw`），再做 §8.7 特征与展示层行为断言，全程不读取归档；归档整体加载仅用于 §12.3 全量回归验证。
 
 ## 9. 70 ANI 文件
 
 - `Is70AniFile`：非脚本且短名含 `.ani`（排除 `.ani.als`）。
-- 明文判断：头部 10 字节 ASCII == `[FRAME MAX]`，此类文件按明文文本直接展示
-  （见 §9.3 #PVF_File 规则）。
+- 明文判断：头部 10 字节 ASCII == `[FRAME MAX]`，此类文件按明文文本直接展示（见 §9.3 #PVF_File 规则）。
 - 二进制格式（小端，权威来源见 AGENTS.md「权威参考」）：
 
 ```
@@ -313,13 +263,11 @@ strlst 文件是明文 `key>text` 行（含韩文等多字节文本时，可打�
     其它 tag: 解析失败
 ```
 
-- 解析器（`_twDecodeAni`）按上述布局逐步消费；任一字段越界/未知 tag 即整体失败，
-  回退为原始 hex 展示。帧数=0 是合法空动画（如 6 字节 `charge2.ani`），不算失败。
+- 解析器（`_twDecodeAni`）按上述布局逐步消费；任一字段越界/未知 tag 即整体失败，回退为原始 hex 展示。帧数=0 是合法空动画（如 6 字节 `charge2.ani`），不算失败。
 
 ### 9.2 解码输出格式（与权威明文导出一致）
 
-`_twDecodeAni` 的二进制解码输出必须是权威格式的**同款明文文本**
-（`#PVF_File` 开头，直接可被 pvfUtility 重新导入），逐行对齐权威格式定义：
+`_twDecodeAni` 的二进制解码输出必须是权威格式的**同款明文文本**（`#PVF_File` 开头，直接可被 pvfUtility 重新导入），逐行对齐权威格式定义：
 
 ```
 #PVF_File
@@ -377,17 +325,9 @@ strlst 文件是明文 `key>text` 行（含韩文等多字节文本时，可打�
 | 帧项 CLIP | `[CLIP]` + 4×i16（\t 分隔） |
 | 帧盒 | `[ATTACK BOX]`/`[DAMAGE BOX]` + 6×i32（\t 分隔），帧项之后统一追加 |
 
-枚举名（权威定义）：标签 `LOOP/SHADOW/COORD/IMAGE_RATE/IMAGE_ROTATE/RGBA/
-INTERPOLATION/GRAPHIC_EFFECT/DELAY/DAMAGE_TYPE/DAMAGE_BOX/ATTACK_BOX/
-PLAY_SOUND/PRELOAD/SPECTRUM/SET_FLAG/FLIP_TYPE/LOOP_START/LOOP_END/CLIP/OPERATION`；
-Effect_Item `NONE/DODGE/LINEARDODGE/DARK/XOR/MONOCHROME/SPACEDISTORT`；
-DAMAGE_TYPE_Item `NORMAL/SUPERARMOR/UNBREAKABLE`；
-FLIP_TYPE_Item `HORIZON=1/VERTICAL=2/ALL=3`。
+枚举名（权威定义）：标签 `LOOP/SHADOW/COORD/IMAGE_RATE/IMAGE_ROTATE/RGBA/INTERPOLATION/GRAPHIC_EFFECT/DELAY/DAMAGE_TYPE/DAMAGE_BOX/ATTACK_BOX/PLAY_SOUND/PRELOAD/SPECTRUM/SET_FLAG/FLIP_TYPE/LOOP_START/LOOP_END/CLIP/OPERATION`；Effect_Item `NONE/DODGE/LINEARDODGE/DARK/XOR/MONOCHROME/SPACEDISTORT`；DAMAGE_TYPE_Item `NORMAL/SUPERARMOR/UNBREAKABLE`；FLIP_TYPE_Item `HORIZON=1/VERTICAL=2/ALL=3`。
 
-**已知数据特征（非解析错误）**：`equipment/equipmentdefaultcustomanimation.ani`（23B）
-是空占位动画（imgCount=0、imgIndex=-1），位置字段真实写入 `0x0000FFFF`，
-按权威读法输出 `[IMAGE POS] 65535 65535`；字节级验证（consumed 23/23）确认无误，
-不能当作解析错位。
+**已知数据特征（非解析错误）**：`equipment/equipmentdefaultcustomanimation.ani`（23B）是空占位动画（imgCount=0、imgIndex=-1），位置字段真实写入 `0x0000FFFF`，按权威读法输出 `[IMAGE POS] 65535 65535`；字节级验证（consumed 23/23）确认无误，不能当作解析错位。
 
 ### 9.2.1 一致性风险点（实现时必须逐条对齐）
 
@@ -407,20 +347,13 @@ FLIP_TYPE_Item `HORIZON=1/VERTICAL=2/ALL=3`。
 
 ### 9.3 #PVF_File 明文规则（适用于所有类型解码）
 
-- pvfUtility 导出的明文文本（ani / 脚本 / 其它）**可能以 `#PVF_File` 开头，
-  也可能没有该前缀**（如明文 ani 直接以 `[FRAME MAX]` 开头）。
-- **解码**：解码路径统一拦截明文前缀并返回明文——`decodeContent` 在一切分发
-  （stringtable / ani / token / lst / 普通文本）之前检测 `#PVF_File`；
-  明文 ani 的 `[FRAME MAX]` 由 ani 层（`_twDecodeAni`）另检。
-  命中即不解析、直接按区域编码解码为文本原样展示（无 `//` 注释前缀）。
-  该规则在 ani、token、lst、普通文本所有解码路径之前生效，不区分文件类型。
-- **编码**：`encodeContent` 对以 `#PVF_File` 开头的文本不做 token 化，
-  直接按区域编码字节原样写回（导出=源文件格式）。
+- pvfUtility 导出的明文文本（ani / 脚本 / 其它）**可能以 `#PVF_File` 开头，也可能没有该前缀**（如明文 ani 直接以 `[FRAME MAX]` 开头）。
+- **解码**：解码路径统一拦截明文前缀并返回明文——`decodeContent` 在一切分发（stringtable / ani / token / lst / 普通文本）之前检测 `#PVF_File`；明文 ani 的 `[FRAME MAX]` 由 ani 层（`_twDecodeAni`）另检。命中即不解析、直接按区域编码解码为文本原样展示（无 `//` 注释前缀）。该规则在 ani、token、lst、普通文本所有解码路径之前生效，不区分文件类型。
+- **编码**：`encodeContent` 对以 `#PVF_File` 开头的文本不做 token 化，直接按区域编码字节原样写回（导出=源文件格式）。
 
 ### 9.3.1 明文注释渲染规则（2026-08 修正）
 
-明文文本（`#PVF_File` 头、`//` 注释行）在编辑器中的渲染颜色统一为
-**注释绿 `#6a9955`**（与 `.hljs-comment` 一致，带斜体），适用两条渲染路径：
+明文文本（`#PVF_File` 头、`//` 注释行）在编辑器中的渲染颜色统一为**注释绿 `#6a9955`**（与 `.hljs-comment` 一致，带斜体），适用两条渲染路径：
 
 | 渲染路径 | 修正前 | 修正后 |
 |---|---|---|
@@ -443,44 +376,26 @@ FLIP_TYPE_Item `HORIZON=1/VERTICAL=2/ALL=3`。
 
 ## 11. 参考实现要点（launch-helper 集成）
 
-- 解密：`pvfDecryptTw(buf, key, checksum)` 逐 4 字节 `ROR6(dw ^ key ^ checksum)`，
-  文件树与文件数据共用，key = 0x81A79011。
-- 编码：文件树按 §5 哈希排序（`OrderBy(FileNameBytesChecksum)`），条目 = 哈希/长度/
-  文件名/DataLen/Checksum/DataOffset，`fileTreeLength = Σ(FileNameLen+20) + 3 & ~3`。
+- 解密：`pvfDecryptTw(buf, key, checksum)` 逐 4 字节 `ROR6(dw ^ key ^ checksum)`，文件树与文件数据共用，key = 0x81A79011。
+- 编码：文件树按 §5 哈希排序（`OrderBy(FileNameBytesChecksum)`），条目 = 哈希/长度/文件名/DataLen/Checksum/DataOffset，`fileTreeLength = Σ(FileNameLen+20) + 3 & ~3`。
 - 字符串表按索引引用，**编辑脚本必须同步维护 stringtable.bin**（删除/追加条目）。
-- 已实测验证：`a70s2精简更新pvf/Script.pvf`
-  （81.5MB，guidLen=36，ver=0x102EA，182903 文件，184375 条字符串）解析全链路正确。
+- 已实测验证：`a70s2精简更新pvf/Script.pvf`（81.5MB，guidLen=36，ver=0x102EA，182903 文件，184375 条字符串）解析全链路正确。
 
 ## 12. ANI / strlst 解析修复记录（2026-08）
 
 ### 12.1 问题
 
-- `.ani` 二进制文件只输出帧数 + hex dump（"未解析"）——旧实现把头部误读为
-  `u16 帧数 | u16 标记 | i32 路径长`，且无帧数据解析。
-- 明文 strlst（如 `event/event.kor.str`）因非 ASCII 字节多、可打印率 < 70% 被误判
-  为 `[二进制文件 N 字节]`。
-- **输出格式不符**：首次修复的 `_twDecodeAni` 采用自定义格式（`[ani] 帧数:`、
-  `帧000: 图=... 位置=(...)`），与 pvfUtility 明文导出格式不一致，无法直接
-  对照/导入；必须改为 §9.2 的权威明文格式（`#PVF_File` 开头 + `[FRAME MAX]` +
-  `[FRAME000]` 逐行标签）。
+- `.ani` 二进制文件只输出帧数 + hex dump（"未解析"）——旧实现把头部误读为`u16 帧数 | u16 标记 | i32 路径长`，且无帧数据解析。
+- 明文 strlst（如 `event/event.kor.str`）因非 ASCII 字节多、可打印率 < 70% 被误判为 `[二进制文件 N 字节]`。
+- **输出格式不符**：首次修复的 `_twDecodeAni` 采用自定义格式（`[ani] 帧数:`、`帧000: 图=... 位置=(...)`），与 pvfUtility 明文导出格式不一致，无法直接对照/导入；必须改为 §9.2 的权威明文格式（`#PVF_File` 开头 + `[FRAME MAX]` + `[FRAME000]` 逐行标签）。
 
 ### 12.2 解决
 
-- `_twDecodeAni` 重写为 §9 权威二进制布局解析 + **§9.2 权威明文输出**：
-  `#PVF_File` 头、全局项（LOOP/SHADOW/COORD/OPERATION/SPECTRUM）、`[FRAME MAX]`、
-  每帧 `[FRAME000]`/`[IMAGE]`/`[IMAGE POS]`/帧项/盒（盒在帧项后统一追加），
-  标签名用空格分隔显示名（如 `[IMAGE RATE]`/`[GRAPHIC EFFECT]`，非枚举名
-  `IMAGE_RATE`），枚举值（GRAPHIC EFFECT/DAMAGE TYPE/FLIP TYPE）用枚举名、
-  越界输出数字字符串；路径/声音按 ASCII 读（>0x7F→`?`）；
-  RGBA/SPECTRUM COLOR 用 `(256+b)%256`；IMAGE RATE/ROTATE 按 7 位有效数字
-  （G7）格式化；解析失败回退 hex；帧数=0 合法。
+- `_twDecodeAni` 重写为 §9 权威二进制布局解析 + **§9.2 权威明文输出**：`#PVF_File` 头、全局项（LOOP/SHADOW/COORD/OPERATION/SPECTRUM）、`[FRAME MAX]`、每帧 `[FRAME000]`/`[IMAGE]`/`[IMAGE POS]`/帧项/盒（盒在帧项后统一追加），标签名用空格分隔显示名（如 `[IMAGE RATE]`/`[GRAPHIC EFFECT]`，非枚举名 `IMAGE_RATE`），枚举值（GRAPHIC EFFECT/DAMAGE TYPE/FLIP TYPE）用枚举名、越界输出数字字符串；路径/声音按 ASCII 读（>0x7F→`?`）；RGBA/SPECTRUM COLOR 用 `(256+b)%256`；IMAGE RATE/ROTATE 按 7 位有效数字（G7）格式化；解析失败回退 hex；帧数=0 合法。
 - `_twDecodeBinaryText` 增加 strlst 明文识别（§8.6），韩文 strlst 按文本展示。
 - `#PVF_File` 前缀统一按 §9.3 规则处理（解码按注释文本、编码按源文件）。
 
-**已知数据特征（非解析错误）**：`equipment/equipmentdefaultcustomanimation.ani`（23B）
-是空占位动画（imgCount=0、imgIndex=-1），其位置字段真实写入 `0x0000FFFF`，
-按权威读法输出 `[IMAGE POS] 65535 65535`（与 pvfUtility 同读法结果一致）；
-字节级验证（consumed 23/23）确认无误，不能当作解析错位。
+**已知数据特征（非解析错误）**：`equipment/equipmentdefaultcustomanimation.ani`（23B）是空占位动画（imgCount=0、imgIndex=-1），其位置字段真实写入 `0x0000FFFF`，按权威读法输出 `[IMAGE POS] 65535 65535`（与 pvfUtility 同读法结果一致）；字节级验证（consumed 23/23）确认无误，不能当作解析错位。
 
 ### 12.3 测试脚本（唯一）
 
@@ -488,10 +403,9 @@ FLIP_TYPE_Item `HORIZON=1/VERTICAL=2/ALL=3`。
 
 | 脚本 | 验证内容 |
 |---|---|
-| `test/verify-authoritative-scan.mjs` | 全量 114943 个 .ani 独立解析：**ok 114922 / partial 1（`nametag5.ani` 3B 尾部不足）/ fail 0 / empty 20**；独立解析器输出与真实实现输出**逐行完全一致（不一致 0）**（#PVF_File 头、`[FRAME MAX]`、`[IMAGE POS]`、`[IMAGE RATE]` G7 浮点、`[ATTACK BOX]` 盒等标签齐全）；hex 回退 0、frameCount=0 空动画 23；全量 .str 无二进制误判（0）；关键文件 `equipmentdefaultcustomanimation.ani`（预期 `[IMAGE POS] 65535 65535`）/ `stone0.ani` / `badeffect2.ani` / `event.kor.str` 输出核对；`badeffect2.ani` 权威头 16 行断言 PASS（12 帧 / 12 IMAGE POS / 12 DELAY 80）；#PVF_File 明文 ani 展示验证；**注释渲染断言（§9.3.1）：`#PVF_File` / `// 注释` / 行首缩进 `//` 均产出 `hljs-comment` token PASS**；**净化损坏 strlst 断言（§8.7）：优先仅加载留存样本 `test/70TW/event/event.kor.str`（未解密文件流）+ 文档登记 checksum `0x47273696`，经 `pvfDecryptTw` 现场还原后断言（此段不读取归档，落实样本一次性提取）：EF BF BD 计数 18021、全文件合法 UTF-8、行结构（802 key>text + 103 注释 + 282 空行）PASS；归档加载后补核对：fcorr.checksum == 登记值、样本现场还原 == `getFileData`；展示层保持 Big5 直接解码（伪中文存在 = PASS，数据本体损坏不修源码）、key/ASCII 保留、不误判二进制、正常 strlst 不受影响 PASS** |
+| `test/verify-authoritative-scan.mjs` | 全量 .ani 独立解析：无 fail（partial 仅 `nametag5.ani` 尾部字节不足，empty 为空文件）；独立解析器输出与真实实现输出**逐行完全一致**（#PVF_File 头、`[FRAME MAX]`、`[IMAGE POS]`、`[IMAGE RATE]` G7 浮点、`[ATTACK BOX]` 盒等标签齐全）；无 hex 回退；全量 .str 无二进制误判；关键文件 `equipmentdefaultcustomanimation.ani`（预期 `[IMAGE POS] 65535 65535`）/ `stone0.ani` / `badeffect2.ani` / `event.kor.str` 输出核对；`badeffect2.ani` 权威头 16 行断言 PASS（12 帧 / 12 IMAGE POS / 12 DELAY 80）；#PVF_File 明文 ani 展示验证；**注释渲染断言（§9.3.1）：`#PVF_File` / `// 注释` / 行首缩进 `//` 均产出 `hljs-comment` token PASS**；**净化损坏 strlst 断言（§8.7）：优先仅加载留存样本 `test/70TW/event/event.kor.str`（未解密文件流）+ 文档登记 checksum `0x47273696`，经 `pvfDecryptTw` 现场还原后断言（此段不读取归档，落实样本一次性提取）：EF BF BD 净化特征命中、全文件合法 UTF-8、行结构完好 PASS；归档加载后补核对：fcorr.checksum == 登记值、样本现场还原 == `getFileData`；展示层保持 Big5 直接解码（伪中文存在 = PASS，数据本体损坏不修源码）、key/ASCII 保留、不误判二进制、正常 strlst 不受影响 PASS** |
 
-运行方式：`node test/verify-authoritative-scan.mjs`（默认加载
-`PVF/70TW/Script.pvf` 固定基线；其它版本以参数传入）。
+运行方式：`node test/verify-authoritative-scan.mjs`（默认加载`PVF/70TW/Script.pvf` 固定基线；其它版本以参数传入）。
 
 ### 12.4 注释颜色与损坏 strlst 修复记录（2026-08）
 
@@ -500,31 +414,10 @@ FLIP_TYPE_Item `HORIZON=1/VERTICAL=2/ALL=3`。
 - 解决：`pvfHighlight.js` 注释规则新增行首 `//`（`begin:/\/\//, end:"$"`，置于 title 前）；`PvfEditor.vue _renderKeyValueLine` 对 `#` 开头行与 `//` 开头行改用 `hljs-comment` 类。
 
 **净化损坏 strlst（§8.7；2026-08-24 重新定性，展示层处理废弃还原）**：
-- 问题：`event/event.kor.str` 制作时被 UTF-8 解码器净化损坏，按区域编码
-  （Big5）直接解码产生 `嚙篁嚙課度無…` 伪中文乱码展示。
-- 定性修正（字节级复核，纠正本节 2026-08 早前记录）：源编码为**繁体 Big5**，
-  此前「韩文 EUC-KR」「残留组无可读语义、原文不可恢复」结论系在错误源编码假设下
-  得出，予以纠正。实测：全文件 99952B 为合法 UTF-8——`EF BF BD` 18021 /
-  残留组 2931 码点（重编码 6240B，如 `C9 AF`->U+026F）/ ASCII 39649B；
-  行结构完好（802 key>text + 103 注释 + 282 空行）。U+FFFD 处原字节已不可逆丢失，
-  完全复原不可能。
-- 处理决定：定性为**数据本体损坏、展示层无法真正修复**，不修改项目源码，
-  保持 `_twDecodeBinaryText` strlst 分支按 `twEncoding` 直接解码，
-  伪中文为文件本体损坏的必然结果。当日曾实施的「逆净化还原展示」
-  （三重检测命中后 UTF-8 解码 -> U+FFFD 记占位 `?`、其余码点重编码回原字节）
-  经权威判定为掩盖性处理而非修复——输出仍含占位 `?` 18458，未能真正解决乱码——
-  已废弃还原源码（AGENTS.md「未修复问题不动源码（门控）」）。
-- 跨文件对照否决（维持，补实证）：与 `etc/etc.kor.str` 同名 key 仅 235/802（29.3%）
-  交集，同源长度校验仅 137/235 相等（内容不同源），不得以对照文本替换展示。
-- 方案沿革：① 「检测损坏 -> 净化展示」（UTF-8 `�` 输出）；② 「跨文件对照恢复」；
-  ③ 「逆净化还原展示」（2026-08-24）。三次均废弃还原；③ 的定性成果
-  （Big5 源编码纠正、checksum 登记、行结构统计、对照否决实证、样本一次性提取
-  机制）保留并登记于 §8.7。
-- 验证：净化损坏 strlst 断言 PASS（样本 + 登记 checksum 独立还原 / EF BF BD 18021 /
-  合法 UTF-8 / 行结构计数；归档补核对 checksum 一致与现场还原一致；展示层保持
-  Big5 直接解码伪中文存在 / key 与 ASCII 保留 / 不误判二进制 / 正常 strlst 不受影响）；
-  全量 .ani 基线 ok 114922 / partial 1 / fail 0 / empty 20 / 不一致 0 与 §12.3 一致。
-- 样本留存：`test/70TW/event/event.kor.str`——**原始未解密文件流**，自归档数据区
-  原样切片落盘（dataSize = trueLen = 99952B；不解密、不做任何变换），作为脱离完整
-  归档的最小复现与固定回归输入。现场还原所需 checksum = `0x47273696` 登记于 §8.7；
-  样本一次性提取，断言段不读取归档（AGENTS.md「样本一次性提取（门控）」）。
+- 问题：`event/event.kor.str` 制作时被 UTF-8 解码器净化损坏，按区域编码（Big5）直接解码产生 `嚙篁嚙課度無…` 伪中文乱码展示。
+- 定性修正（字节级复核，纠正本节 2026-08 早前记录）：源编码为**繁体 Big5**，此前「韩文 EUC-KR」「残留组无可读语义、原文不可恢复」结论系在错误源编码假设下得出，予以纠正。实测：全文件为合法 UTF-8，大量 `EF BF BD`（U+FFFD 净化痕迹）与残留组并存，行结构完好。U+FFFD 处原字节已不可逆丢失，完全复原不可能。
+- 处理决定：定性为**数据本体损坏、展示层无法真正修复**，不修改项目源码，保持 `_twDecodeBinaryText` strlst 分支按 `twEncoding` 直接解码，伪中文为文件本体损坏的必然结果。当日曾实施的「逆净化还原展示」（三重检测命中后 UTF-8 解码 -> U+FFFD 记占位 `?`、其余码点重编码回原字节）经权威判定为掩盖性处理而非修复——输出仍含占位 `?`，未能真正解决乱码——已废弃还原源码（AGENTS.md「未修复问题不动源码（门控）」）。
+- 跨文件对照否决（维持，补实证）：与 `etc/etc.kor.str` 同名 key 仅 235/802（29.3%）交集，同源长度校验仅 137/235 相等（内容不同源），不得以对照文本替换展示。
+- 方案沿革：① 「检测损坏 -> 净化展示」（UTF-8 `�` 输出）；② 「跨文件对照恢复」；③ 「逆净化还原展示」（2026-08-24）。三次均废弃还原；③ 的定性成果（Big5 源编码纠正、checksum 登记、行结构统计、对照否决实证、样本一次性提取机制）保留并登记于 §8.7。
+- 验证：净化损坏 strlst 断言 PASS（样本 + 登记 checksum 独立还原 / EF BF BD 净化特征命中 / 合法 UTF-8 / 行结构完好；归档补核对 checksum 一致与现场还原一致；展示层保持 Big5 直接解码伪中文存在 / key 与 ASCII 保留 / 不误判二进制 /正常 strlst 不受影响）；全量 .ani 回归通过、独立解析器与实现输出逐行一致（§12.3）。
+- 样本留存：`test/70TW/event/event.kor.str`——**原始未解密文件流**，自归档数据区原样切片落盘（dataSize = trueLen = 99952B；不解密、不做任何变换），作为脱离完整归档的最小复现与固定回归输入。现场还原所需 checksum = `0x47273696` 登记于 §8.7；样本一次性提取，断言段不读取归档（AGENTS.md「样本一次性提取（门控）」）。

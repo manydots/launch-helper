@@ -140,7 +140,7 @@ IsWeapon            = 类型为 [weapon]
 | `[flag gem]` / `[guardian gem]` / `[guild gem]` 开头，或类型串含 `guardian gem` / `守护珠` 子串（A21 新增，见 §14.1） | 守护珠 | 49-97（仅首标签精确为 `flag gem`） |
 | 装备（非堆叠物） | 装备 | 9-64；A21 中 `[flag]` 公会勋章装备为 0-48（见 §14.1） |
 
-判定规则：去掉反引号、小写后取首个 `[...]` 标签；`[material]` 需再判断类型串是否以 `4` 结尾来区分特殊材料。另有硬编码特殊材料 ID 白名单：3033-3037、3262。守护珠归段（A21 `StackSegment`）不要求首标签精确匹配——`[flag gem]`/`[guardian gem]`/`[guild gem]` 开头或类型串含 `guardian gem`、`守护珠` 子串均归入；槽位区间（`GetSlotRange`）则要求首标签精确为 `[flag gem]`。
+判定规则：去掉反引号、小写后取首个 `[...]` 标签；`[material]` 需再判断类型串是否以 `4` 结尾来区分特殊材料。另有硬编码特殊材料 ID 白名单：3033-3037、3262。守护珠归段（A21 `StackSegment`）不要求首标签精确匹配——`[flag gem]` / `[guardian gem]` / `[guild gem]` 开头或类型串含 `guardian gem`、`守护珠` 子串均归入；槽位区间（`GetSlotRange`）则要求首标签精确为 `[flag gem]`。
 
 主背包其他保留段：0-2 货币（金币/复活币/胜点）、3-8 快捷栏、354-359 账号晶块。
 
@@ -223,49 +223,18 @@ IsWeapon            = 类型为 [weapon]
 
 ### 14.1 与旧版（§1-§13）的差异及同步内容
 
-1. **堆叠物分段新增「守护珠」（六段 → 七段）**：A21 `STACK_SEGMENTS` 为
-   `['消耗品', '材料', '任务品', '副职业材料', '徽章', '守护珠', '特殊材料']`
-   （守护珠位于徽章与特殊材料之间；give.js 内"六段"注释为旧文案，实际七段）。
-   归段判定（`PvfIndexService.Items.StackSegment`）：类型串以 `[flag gem]`、
-   `[guardian gem]`、`[guild gem]` 开头，或含 `guardian gem` / `守护珠` 子串
-   （大小写不敏感）→ 守护珠。
-2. **装备分组新增 `[flag]`（公会勋章）**：A21 `EQUIP_GROUPS` 装备组 tags 在
-   `name tag` 之后追加 `'flag'`；服务端槽位语义为装备且 `IsFlagEquipmentType()`
-   → 槽位 0-48（`GetSlotRange`）。网关侧对应 kind=12 公会勋章经主背包投递、
-   领取后由服务端路由到公会列表（见 `gateway.proto` MailAttachment 注释）。
-3. **类型标签中文映射新增**（`TAG_LABELS`）：`flag`=公会勋章；
-   `flag gem` / `guardian gem` / `guild gem`=守护珠。
+1. **堆叠物分段新增「守护珠」（六段 → 七段）**：A21 `STACK_SEGMENTS` 为 `['消耗品', '材料', '任务品', '副职业材料', '徽章', '守护珠', '特殊材料']`（守护珠位于徽章与特殊材料之间；give.js 内"六段"注释为旧文案，实际七段）。归段判定（`PvfIndexService.Items.StackSegment`）：类型串以 `[flag gem]`、`[guardian gem]`、`[guild gem]` 开头，或含 `guardian gem` / `守护珠` 子串（大小写不敏感）→ 守护珠。
+2. **装备分组新增 `[flag]`（公会勋章）**：A21 `EQUIP_GROUPS` 装备组 tags 在 `name tag` 之后追加 `'flag'`；服务端槽位语义为装备且 `IsFlagEquipmentType()` → 槽位 0-48（`GetSlotRange`）。网关侧对应 kind=12 公会勋章经主背包投递、领取后由服务端路由到公会列表（见 `gateway.proto` MailAttachment 注释）。
+3. **类型标签中文映射新增**（`TAG_LABELS`）：`flag`=公会勋章；`flag gem` / `guardian gem` / `guild gem`=守护珠。
 4. **launch-helper 同步改动**：
-   - `src/utils/pvfTool.js` `stackSegment()` 增加守护珠分支（判定顺序与 A21 一致：
-     material → quest → material expert job → avatar emblem → 守护珠 → 默认消耗品）；
-   - `src/components/ItemCodeView.vue` `STACK_SEGMENTS` 增加「守护珠」、
-     `EQUIP_GROUPS` 装备组增加 `flag`、`TAG_LABELS` 补充上述四个翻译。
-5. **不变项**：品级体系 `RARITY_LABELS`、品质细分 `SPECIAL_LABELS`、期限过滤
-   `EXPIRATION_OPTIONS` 与 A21 版一致，无需调整。
+   - `src/utils/pvfTool.js` `stackSegment()` 增加守护珠分支（判定顺序与 A21 一致：material → quest → material expert job → avatar emblem → 守护珠 → 默认消耗品）；
+   - `src/components/ItemCodeView.vue` `STACK_SEGMENTS` 增加「守护珠」、`EQUIP_GROUPS` 装备组增加 `flag`、`TAG_LABELS` 补充上述四个翻译。
+5. **不变项**：品级体系 `RARITY_LABELS`、品质细分 `SPECIAL_LABELS`、期限过滤 `EXPIRATION_OPTIONS` 与 A21 版一致，无需调整。
 6. **发放物品来源口径收敛（移除 creature.lst，2026-08-24）**：
-   - **问题现象**：launch-helper 物品编码查看器将 `creature/creature.lst` 全量纳入
-     物品来源并整体归入宠物分组；A21 权威 GM 工具仅索引
-     `equipment/equipment.lst` 与 `stackable/stackable.lst` 两清单
-     （`PvfIndexService.cs` `Build` 仅两处 `BuildKind` 调用，无 creature 来源），
-     其「宠物」分组全部来自 equipment 类型首标签 `[creature]` /
-     `[artifact red]` / `[artifact blue]` / `[artifact green]`。
-     86JPL 基线对账：权威宠物组合计 850（组内 `creature` 标签 707），
-     launch-helper 宠物组合计 1336（组内 creature 二级 1193），差额恰为
-     creature.lst 条目数 486。
-   - **定性**：口径不一致（非解析错误）。creature.lst 条目指向 `.cre`
-     宠物召唤物定义（如 `Petit_Tiger/Petit_Tiger.cre`），非可发放物品；
-     86JPL 上其 486 行中 144 行引用不可解析、228 行 lst 附名为空，
-     仅 342 行可匹配到文件。
-   - **解决**：`src/components/ItemCodeView.vue` `LST_TYPES` 移除 creature 项；
-     `resolveCategoryPath()` 移除 `it.type === "Creature"` 特判；
-     同步清理 `labelNameMap` 的 `Creature` 映射、`.ivc-type.type-Creature`
-     样式及界面描述文案。`EQUIP_GROUPS` 宠物组四标签与 `TAG_LABELS` 对应翻译
-     保留（equipment 中宠物类装备仍归宠物组，此即权威口径）。
-   - **已知残余口径差（登记备查，不作改动）**：A21 构建索引时丢弃名称为空或
-     解析失败的条目（`BuildKind` 内 `Name` 为空即跳过）；launch-helper 为保留
-     查看能力对 lst 全量展示，故消耗品等其他分组的计数仍可能大于权威工具。
-     宠物分组不受影响（86JPL 上 equipment 四宠物标签条目在权威索引中全部有效，
-     计数一致）。
+   - **问题现象**：launch-helper 物品编码查看器将 `creature/creature.lst` 全量纳入物品来源并整体归入宠物分组；A21 权威 GM 工具仅索引 `equipment/equipment.lst` 与 `stackable/stackable.lst` 两清单（`PvfIndexService.cs` `Build` 仅两处 `BuildKind` 调用，无 creature 来源），其「宠物」分组全部来自 equipment 类型首标签 `[creature]` / `[artifact red]` / `[artifact blue]` / `[artifact green]`。86JPL 基线对账：launch-helper 宠物组较权威工具多出的条目，数量恰为 creature.lst 条目数 486，差额全部来自 creature.lst 来源。
+   - **定性**：口径不一致（非解析错误）。creature.lst 条目指向 `.cre` 宠物召唤物定义（如 `Petit_Tiger/Petit_Tiger.cre`），非可发放物品；86JPL 上其 486 行中 144 行引用不可解析、228 行 lst 附名为空，仅 342 行可匹配到文件。
+   - **解决**：`src/components/ItemCodeView.vue` `LST_TYPES` 移除 creature 项；`resolveCategoryPath()` 移除 `it.type === "Creature"` 特判；同步清理 `labelNameMap` 的 `Creature` 映射、`.ivc-type.type-Creature`样式及界面描述文案。`EQUIP_GROUPS` 宠物组四标签与 `TAG_LABELS` 对应翻译保留（equipment 中宠物类装备仍归宠物组，此即权威口径）。
+   - **已知残余口径差（登记备查，不作改动）**：A21 构建索引时丢弃名称为空或解析失败的条目（`BuildKind` 内 `Name` 为空即跳过）；launch-helper 为保留查看能力对 lst 全量展示，故消耗品等其他分组的计数仍可能大于权威工具。宠物分组不受影响（86JPL 上 equipment 四宠物标签条目在权威索引中全部有效，计数一致）。
 
 ### 14.2 测试脚本
 
@@ -276,46 +245,11 @@ IsWeapon            = 类型为 [weapon]
 ### 14.3 验证结果
 
 - 函数级断言：16 项全部 PASS（2026-08-24，Node 本机运行，改码前守护珠 5 项按预期 FAIL，改码后全绿）。
-- 源码口径断言（§14.1 第 6 条）：3 项。2026-08-24 改码前 `LST_TYPES 不含
-  creature/creature.lst 来源`、`resolveCategoryPath 无 Creature 特判` 两项按预期 FAIL；
-  `ItemCodeView.vue` 收敛后与函数级断言合计 19 项全部 PASS
-  （六个基线运行均含）。
-- 全量统计（2026-08-24，基线 `PVF/<版本>/Script.pvf`，
-  运行 `node test/item-grant-category-sync.mjs <pvf路径>`）：
-
-| 基线 | stackable 总数 | 消耗品 | 材料 | 特殊材料 | 任务品 | 副职业材料 | 徽章 | 守护珠 | equipment 总数 | flag 公会勋章 |
-|---|---|---|---|---|---|---|---|---|---|---|
-| 70TW | 5720 | 4764 | 249 | 8 | 509 | 190 | 0 | **0** | 27254 | **0** |
-| 86JP | 34542 | 25430 | 1136 | 0 | 1210 | 5598 | 1168 | **0** | 101868 | **0** |
-| 86JPAG | 34583 | 25471 | 1136 | 0 | 1210 | 5598 | 1168 | **0** | 102774 | **0** |
-| 86JPL | 42272 | 31698 | 2085 | 0 | 1268 | 5940 | 1229 | **52** | 118479 | **47** |
-| 90CN | 54790 | 42611 | 2890 | 0 | 1468 | 6238 | 1531 | **52** | 140862 | **47** |
-| 90US | 45861 | 35247 | 2219 | 0 | 1169 | 5688 | 1486 | **52** | 138768 | **47** |
+- 源码口径断言（§14.1 第 6 条）：3 项。2026-08-24 改码前 `LST_TYPES 不含 creature/creature.lst 来源`、`resolveCategoryPath 无 Creature 特判` 两项按预期 FAIL；`ItemCodeView.vue` 收敛后与函数级断言合计 19 项全部 PASS（六个基线运行均含）。
+- 全量运行（2026-08-24，基线 `PVF/<版本>/Script.pvf`，运行 `node test/item-grant-category-sync.mjs <pvf路径>`）：六个基线全部通过；守护珠与公会勋章标签仅在实装该系统的版本（86JPL / 90CN / 90US）检出。
 
 - 结果判读：
-  - 守护珠段样例（86JPL/90CN）：90000「微弱之光守护珠 (物理防御力)」等 90000 系列；
-    90US 名称缺失回退显示引用路径 `flaggem/90000.stk`。flag 装备样例：
-    100380017「古老的勋章」（90US 为 Old Insignia）等，归段/归组语义均正确。
-  - 70TW / 86JP / 86JPAG 守护珠与公会勋章为 0 属**真实数据特征（非解析错误）**：
-    该三份为早期版本档案，公会勋章/守护珠系统尚未实装。
-  - 特殊材料大多为 0 属各档案真实数据特征（无 `[material] ... 4` 结尾条目；
-    70TW 有 8 条）；服务端 ID 白名单 3033-3037、3262 仅用于入格判定，
-    不在发放分类归段内。
-- 宠物分组口径对账（§14.1 第 6 条，2026-08-24）：既有统计数字与上表登记值
-  逐一复核一致（无回归）；下表为收敛后宠物分组的 equipment 四标签计数
-  （即 A21 权威发放口径，creature.lst 不入来源，其行数仅作参考）：
-
-| 基线 | creature | artifact red | artifact blue | artifact green | 宠物组合计 | creature.lst 行数（参考） |
-|---|---|---|---|---|---|---|
-| 70TW | 64 | 27 | 20 | 5 | 116 | 38 |
-| 86JP | 608 | 63 | 45 | 29 | 745 | 408 |
-| 86JPAG | 608 | 63 | 45 | 29 | 745 | 408 |
-| 86JPL | **707** | 65 | 47 | 31 | **850** | 486 |
-| 90CN | 872 | 70 | 52 | 36 | 1030 | 632 |
-| 90US | 731 | 27 | 20 | 10 | 788 | 513 |
-
-- 对账判读：86JPL 上宠物组合计 **850**、组内 `creature` 标签 **707**，与 A21 权威
-  GM 工具发放界面显示一致；收敛前 launch-helper 宠物组为 1336 / 组内 creature
-  二级 1193（= 权威值 + creature.lst 的 486 行），差额全部来自 creature.lst 来源。
-  宠物装备样例（86JPL）：63000「佛拉斯」、63006「宠物蛋 (佛拉斯)」等，
-  均为 equipment.lst 中 `[creature]` 标签装备。
+  - 守护珠段样例（86JPL/90CN）：90000「微弱之光守护珠 (物理防御力)」等 90000 系列；90US 名称缺失回退显示引用路径 `flaggem/90000.stk`。flag 装备样例：100380017「古老的勋章」（90US 为 Old Insignia）等，归段/归组语义均正确。
+  - 70TW / 86JP / 86JPAG 未检出守护珠与公会勋章属**真实数据特征（非解析错误）**：该三份为早期版本档案，公会勋章/守护珠系统尚未实装。
+  - 特殊材料多数版本未检出属各档案真实数据特征（无 `[material] ... 4` 结尾条目）；服务端 ID 白名单 3033-3037、3262 仅用于入格判定，不在发放分类归段内。
+- 宠物分组口径对账（§14.1 第 6 条，2026-08-24）：收敛后宠物分组采用 A21 权威发放口径（equipment 四首标签，creature.lst 不入来源）。六基线运行中，宠物分组计数与 A21 权威 GM 工具发放界面显示一致；收敛前 launch-helper 多出的宠物组条目全部来自 creature.lst 来源（见 §14.1 第 6 条）。宠物装备样例（86JPL）：63000「佛拉斯」、63006「宠物蛋 (佛拉斯)」等，均为 equipment.lst 中 `[creature]` 标签装备。
