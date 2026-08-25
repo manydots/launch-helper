@@ -19,7 +19,7 @@
 
 ## 项目概况
 
-- 核心解析层：`src/utils/pvfTool.js`（JP/JPAG/CN）、`src/utils/pvfToolTw.js`（繁体 TW 独立层）。
+- 核心解析层：`src/utils/pvfTool.js`（JP/JPL/JPAG/CN）、`src/utils/pvfToolTw.js`（繁体 TW 独立层）。
 - 二进制协议文档：`docs/pvf-tw-format.md`（TW）、`docs/pvf-jp-korean-mojibake.md` / `docs/pvf-us-korean-mojibake.md`（编码修复）、`docs/pvf-item-grant-parsing.md`（脚本语义）。
 - 前端性能设计：`docs/design-large-file-virtual-scroll.md`（大文件虚拟滚动方案）。
 
@@ -109,8 +109,8 @@
   （定位失败时询问用户，不得猜测）：
     - `PVF/70TW/Script.pvf`（TW）
     - `PVF/86JP/Script.pvf`（JP）
-    - `PVF/86JPAG/Script.pvf`（JPAG）
     - `PVF/86JPL/Script.pvf`（JPL）
+    - `PVF/86JPAG/Script.pvf`（JPAG）
     - `PVF/90CN/Script.pvf`（CN）
     - `PVF/90US/Script.pvf`（US）
     - 繁体默认加载 `PVF/70TW/Script.pvf`，其它版本以 `node test/<script>.mjs <pvf路径>` 传入。
