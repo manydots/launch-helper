@@ -19,6 +19,12 @@ const routes = [
         name: "ItemCode",
         component: () => import("@/components/ItemCodeView.vue"),
         meta: { title: "物品编码" }
+    },
+    {
+        path: "/SendItem",
+        name: "SendItem",
+        component: () => import("@/components/SendItemView.vue"),
+        meta: { title: "物品发放" }
     }
 ];
 

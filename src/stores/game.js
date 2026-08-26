@@ -37,6 +37,8 @@ export const useGameStore = defineStore(
         const account = ref("");
         const password = ref("");
         const gatewayStatus = ref("checking");
+        // 管理接口授权密钥：任一管理接口携带该校验成功后缓存，下次免输
+        const adminAuthKey = ref("");
 
         function setGamePath(path) {
             gamePath.value = path;
@@ -56,6 +58,10 @@ export const useGameStore = defineStore(
 
         function setGatewayStatus(status) {
             gatewayStatus.value = status;
+        }
+
+        function setAdminAuthKey(val) {
+            adminAuthKey.value = (val || "").trim();
         }
 
         function generateRegistryContent(path) {
@@ -91,11 +97,13 @@ export const useGameStore = defineStore(
             account,
             password,
             gatewayStatus,
+            adminAuthKey,
             setGamePath,
             setLaunchParam,
             setAccount,
             setPassword,
             setGatewayStatus,
+            setAdminAuthKey,
             generateRegistryContent,
             downloadRegistry,
             downloadUninstallRegistry,
@@ -103,6 +111,6 @@ export const useGameStore = defineStore(
         };
     },
     {
-        persist: { key: STORE_KEY, storage: localStorage, pick: ["gamePath", "account", "password", "gatewayStatus"] }
+        persist: { key: STORE_KEY, storage: localStorage, pick: ["gamePath", "account", "password", "gatewayStatus", "adminAuthKey"] }
     }
 );

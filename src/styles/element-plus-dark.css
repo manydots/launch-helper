@@ -1,0 +1,295 @@
+/* Element Plus 深色主题公共适配（全局生效，EP 使用方无需各自覆写）。
+   提炼自 ItemCodeView.vue 的手工适配：输入类组件配色变量、wrapper 直写背景
+   双保险（抵消 EP 2.x 内置白底）、步进控件与弹层面板主题。
+   本文件只管配色主题；尺寸 / 布局属页面职责，留在各组件样式中。 */
+
+/* ---- 主色 / 圆角对齐应用主题（EP 预编译的 light-N 为混白近似值，深底场景手动调低） ----
+   :root:root 双重提权：本文件先于 unplugin-element-plus 按需注入的组件样式加载，
+   每个 EP 组件样式都携带 base.css 的 :root 默认变量表（primary 蓝 / 圆角 4px /
+   浅色 fill），同特异性 :root 会被后置加载整体回退。 ---- */
+:root:root {
+    --el-color-primary: var(--accent);
+    --el-color-primary-light-3: #7ea5ff;
+    --el-color-primary-light-5: #a3bfff;
+    --el-color-primary-light-7: #c8d8ff;
+    --el-color-primary-light-8: #dbe4ff;
+    --el-color-primary-light-9: rgba(91, 140, 255, 0.14);
+    --el-color-primary-dark-2: #4a7eff;
+    --el-color-danger: var(--error);
+    --el-color-danger-light-3: #ff7d89;
+    --el-color-danger-light-5: #ff9da5;
+    --el-color-danger-light-7: #ffc0c5;
+    --el-color-danger-light-8: #ffd3d6;
+    --el-color-danger-light-9: rgba(255, 91, 110, 0.14);
+    --el-color-danger-dark-2: #e65161;
+    --el-border-radius-base: 8px;
+    --el-text-color-primary: var(--text);
+    --el-text-color-regular: var(--input-text);
+    --el-text-color-secondary: var(--text-muted);
+    --el-text-color-placeholder: var(--text-muted);
+    --el-border-color: var(--border);
+    --el-fill-color-blank: transparent;
+}
+
+/* ---- 输入类组件根：铺深色变量（el-input / el-input-number / el-select 共用 input 变量族）；
+   div 前缀提权，压过 EP 组件 css 中单类选择器的同名变量重定义 ---- */
+div.el-input,
+div.el-input-number,
+div.el-select,
+div.el-textarea {
+    --el-input-bg-color: var(--bg);
+    --el-input-border-color: var(--border);
+    --el-input-hover-border-color: var(--accent);
+    --el-input-focus-border-color: var(--accent);
+    --el-input-text-color: var(--text);
+    --el-input-placeholder-color: var(--text-muted);
+    --el-input-icon-color: var(--text-muted);
+    --el-input-clear-hover-color: var(--accent);
+    --el-input-focus-bg-color: var(--bg);
+    --el-input-fill-color: var(--bg);
+    --el-disabled-bg-color: var(--bg-2);
+    --el-disabled-border-color: var(--divider);
+    --el-disabled-text-color: var(--text-muted);
+}
+
+/* ---- 输入容器：变量覆盖 + 直写背景双保险 ---- */
+.el-input .el-input__wrapper,
+.el-input-number .el-input__wrapper {
+    background-color: var(--bg);
+    box-shadow: 0 0 0 1px var(--border) inset;
+    transition: box-shadow 0.2s;
+}
+.el-input .el-input__wrapper:hover,
+.el-input-number .el-input__wrapper:hover,
+.el-input .el-input__wrapper.is-focus,
+.el-input-number .el-input__wrapper.is-focus {
+    box-shadow: 0 0 0 1px var(--accent) inset;
+    background-color: var(--bg);
+}
+.el-input .el-input__inner {
+    color: var(--text);
+}
+.el-input .el-input__inner::placeholder {
+    color: var(--text-muted);
+}
+.el-input .el-input__prefix,
+.el-input .el-input__suffix {
+    color: var(--text-muted);
+}
+
+/* el-select 2.x 输入容器为 .el-select__wrapper（非 .el-input__wrapper） */
+.el-select .el-select__wrapper {
+    background-color: var(--bg);
+    box-shadow: 0 0 0 1px var(--border) inset;
+    transition: box-shadow 0.2s;
+}
+.el-select .el-select__wrapper:hover:not(.is-focused),
+.el-select .el-select__wrapper.is-focused {
+    box-shadow: 0 0 0 1px var(--accent) inset;
+    background-color: var(--bg);
+}
+.el-select .el-select__selected-item {
+    color: var(--text);
+}
+.el-select .el-select__placeholder {
+    color: var(--text-muted);
+}
+.el-select .el-select__suffix {
+    color: var(--text-muted);
+}
+.el-select .el-select__wrapper.is-focused .el-select__suffix {
+    color: var(--accent);
+}
+
+/* ---- el-input-number 步进控件 ----
+   注意：本文件先于 unplugin-element-plus 按需注入的组件样式加载，
+   单类选择器（.el-input-number__increase）会被 EP 同特异性后置规则
+   （background: var(--el-fill-color-light) 浅底）回退，故此处必须用
+   双层特异性压制；分隔线颜色走 --el-border（已映射 --border）。 */
+.el-input-number .el-input-number__increase,
+.el-input-number .el-input-number__decrease {
+    background: var(--bg-2);
+    color: var(--text-muted);
+    border-color: var(--divider);
+}
+.el-input-number .el-input-number__increase:not(.is-disabled):hover,
+.el-input-number .el-input-number__decrease:not(.is-disabled):hover {
+    color: var(--accent);
+}
+.el-input-number .el-input-number__increase.is-disabled,
+.el-input-number .el-input-number__decrease.is-disabled {
+    color: var(--text-muted);
+    opacity: 0.4;
+}
+.el-input-number.is-disabled .el-input__wrapper {
+    background-color: var(--bg-2);
+}
+
+/* ---- el-button：对齐应用既有 .btn 按钮体系（App.vue）----
+   primary 实心 = .btn-primary（accent 渐变底 + 投影）；
+   default / plain = .btn-outline-*（透明底 + 1.5px 描边，hover 浅底）；
+   link = auth-links（中性灰字 hover accent）。尺寸/布局属页面职责。 */
+button.el-button {
+    border-radius: 10px;
+    font-weight: 500;
+}
+button.el-button--small {
+    border-radius: 8px;
+}
+.el-button:not(:disabled):not(.is-link):not(.is-text):active {
+    transform: scale(0.98);
+}
+.el-button:disabled {
+    opacity: 0.4;
+}
+
+/* primary 实心：渐变 + 投影，hover 仅加深投影（对齐 .btn-primary） */
+.el-button--primary:not(.is-plain):not(.is-link):not(.is-text),
+.el-button--primary:not(.is-plain):not(.is-link):not(.is-text):hover,
+.el-button--primary:not(.is-plain):not(.is-link):not(.is-text):focus-visible {
+    background: var(--accent-gradient);
+    border: none;
+    color: #fff;
+}
+.el-button--primary:not(.is-plain):not(.is-link):not(.is-text) {
+    box-shadow: 0 4px 16px var(--accent-shadow);
+}
+.el-button--primary:not(.is-plain):not(.is-link):not(.is-text):hover:not(:disabled) {
+    box-shadow: 0 6px 20px var(--accent-shadow);
+}
+
+/* default 与 plain：透明底描边（对齐 .btn-outline-*）；active 显式压过 EP 默认浅色底 */
+.el-button--default:not(.is-link):not(.is-text),
+.el-button.is-plain {
+    background: transparent;
+    border: 1px solid var(--outline-3-border);
+    box-shadow: none;
+}
+.el-button--default:not(.is-link):not(.is-text):hover:not(:disabled),
+.el-button.is-plain:hover:not(:disabled) {
+    background: var(--outline-3-hover-bg);
+    border-color: var(--outline-3-hover-border);
+    color: var(--outline-1);
+}
+.el-button--default:not(.is-link):not(.is-text):active,
+.el-button.is-plain:active {
+    background: var(--outline-3-hover-bg);
+    border-color: var(--outline-3-hover-border);
+    color: var(--outline-1);
+}
+
+/* danger plain：保留危险语义的红字红框，透明底（呼应移除按钮 hover 的红调浅底） */
+.el-button--danger.is-plain {
+    border-color: rgba(255, 91, 110, 0.35);
+    color: var(--error);
+}
+.el-button--danger.is-plain:hover:not(:disabled) {
+    background: rgba(255, 91, 110, 0.1);
+    border-color: rgba(255, 91, 110, 0.55);
+    color: var(--error);
+}
+.el-button--danger.is-plain:active {
+    background: rgba(255, 91, 110, 0.16);
+    border-color: rgba(255, 91, 110, 0.55);
+    color: var(--error);
+}
+
+/* link / text：中性灰字 hover accent（对齐 auth-links） */
+button.el-button.is-link,
+button.el-button.is-text {
+    color: var(--text-muted);
+}
+.el-button.is-link:hover:not(:disabled),
+.el-button.is-text:hover:not(:disabled) {
+    color: var(--accent);
+    background: transparent;
+}
+
+/* ---- 弹层面板（teleport 到 body，必须全局）：通用类 .ep-popper-dark，
+       并兼容 ItemCodeView 存量类名 .ivc-select-popper / .ivc-cascader-popper。
+       popper-class 实际加在 .el-popper 根上，.el-select-dropdown 等是其内部子元素；
+       背景/边框由 .el-popper.is-light 的 --el-popper-bg-color-light / --el-border-color-light 控制。 ---- */
+div.ep-popper-dark.el-popper,
+div.ivc-select-popper.el-popper,
+div.ivc-cascader-popper.el-popper {
+    --el-popper-bg-color-light: var(--bg-2);
+    --el-bg-color-overlay: var(--bg-2);
+    --el-bg-color: var(--bg-2);
+    --el-text-color-primary: var(--text);
+    --el-text-color-regular: var(--text);
+    --el-text-color-secondary: var(--text-muted);
+    --el-text-color-placeholder: var(--text-muted);
+    --el-border-color-light: var(--surface-border);
+    --el-border-color-lighter: var(--divider);
+    --el-fill-color: rgba(91, 140, 255, 0.16);
+    --el-fill-color-light: rgba(91, 140, 255, 0.1);
+    --el-fill-color-lighter: rgba(91, 140, 255, 0.08);
+    --el-fill-color-blank: transparent;
+    --el-color-primary: var(--accent);
+    background: var(--bg-2);
+    border: 1px solid var(--surface-border);
+    box-shadow: var(--shadow-card);
+}
+.ep-popper-dark .el-select-dropdown__item,
+.ivc-select-popper .el-select-dropdown__item {
+    color: var(--text);
+}
+.ep-popper-dark .el-select-dropdown__item:hover,
+.ep-popper-dark .el-select-dropdown__item.is-hovering,
+.ivc-select-popper .el-select-dropdown__item:hover {
+    background: var(--el-fill-color-light);
+}
+.ep-popper-dark .el-select-dropdown__item.is-selected,
+.ivc-select-popper .el-select-dropdown__item.is-selected {
+    color: var(--accent);
+    font-weight: 600;
+}
+.ep-popper-dark .el-cascader-menu,
+.ivc-cascader-popper .el-cascader-menu {
+    border-color: var(--divider);
+}
+.ep-popper-dark .el-cascader-node,
+.ivc-cascader-popper .el-cascader-node {
+    color: var(--text);
+}
+.ep-popper-dark .el-cascader-node:hover,
+.ep-popper-dark .el-cascader-node.in-active-path,
+.ivc-cascader-popper .el-cascader-node:hover,
+.ivc-cascader-popper .el-cascader-node.in-active-path {
+    background: var(--el-fill-color-light);
+}
+.ep-popper-dark .el-cascader-node.is-active,
+.ep-popper-dark .el-cascader-node.is-selectable.in-checked-path,
+.ivc-cascader-popper .el-cascader-node.is-active,
+.ivc-cascader-popper .el-cascader-node.is-selectable.in-checked-path {
+    background: var(--el-fill-color);
+    color: var(--accent);
+}
+.ep-popper-dark .el-cascader-node__prefix,
+.ep-popper-dark .el-cascader-node__postfix,
+.ivc-cascader-popper .el-cascader-node__prefix,
+.ivc-cascader-popper .el-cascader-node__postfix {
+    color: var(--text-muted);
+}
+.ep-popper-dark .el-cascader__suggestion-panel,
+.ivc-cascader-popper .el-cascader__suggestion-panel {
+    background: var(--bg-2);
+}
+.ep-popper-dark .el-cascader__suggestion-item,
+.ivc-cascader-popper .el-cascader__suggestion-item {
+    color: var(--text);
+}
+.ep-popper-dark .el-cascader__suggestion-item:hover,
+.ep-popper-dark .el-cascader__suggestion-item:focus,
+.ivc-cascader-popper .el-cascader__suggestion-item:hover,
+.ivc-cascader-popper .el-cascader__suggestion-item:focus {
+    background: var(--el-fill-color-light);
+}
+.ep-popper-dark .el-scrollbar__thumb,
+.ivc-cascader-popper .el-scrollbar__thumb {
+    background-color: rgba(255, 255, 255, 0.15);
+}
+.ep-popper-dark .el-scrollbar__thumb:hover,
+.ivc-cascader-popper .el-scrollbar__thumb:hover {
+    background-color: rgba(255, 255, 255, 0.25);
+}

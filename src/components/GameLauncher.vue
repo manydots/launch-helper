@@ -1,12 +1,8 @@
 <script>
 import { useGameStore } from "@/stores/game";
-import { openModal, alertModal, confirmModal, useModal } from "@/hooks/useModal";
+import { openModal, alertModal, useModal } from "@/hooks/useModal";
 import { api } from "@/utils/gateway";
 import MaterialTextField from "@/components/MaterialTextField.vue";
-
-// 堆叠物品（消耗品/材料/宠物消耗品等）单附件数量上限的固定参数。
-// 不可堆叠物品（装备/时装/宠物本体/宠物装备）数量恒为 1。
-const STACKABLE_COUNT_LIMIT = 10000;
 
 export default {
     name: "GameLauncher",
@@ -20,7 +16,6 @@ export default {
             inputPath: this.store.gamePath || "",
             loading: false,
             showConfig: !this.store.gamePath,
-            stackableCountLimit: STACKABLE_COUNT_LIMIT,
             subtitleFull: "游戏快速启动工具",
             typedSubtitle: "",
             mode: "login",
@@ -37,20 +32,10 @@ export default {
             pwdConfirm: "",
             pwdErrors: { mid: "", old: "", neo: "", confirm: "" },
             resetMid: this.store.account || "",
-            resetKey: "",
+            resetKey: this.store.adminAuthKey || "",
             resetNew: "",
             resetConfirm: "",
             resetErrors: { mid: "", key: "", neo: "", confirm: "" },
-            itemsMid: this.store.account || "",
-            itemsKey: "",
-            itemsRoles: [],
-            itemsRoleId: "",
-            itemsLoadingRoles: false,
-            clearingMailbox: false,
-            itemsTitle: "",
-            itemsBody: "",
-            itemsList: [],
-            itemsErrors: { mid: "", key: "", role: "", title: "" },
             serviceStatus: this.store.gatewayStatus || "checking",
             notifiedStatus: null
         };
@@ -233,7 +218,7 @@ export default {
             }
             if (!(await this.ensureGatewayOnline())) return;
             this.resetMid = this.store.account || this.resetMid;
-            this.resetKey = "";
+            // 管理密钥保留缓存值（data 初始化自 store.adminAuthKey），不再每次清空
             this.resetNew = "";
             this.resetConfirm = "";
             this.resetErrors = { mid: "", key: "", neo: "", confirm: "" };
@@ -242,222 +227,12 @@ export default {
         backToLogin() {
             this.mode = "login";
         },
-        async handleSendItems() {
+        openSendItem() {
             if (!this.gatewayEnabled) {
                 alertModal({ title: "物品发放", message: "请通过管理后台发放物品。" });
                 return;
             }
-            if (!(await this.ensureGatewayOnline())) return;
-            this.itemsMid = this.store.account || this.itemsMid;
-            this.itemsKey = "";
-            this.itemsRoles = [];
-            this.itemsRoleId = "";
-            this.itemsTitle = "GM物品发放";
-            this.itemsBody = "";
-            this.itemsList = [];
-            this.itemsErrors = { mid: "", key: "", role: "", title: "" };
-            this.mode = "items";
-        },
-        async loadRoles() {
-            const mid = this.itemsMid.trim();
-            if (!mid) {
-                this.itemsErrors = { ...this.itemsErrors, mid: "账号不能为空" };
-                return;
-            }
-            if (!this.itemsKey.trim()) {
-                this.itemsErrors = { ...this.itemsErrors, key: "管理密钥不能为空" };
-                return;
-            }
-            this.itemsErrors = { mid: "", key: "", role: "", title: "" };
-            this.itemsLoadingRoles = true;
-            this.itemsRoles = [];
-            this.itemsRoleId = "";
-            const data = await this.callApi(api.getRoles(mid, this.itemsKey.trim()), { errorTitle: "查询角色失败" });
-            this.itemsLoadingRoles = false;
-            if (!data) return;
-            const roles = data.roles || [];
-            if (!roles.length) {
-                await alertModal({ title: "无角色", message: `账号 ${mid} 下没有角色。` });
-                return;
-            }
-            this.itemsRoles = roles;
-            this.itemsRoleId = String(roles[0].character_id);
-        },
-        async doClearMailbox() {
-            const mid = this.itemsMid.trim();
-            if (!mid) {
-                this.itemsErrors = { ...this.itemsErrors, mid: "账号不能为空" };
-                return;
-            }
-            if (!this.itemsKey.trim()) {
-                this.itemsErrors = { ...this.itemsErrors, key: "管理密钥不能为空" };
-                return;
-            }
-            if (!this.itemsRoleId) {
-                this.itemsErrors = { ...this.itemsErrors, role: "请选择角色" };
-                return;
-            }
-            if (!(await this.ensureGatewayOnline())) return;
-            const role = this.itemsRoles.find(r => String(r.character_id) === this.itemsRoleId);
-            const roleName = role ? role.name : `角色ID ${this.itemsRoleId}`;
-            const confirmed = await confirmModal({
-                title: "清空邮件确认",
-                message: `将清空角色「${roleName}」收件箱内全部未删除邮件（含保管与已过期邮件，未领取的附件与金币一并失效），该操作不可恢复。确认继续？`,
-                confirmText: "确认清空",
-                cancelText: "取消"
-            });
-            if (!confirmed) return;
-            this.clearingMailbox = true;
-            const data = await this.callApi(api.clearMailbox(mid, Number(this.itemsRoleId), this.itemsKey.trim()), { errorTitle: "清空邮件失败" });
-            this.clearingMailbox = false;
-            if (!data) return;
-            await alertModal({
-                title: data.deleted_count ? "清空成功" : "无需清理",
-                message: data.deleted_count
-                    ? `已对角色「${data.character_name || roleName}」的 ${data.deleted_count} 封邮件打删除标记。`
-                    : `角色「${data.character_name || roleName}」收件箱没有可清理的邮件。`
-            });
-        },
-        async addAttachment() {
-            if (this.itemsList.length >= 10) {
-                await alertModal({ title: "数量超限", message: "单次发放最多添加 10 个物品。" });
-                return;
-            }
-            const incomplete = this.itemsList.find(a => a.item_type === "" || !a.kind || !a.item_id || a.count < 1);
-            if (incomplete) {
-                await alertModal({ title: "附件不完整", message: "请将当前物品填写完整（背包类型、物品种类、物品ID、数量），再添加下一个物品。" });
-                return;
-            }
-            this.itemsList.push(this.createAttachment());
-        },
-        createAttachment() {
-            return { item_id: 0, count: 1, kind: 3, upgrade_level: 0, amplify_type: "", item_type: 0, pet_serial_or_handle: 0, expire_time: 0, expire_days: 0 };
-        },
-        removeAttachment(index) {
-            this.itemsList.splice(index, 1);
-        },
-        jobName(job) {
-            const names = {
-                0: "鬼剑士(男)",
-                1: "格斗家(女)",
-                2: "神枪手(男)",
-                3: "魔法师(女)",
-                4: "圣职者",
-                5: "神枪手(女)",
-                6: "暗夜使者",
-                7: "格斗家(男)",
-                8: "魔法师(男)",
-                9: "黑暗武士",
-                10: "缔造者",
-                11: "鬼剑士(女)",
-                12: "守护者"
-            };
-            return names[job ?? 0] || `职业${job}`;
-        },
-        validKinds(itemType) {
-            switch (itemType) {
-                case 1:
-                    return [8];
-                case 3:
-                case 7:
-                    return [5, 6, 7];
-                default:
-                    // item_type 0 与 2（主背包次要入口）允许集一致
-                    return [1, 2, 3, 9, 10, 12, 13];
-            }
-        },
-        isNonStackable(kind) {
-            return kind === 1 || kind === 5 || kind === 6 || kind === 8 || kind === 12;
-        },
-        // 协议 expire_time 仅对限时时装（item_type=1）与限时宠物本体（宠物背包 kind=5）开放，其余恒永久
-        expireEnabled(att) {
-            return att.item_type === 1 || ((att.item_type === 3 || att.item_type === 7) && att.kind === 5);
-        },
-        kindName(kind) {
-            const names = { 0: "未知", 1: "装备", 2: "消耗品", 3: "材料", 5: "宠物本体", 6: "宠物装备", 7: "宠物消耗品", 8: "时装", 9: "时装徽章", 10: "副职业材料", 12: "公会勋章", 13: "守护珠" };
-            return names[kind] || `种类${kind}`;
-        },
-        updateAttachment(att, field, value) {
-            const num = Number(value) || 0;
-            att[field] = num;
-            if (field === "item_type") {
-                const valid = this.validKinds(num);
-                if (!valid.includes(att.kind)) att.kind = valid[0] || 0;
-                if (this.isNonStackable(att.kind)) att.count = 1;
-                att.upgrade_level = 0;
-                att.amplify_type = 0;
-                if (!this.expireEnabled(att)) {
-                    att.expire_days = 0;
-                    att.expire_time = 0;
-                }
-            }
-            if (field === "kind") {
-                if (this.isNonStackable(num)) att.count = 1;
-                att.upgrade_level = 0;
-                att.amplify_type = 0;
-                if (num !== 5) {
-                    att.pet_serial_or_handle = 0;
-                }
-                if (!this.expireEnabled(att)) {
-                    att.expire_days = 0;
-                    att.expire_time = 0;
-                }
-            }
-            if (field === "expire_days") {
-                att.expire_time = this.expireEnabled(att) && num > 0 ? Math.floor(Date.now() / 1000) + num * 86400 : 0;
-                if (!this.expireEnabled(att) && num > 0) att.expire_days = 0;
-            }
-            if (field === "amplify_type" && num === 128) {
-                att.upgrade_level = 0;
-            }
-        },
-        validateSendItems() {
-            const e = { mid: "", key: "", role: "", title: "" };
-            if (!this.itemsMid.trim()) e.mid = "账号不能为空";
-            if (!this.itemsKey.trim()) e.key = "管理密钥不能为空";
-            if (!this.itemsRoleId) e.role = "请选择角色";
-            if (!this.itemsTitle.trim()) e.title = "邮件标题不能为空";
-            this.itemsErrors = e;
-            return !e.mid && !e.key && !e.role && !e.title;
-        },
-        async doSendItems() {
-            if (!this.validateSendItems()) return;
-            if (!(await this.ensureGatewayOnline())) return;
-            if (!this.itemsList.length) {
-                await alertModal({ title: "物品为空", message: "请至少添加一个物品附件。" });
-                return;
-            }
-            const incomplete = this.itemsList.find(a => !a.item_id || !a.kind || a.count < 1);
-            if (incomplete) {
-                await alertModal({ title: "附件不完整", message: "每个附件都需要填写物品ID、选择物品种类，且数量不能小于 1。" });
-                return;
-            }
-            const overLimit = this.itemsList.find(a => (this.isNonStackable(a.kind) ? a.count !== 1 : a.count > this.stackableCountLimit));
-            if (overLimit) {
-                await alertModal({ title: "数量超限", message: `不可堆叠物品（装备/时装/宠物本体/宠物装备/公会勋章）数量必须为 1；堆叠物品单个附件数量不能超过 ${this.stackableCountLimit}。` });
-                return;
-            }
-            const mismatch = this.itemsList.find(a => !this.validKinds(a.item_type).includes(a.kind));
-            if (mismatch) {
-                await alertModal({ title: "种类与背包不匹配", message: "物品种类与背包类型不匹配，请检查后重试。" });
-                return;
-            }
-            this.loading = true;
-            this.itemsList.forEach(a => {
-                a.expire_time = this.expireEnabled(a) && a.expire_days > 0 ? Math.floor(Date.now() / 1000) + a.expire_days * 86400 : 0;
-            });
-            const data = await this.callApi(api.sendItems(this.itemsMid.trim(), Number(this.itemsRoleId), this.itemsTitle.trim(), this.itemsBody.trim(), this.itemsList, this.itemsKey.trim()), {
-                errorTitle: "发放失败"
-            });
-            this.loading = false;
-            if (!data) return;
-            const summary = [];
-            if (data.character_name) summary.push(`角色：${data.character_name}`);
-            if (data.mail_count) summary.push(`${data.mail_count} 封邮件`);
-            await alertModal({
-                title: "发放成功",
-                message: `物品已通过系统邮件投递${summary.length ? "（" + summary.join("，") + "）" : ""}。`
-            });
+            this.$router.push({ name: "SendItem" });
         },
         validateRegister() {
             const e = { mid: "", password: "", confirm: "" };
@@ -527,6 +302,7 @@ export default {
             const data = await this.callApi(api.adminResetPassword(this.resetMid.trim(), this.resetNew, this.resetConfirm, this.resetKey.trim()), { errorTitle: "重置失败" });
             this.loading = false;
             if (!data) return;
+            if (this.resetKey.trim()) this.store.setAdminAuthKey(this.resetKey.trim());
             this.account = this.resetMid.trim();
             this.password = "";
             await alertModal({ title: "重置成功", message: "密码已重置，请使用新密码登录。" });
@@ -669,7 +445,7 @@ export default {
 </script>
 
 <template>
-    <div class="launcher" :class="{ wide: mode === 'items' }">
+    <div class="launcher">
         <div class="launcher-card">
             <div v-if="gatewayEnabled" class="service-status" :class="statusInfo.cls" :title="statusInfo.text">
                 <span class="status-dot"></span>
@@ -732,7 +508,7 @@ export default {
                         <span class="link-divider">·</span>
                         <a href="#" @click.prevent="handleResetPassword">重置密码</a>
                         <span class="link-divider">·</span>
-                        <a href="#" @click.prevent="handleSendItems">物品发放</a>
+                        <a href="#" @click.prevent="openSendItem">物品发放</a>
                     </div>
                 </template>
 
@@ -791,148 +567,6 @@ export default {
                         <a href="#" @click.prevent="backToLogin">返回登录</a>
                     </div>
                 </template>
-
-                <template v-else-if="mode === 'items'">
-                    <div class="section-divider"><span>物品发放</span></div>
-                    <MaterialTextField v-model="itemsMid" label="账号" :error="itemsErrors.mid" />
-                    <MaterialTextField v-model="itemsKey" label="管理密钥" type="password" :error="itemsErrors.key" />
-
-                    <div class="items-load-roles">
-                        <button class="btn btn-sm btn-outline-primary" :disabled="itemsLoadingRoles" @click="loadRoles">
-                            <span v-if="itemsLoadingRoles" class="spinner spinner-sm"></span>
-                            {{ itemsLoadingRoles ? "查询中..." : "查询角色" }}
-                        </button>
-                    </div>
-
-                    <template v-if="itemsRoles.length">
-                        <div class="role-field" :class="{ focused: itemsRoleId }">
-                            <select class="role-select" v-model="itemsRoleId">
-                                <option value="" disabled>请选择角色</option>
-                                <option v-for="r in itemsRoles" :key="r.character_id" :value="String(r.character_id)">{{ r.name }} (Lv{{ r.level }} / {{ jobName(r.job) }})</option>
-                            </select>
-                            <label class="role-label">角色</label>
-                            <span class="role-underline"></span>
-                            <p v-if="itemsErrors.role" class="role-error">{{ itemsErrors.role }}</p>
-                        </div>
-
-                        <div class="mailbox-actions">
-                            <button class="btn btn-sm btn-outline-danger" :disabled="clearingMailbox" @click="doClearMailbox">
-                                <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                    <polyline points="3 6 5 6 21 6" />
-                                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-                                </svg>
-                                {{ clearingMailbox ? "清空中..." : "清空邮件" }}
-                            </button>
-                            <span v-if="clearingMailbox" class="spinner spinner-sm"></span>
-                        </div>
-
-                        <!-- <MaterialTextField v-model="itemsTitle" label="邮件标题" :error="itemsErrors.title" /> -->
-                        <!-- <MaterialTextField v-model="itemsBody" label="邮件正文（可选）" /> -->
-
-                        <div class="section-divider"><span>邮件附件</span></div>
-
-                        <div class="attachment-list">
-                            <div v-for="(att, idx) in itemsList" :key="idx" class="attachment-card">
-                                <div class="attachment-header">
-                                    <span class="attachment-index">#{{ idx + 1 }}</span>
-                                    <button class="attachment-remove" @click="removeAttachment(idx)" title="移除">
-                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                            <line x1="18" y1="6" x2="6" y2="18" />
-                                            <line x1="6" y1="6" x2="18" y2="18" />
-                                        </svg>
-                                    </button>
-                                </div>
-                                <div class="attachment-grid">
-                                    <label class="att-field">
-                                        <span class="att-label">背包类型</span>
-                                        <select class="att-input" :value="att.item_type" @change="updateAttachment(att, 'item_type', $event.target.value)">
-                                            <option value="" disabled>请选择背包类型</option>
-                                            <option :value="0">主背包</option>
-                                            <option :value="1">时装</option>
-                                            <option :value="3">宠物</option>
-                                        </select>
-                                    </label>
-                                    <label class="att-field">
-                                        <span class="att-label">物品种类</span>
-                                        <select class="att-input" :value="att.kind" @change="updateAttachment(att, 'kind', $event.target.value)">
-                                            <option value="" disabled>请选择种类</option>
-                                            <option v-for="k in validKinds(att.item_type)" :key="k" :value="k">{{ kindName(k) }}</option>
-                                        </select>
-                                    </label>
-                                    <label class="att-field">
-                                        <span class="att-label">物品ID</span>
-                                        <input type="number" class="att-input" :value="att.item_id" min="0" @input="updateAttachment(att, 'item_id', $event.target.value)" />
-                                    </label>
-                                    <label class="att-field">
-                                        <span class="att-label">物品数量</span>
-                                        <input
-                                            type="number"
-                                            class="att-input"
-                                            :value="att.count"
-                                            min="1"
-                                            :max="isNonStackable(att.kind) ? 1 : stackableCountLimit"
-                                            :disabled="isNonStackable(att.kind)"
-                                            @input="updateAttachment(att, 'count', $event.target.value)" />
-                                    </label>
-                                    <label class="att-field">
-                                        <span class="att-label">红字类型</span>
-                                        <select class="att-input" :value="att.amplify_type" :disabled="att.kind !== 1 && att.kind !== 12" @change="updateAttachment(att, 'amplify_type', $event.target.value)">
-                                            <option value="" disabled>请选择红字类型</option>
-                                            <option :value="0">无红字</option>
-                                            <option :value="1">体力</option>
-                                            <option :value="2">精神</option>
-                                            <option :value="3">力量</option>
-                                            <option :value="4">智力</option>
-                                            <option :value="128">未净化</option>
-                                        </select>
-                                    </label>
-                                    <label class="att-field">
-                                        <span class="att-label">强化等级</span>
-                                        <input
-                                            type="number"
-                                            class="att-input"
-                                            :value="att.upgrade_level"
-                                            min="0"
-                                            :max="att.amplify_type === 128 ? 0 : 31"
-                                            :disabled="(att.kind !== 1 && att.kind !== 12) || att.amplify_type === 128"
-                                            @input="updateAttachment(att, 'upgrade_level', $event.target.value)" />
-                                    </label>
-                                    <label class="att-field">
-                                        <span class="att-label">限时天数</span>
-                                        <input
-                                            type="number"
-                                            class="att-input"
-                                            :value="att.expire_days"
-                                            min="0"
-                                            placeholder="0=永久（仅时装/宠物本体）"
-                                            :disabled="!expireEnabled(att)"
-                                            @input="updateAttachment(att, 'expire_days', $event.target.value)" />
-                                    </label>
-                                </div>
-                                <p class="att-tip">物品种类必须与物品 ID 的实际类型一致，否则领取后会落入错误的背包列表；限时天数仅对时装（时装背包）与宠物本体（宠物背包）生效；宠物本体领取时由服务端分配 UID；公会勋章/守护珠经主背包投递，领取后由服务端路由到公会列表</p>
-                            </div>
-                        </div>
-
-                        <button class="btn btn-sm btn-outline-secondary add-attachment-btn" @click="addAttachment">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                <line x1="12" y1="5" x2="12" y2="19" />
-                                <line x1="5" y1="12" x2="19" y2="12" />
-                            </svg>
-                            添加物品
-                        </button>
-                    </template>
-
-                    <div class="actions login-actions">
-                        <button class="btn btn-primary btn-login" :disabled="loading || !itemsRoles.length" @click="doSendItems">
-                            <span v-if="loading" class="spinner"></span>
-                            {{ loading ? "发放中..." : "确认发放" }}
-                        </button>
-                    </div>
-
-                    <div class="auth-links">
-                        <a href="#" @click.prevent="backToLogin">返回登录</a>
-                    </div>
-                </template>
             </div>
         </div>
     </div>
@@ -944,9 +578,6 @@ export default {
     width: 100%;
     margin: auto;
     font-family: system-ui, sans-serif;
-}
-.launcher.wide {
-    max-width: 960px;
 }
 .launcher-card {
     position: relative;
@@ -1210,218 +841,5 @@ export default {
 .link-divider {
     margin: 0 10px;
     color: var(--divider);
-}
-.items-load-roles {
-    display: flex;
-    margin: 12px 0 8px;
-}
-.mailbox-actions {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin: 4px 0 8px;
-}
-.mailbox-actions .btn {
-    padding: 4px 12px;
-    font-size: 0.75rem;
-    border-radius: 8px;
-}
-.items-load-roles .btn {
-    padding: 4px 12px;
-    font-size: 0.75rem;
-    border-radius: 8px;
-}
-.role-field {
-    position: relative;
-    width: 100%;
-    padding-top: 14px;
-    margin-bottom: 8px;
-}
-.role-select {
-    width: 100%;
-    box-sizing: border-box;
-    padding: 10px 22px 8px 0;
-    border: none;
-    border-bottom: 1px solid var(--input-border);
-    background-color: transparent;
-    font-size: 1rem;
-    outline: none;
-    color: var(--input-text);
-    transition: border-color 0.2s;
-    appearance: none;
-    -webkit-appearance: none;
-    cursor: pointer;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%236b7390' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
-    background-repeat: no-repeat;
-    background-position: right 2px center;
-    background-size: 14px;
-}
-.role-select option {
-    background-color: var(--bg-2);
-    color: var(--input-text);
-}
-.role-select:focus {
-    border-bottom-color: var(--accent);
-}
-.role-label {
-    position: absolute;
-    left: 0;
-    top: 24px;
-    font-size: 1rem;
-    color: var(--input-border);
-    pointer-events: none;
-    transform-origin: left center;
-    transition:
-        transform 0.2s ease,
-        color 0.2s ease;
-}
-.role-field.focused .role-label {
-    transform: translateY(-22px) scale(0.8);
-    color: var(--accent);
-}
-.role-underline {
-    position: absolute;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    height: 2px;
-    background: var(--accent);
-    transform: scaleX(0);
-    transform-origin: center;
-    transition: transform 0.25s ease;
-}
-.role-field.focused .role-underline {
-    transform: scaleX(1);
-}
-.role-error {
-    margin: 6px 0 0;
-    font-size: 0.78rem;
-    color: var(--error);
-    min-height: 1em;
-}
-.spinner-sm {
-    width: 13px;
-    height: 13px;
-    border-width: 1.5px;
-}
-.attachment-list {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 8px;
-}
-.attachment-card {
-    border: 1px solid var(--divider);
-    border-radius: 10px;
-    padding: 10px 12px;
-    margin-bottom: 8px;
-    background: var(--outline-3-hover-bg);
-}
-.attachment-list .attachment-card {
-    margin-bottom: 0;
-}
-.attachment-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 8px;
-}
-.attachment-index {
-    font-size: 0.78rem;
-    font-weight: 600;
-    color: var(--text-label);
-}
-.attachment-remove {
-    border: none;
-    background: transparent;
-    color: var(--text-muted);
-    cursor: pointer;
-    padding: 2px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: 4px;
-    transition:
-        color 0.2s,
-        background 0.2s;
-}
-.attachment-remove:hover {
-    color: var(--error);
-    background: rgba(255, 91, 110, 0.1);
-}
-.attachment-remove svg {
-    width: 14px;
-    height: 14px;
-}
-.attachment-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 6px 10px;
-}
-.att-field {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-}
-.att-label {
-    font-size: 0.7rem;
-    color: var(--text-muted);
-}
-.att-input {
-    width: 100%;
-    box-sizing: border-box;
-    padding: 5px 6px;
-    border: 1px solid var(--divider);
-    border-radius: 6px;
-    background: transparent;
-    font-size: 0.82rem;
-    color: var(--input-text);
-    outline: none;
-    transition: border-color 0.2s;
-}
-.att-input:focus {
-    border-color: var(--accent);
-}
-.att-input:disabled {
-    opacity: 0.3;
-    cursor: not-allowed;
-}
-.att-input::-webkit-inner-spin-button,
-.att-input::-webkit-outer-spin-button {
-    -webkit-appearance: none;
-    appearance: none;
-    margin: 0;
-}
-.att-input[type="number"] {
-    appearance: textfield;
-    -moz-appearance: textfield;
-}
-select.att-input {
-    appearance: none;
-    -webkit-appearance: none;
-    cursor: pointer;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%236b7390' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
-    background-repeat: no-repeat;
-    background-position: right 7px center;
-    background-size: 12px;
-    padding-right: 24px;
-}
-select.att-input option {
-    background-color: var(--bg-2);
-    color: var(--input-text);
-}
-.add-attachment-btn {
-    width: 100%;
-    margin-top: 4px;
-    margin-bottom: 8px;
-}
-.add-attachment-btn svg {
-    width: 14px;
-    height: 14px;
-}
-.att-tip {
-    margin: 6px 0 8px;
-    font-size: 0.72rem;
-    line-height: 1.5;
-    color: var(--text-muted);
 }
 </style>

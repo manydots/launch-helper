@@ -235,6 +235,18 @@ IsWeapon            = 类型为 [weapon]
    - **定性**：口径不一致（非解析错误）。creature.lst 条目指向 `.cre` 宠物召唤物定义（如 `Petit_Tiger/Petit_Tiger.cre`），非可发放物品；86JPL 上其 486 行中 144 行引用不可解析、228 行 lst 附名为空，仅 342 行可匹配到文件。
    - **解决**：`src/components/ItemCodeView.vue` `LST_TYPES` 移除 creature 项；`resolveCategoryPath()` 移除 `it.type === "Creature"` 特判；同步清理 `labelNameMap` 的 `Creature` 映射、`.ivc-type.type-Creature`样式及界面描述文案。`EQUIP_GROUPS` 宠物组四标签与 `TAG_LABELS` 对应翻译保留（equipment 中宠物类装备仍归宠物组，此即权威口径）。
    - **已知残余口径差（登记备查，不作改动）**：A21 构建索引时丢弃名称为空或解析失败的条目（`BuildKind` 内 `Name` 为空即跳过）；launch-helper 为保留查看能力对 lst 全量展示，故消耗品等其他分组的计数仍可能大于权威工具。宠物分组不受影响（86JPL 上 equipment 四宠物标签条目在权威索引中全部有效，计数一致）。
+7. **发放界面拆分为独立路由页 + 全类型发放支持核对（2026-08-26）**：
+   - **迁移**：物品发放自 `src/components/GameLauncher.vue` 内嵌表单（`mode === 'items'`）整体拆分为独立路由页 `src/components/SendItemView.vue`（路由 `/SendItem`，name `SendItem`，注册于 `src/router/index.js`）。登录卡片的「物品发放」链接改为路由跳转（网关未启用时维持原提示行为）；网关在线校验、角色查询、清空邮件、附件编辑与投递逻辑随迁，`GameLauncher.vue` 移除全部 items 相关状态、方法与样式。
+   - **全类型支持核对结论**（权威：gateway 项目 `internal/gmtool/gm/gm.go` 的 `validateItemSpec` / `expandItems` 与 `internal/gmtool/itemcore/itemcore.go` 的 `IsStackableKind`；kind 枚举对齐 `ServerCore/Game/Inventory/Models/ItemCore.cs`）：前端 `validKinds()` 允许集与网关逐项一致——主背包（item_type 0|2）配 kind=1 装备 / 2 消耗品 / 3 材料 / 9 时装徽章 / 10 副职业材料 / 12 公会勋章 / 13 守护珠，时装（item_type=1）配 kind=8，宠物（item_type 3|7）配 kind=5/6/7；即 **kind 取值 1-14 中除 4（任务品暂未开放）、11（特殊材料，账号仓库物品）、14（史诗碎片，账号图鉴通道）外全部支持发放**，0 非法，选项中不出现非法取值。
+   - **count 规则对齐**：堆叠类（2/3/7/9/10/13）无单条 count 上限——移除原 `STACKABLE_COUNT_LIMIT = 10000` 常量、输入框 `max` 与提交侧单条上限拦截；非堆叠类（1/5/6/8/12）数量恒为 1 保持不变；解除原「单次最多 10 个附件」的前端限制，同 item_id 数量合并与拆分（每附件 ≤2000、每封 ≤10 附件自动拆多封）由网关完成。
+   - **顺带修正**：新建附件的 `amplify_type` 初值由空串改为 `0`（proto int32 字段不应收到字符串初值）。
+   - **验证**：`npx vite build` 通过（SendItemView 独立 chunk 正常产出）；`npx prettier --write` 通过；`GameLauncher.vue` 无 items 残留引用（grep 核对）。
+8. **发放界面 Element Plus 化重设计 + 管理密钥缓存（2026-08-26）**：
+   - **控件替换**：`src/components/SendItemView.vue` 表单控件整体替换为 Element Plus（`ElInput` / `ElSelect` / `ElOption` / `ElInputNumber` / `ElButton`，组件内按需引入，沿用 ItemCodeView 的 unplugin-element-plus 样式模式）；物品 ID、数量、强化等级、限时天数用 `ElInputNumber`（数量无单条上限口径不变）。
+   - **风格重设计**：登录卡片复刻风改为管理台分区布局——页头（标题 + 网关状态徽标）、「收件目标」面板、「邮件附件」面板（计数徽标、空态引导、附件卡片自适应网格；强化/红字字段仅装备类 kind=1/12 渲染、限时天数仅限时时装/宠物本体渲染）、底部操作栏（附件数与预计投递封数统计 + 发放按钮）；封数预估按网关 `expandItems` / `splitMails` 默认参数计算（堆叠类每附件 ≤2000、每封 ≤10 附件）。业务校验（kind 允许集、非堆叠 count=1、种类与背包匹配）不变。
+   - **公共样式提取**：EP 深色适配自 ItemCodeView 提取至 `src/styles/element-plus-dark.css`（main.js 全局引入）：主色/圆角/文字变量对齐应用主题、输入类组件深色变量 + wrapper 直写背景双保险、input-number 步进控件配色、下拉弹层面板主题（新通用类 `.ep-popper-dark`；存量 `.ivc-select-popper` / `.ivc-cascader-popper` 选择器在公共文件中原样保留，ItemCodeView 无需改模板）。尺寸/布局仍属各页面 scoped 样式。`el-button` 同步对齐应用既有 `.btn` 按钮体系：primary 实心用 accent 渐变底 + 投影（对齐 `.btn-primary`）、default/plain 用透明底 1px 描边（对齐 `.btn-outline-*`，hover/active 均显式覆盖 EP 默认浅色底避免按下闪白）、danger plain 保留红字红框透明底（呼应移除按钮 hover 红调浅底）、link/text 中性灰字 hover accent（对齐 auth-links），统一圆角 10px（small 8px）与按压缩放反馈。
+   - **auth_key 缓存**：game store 新增 `adminAuthKey` 字段并纳入 persist（localStorage）；`SendItemView` 进入时自动填充缓存密钥，角色查询 / 物品发放 / 清空邮件任一管理接口校验成功后即保存当前输入值，密钥标签旁提供「已记忆」标记与一键清除；`GameLauncher.vue` 重置密码使用同一管理密钥，同步接入缓存填充与成功保存。
+   - **验证**：`npx vite build` 通过；`npx prettier --write` 通过。
 
 ### 14.2 测试脚本
 
