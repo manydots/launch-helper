@@ -97,6 +97,12 @@ div.el-textarea {
 .el-select .el-select__suffix {
     color: var(--text-muted);
 }
+/* 禁用态：EP 默认走 --el-fill-color-light（浅色，深底下露白），双保险直写深色底；
+   变量族 div.el-select 已有 --el-disabled-* 映射文字/描边，此处补背景 */
+.el-select .el-select__wrapper.is-disabled,
+.el-select .el-select__wrapper.is-disabled:hover {
+    background-color: var(--bg-2);
+}
 .el-select .el-select__wrapper.is-focused .el-select__suffix {
     color: var(--accent);
 }

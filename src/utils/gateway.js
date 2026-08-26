@@ -21,6 +21,8 @@ const GetRolesRequest = root.lookupType("gateway.GetRolesRequest");
 const AccountRoleTree = root.lookupType("gateway.AccountRoleTree");
 const ClearMailboxRequest = root.lookupType("gateway.ClearMailboxRequest");
 const ClearMailboxResponse = root.lookupType("gateway.ClearMailboxResponse");
+const UpdateRoleRequest = root.lookupType("gateway.UpdateRoleRequest");
+const UpdateRoleResponse = root.lookupType("gateway.UpdateRoleResponse");
 
 const CMD = {
     HEALTH: 1,
@@ -31,7 +33,8 @@ const CMD = {
     ACCOUNT_RESET: 6,
     SEND_ITEMS: 7,
     GET_ROLES: 8,
-    CLEAR_MAILBOX: 9
+    CLEAR_MAILBOX: 9,
+    UPDATE_ROLE: 10
 };
 
 const RESPONSE_TYPES = {
@@ -43,7 +46,8 @@ const RESPONSE_TYPES = {
     [CMD.ACCOUNT_RESET]: null,
     [CMD.SEND_ITEMS]: SendItemsResponse,
     [CMD.GET_ROLES]: AccountRoleTree,
-    [CMD.CLEAR_MAILBOX]: ClearMailboxResponse
+    [CMD.CLEAR_MAILBOX]: ClearMailboxResponse,
+    [CMD.UPDATE_ROLE]: UpdateRoleResponse
 };
 
 const CMD_NAMES = {
@@ -55,7 +59,8 @@ const CMD_NAMES = {
     [CMD.ACCOUNT_RESET]: "ACCOUNT_RESET",
     [CMD.SEND_ITEMS]: "SEND_ITEMS",
     [CMD.GET_ROLES]: "GET_ROLES",
-    [CMD.CLEAR_MAILBOX]: "CLEAR_MAILBOX"
+    [CMD.CLEAR_MAILBOX]: "CLEAR_MAILBOX",
+    [CMD.UPDATE_ROLE]: "UPDATE_ROLE"
 };
 
 const REQUEST_TYPES = {
@@ -67,7 +72,8 @@ const REQUEST_TYPES = {
     [CMD.ACCOUNT_RESET]: AccountResetPasswordRequest,
     [CMD.SEND_ITEMS]: SendItemsRequest,
     [CMD.GET_ROLES]: GetRolesRequest,
-    [CMD.CLEAR_MAILBOX]: ClearMailboxRequest
+    [CMD.CLEAR_MAILBOX]: ClearMailboxRequest,
+    [CMD.UPDATE_ROLE]: UpdateRoleRequest
 };
 
 const TIMEOUT_MS = 15000;
@@ -269,6 +275,19 @@ class GatewayClient {
         const body = ClearMailboxRequest.encode(ClearMailboxRequest.create({ m_id, character_id })).finish();
         return this.send(CMD.CLEAR_MAILBOX, body, authKey);
     }
+
+    // 角色基础数据修改（CMD_UPDATE_ROLE）。changes 中仅提交启用组：proto3 optional
+    // 置位语义要求未启用的字段完全不出现（不传 null/0/"" 占位），否则会被网关视为
+    // 本次要修改的字段。changes: { name?, level?, grow_first?, grow_second? }
+    async updateRole(m_id, character_id, changes, authKey) {
+        const payload = { m_id, character_id };
+        if (changes.name !== undefined) payload.name = changes.name;
+        if (changes.level !== undefined) payload.level = changes.level;
+        if (changes.grow_first !== undefined) payload.grow_first = changes.grow_first;
+        if (changes.grow_second !== undefined) payload.grow_second = changes.grow_second;
+        const body = UpdateRoleRequest.encode(UpdateRoleRequest.create(payload)).finish();
+        return this.send(CMD.UPDATE_ROLE, body, authKey);
+    }
 }
 
 const client = new GatewayClient();
@@ -283,6 +302,7 @@ export const api = {
     sendItems: (m_id, character_id, title, body, attachments, authKey) => client.sendItems(m_id, character_id, title, body, attachments, authKey),
     getRoles: (m_id, authKey) => client.getRoles(m_id, authKey),
     clearMailbox: (m_id, character_id, authKey) => client.clearMailbox(m_id, character_id, authKey),
+    updateRole: (m_id, character_id, changes, authKey) => client.updateRole(m_id, character_id, changes, authKey),
     // 向后兼容别名
     adminResetPassword: (m_id, new_password, new_password_confirm, authKey) => client.accountResetPassword(m_id, new_password, new_password_confirm, authKey)
 };

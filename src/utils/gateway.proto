@@ -16,6 +16,7 @@ enum Command {
   CMD_SEND_ITEMS      = 7; // 管理接口：系统邮件投递物品/装备/宠物
   CMD_GET_ROLES       = 8; // 管理接口：查询账号角色二维数据(树)
   CMD_CLEAR_MAILBOX   = 9; // 管理接口：清空角色邮箱（软删除打标，GM 不要求先领附件）
+  CMD_UPDATE_ROLE     = 10; // 管理接口：修改角色基础数据（改名/设等级/转职觉醒），仅适用于离线角色
 }
 
 // 通用请求头（TCP + UDP + WebSocket 共用）
@@ -187,6 +188,32 @@ message AccountRoleTree {
   int64  account_id = 1;
   string m_id       = 2;
   repeated RoleInfo roles = 3;
+}
+
+// --- CMD_UPDATE_ROLE ---
+// 角色基础数据修改请求。除定位字段外的业务字段均为 proto3 optional：
+// 未提供（未置位）的字段不做任何修改、不触发任何表的联动更新；全部未提供时报参数错误。
+// 仅适用于离线角色：在线角色的内存态会冲掉本次直改。设等级或转职/觉醒实际变更时
+// 清空已学技能，下次选角由服务端自动重建技能面板并派生 SP/TP。
+message UpdateRoleRequest {
+  string m_id             = 1; // 目标账号
+  int32  character_id     = 2; // 目标角色ID（必填，必须 > 0）
+  optional string name    = 3; // 改名：UTF-8 文本，GBK 编码后须 2-18 字节，仅限中文/英文/数字；全库唯一（含已删除角色）；与当前同名时视为未改动
+  optional int32  level   = 4; // 设等级：1-86；累计经验按网关内置阈值快照联动写入；与当前等级相同时视为未改动
+  optional int32  grow_first   = 5; // 转职分支 0-5；必须与 grow_second 同时提供
+  optional int32  grow_second  = 6; // 觉醒档位 0-2；grow_first=0 时只能为 0
+}
+message UpdateRoleResponse {
+  int64  account_id        = 1;
+  int32  character_id      = 2;
+  string character_name    = 3;      // 修改后的角色名
+  bool   name_updated      = 4;      // 本次是否实际改了名
+  bool   level_updated     = 5;      // 本次是否实际改了等级/经验
+  bool   grow_type_updated = 6;      // 本次是否实际改了转职/觉醒编码
+  bool   skills_reset      = 7;      // 本次是否清空了已学技能
+  int32  level             = 8;      // 当前等级
+  int64  exp               = 9;      // 当前累计经验
+  int32  grow_type         = 10;     // 当前 grow_type 原始编码 ((second<<4)|first)
 }
 
 // --- CMD_CLEAR_MAILBOX ---

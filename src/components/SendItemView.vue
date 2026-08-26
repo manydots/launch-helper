@@ -1,8 +1,9 @@
 <script>
-import { ElButton, ElCascader, ElInput, ElSelect, ElOption, ElInputNumber } from "element-plus";
+import { ElButton, ElCascader, ElCheckbox, ElInput, ElSelect, ElOption, ElInputNumber } from "element-plus";
 import { useGameStore } from "@/stores/game";
 import { alertModal, confirmModal } from "@/hooks/useModal";
 import { api } from "@/utils/gateway";
+import { getBranchOptions, getAwakeningOptions, growLabel, JOB_NAMES } from "@/utils/jobGrowNames";
 
 // 物品种类（对齐网关 ItemCore 枚举与 validateItemSpec 校验，kind 必填 1-14）：
 // 主背包(0|2)配 1=装备/2=消耗品/3=材料/9=时装徽章/10=副职业材料/12=公会勋章/13=守护珠；
@@ -17,12 +18,37 @@ const ITEM_TYPE_OPTIONS = [
 // 限时天数固定档位（0=无期限），协议 expire_time 按提交时刻 + 天数换算
 const EXPIRE_DAY_OPTIONS = [0, 1, 3, 5, 7, 15, 30];
 
+// 转职分支（grow_first 0-5）与觉醒档位（grow_second 0-2），对齐网关 grow_type 编码 (second<<4|first)
+const GROW_FIRST_OPTIONS = [
+    { value: 0, label: "未转职" },
+    { value: 1, label: "转职分支 1" },
+    { value: 2, label: "转职分支 2" },
+    { value: 3, label: "转职分支 3" },
+    { value: 4, label: "转职分支 4" },
+    { value: 5, label: "转职分支 5" }
+];
+const GROW_SECOND_OPTIONS = [
+    { value: 0, label: "未觉醒" },
+    { value: 1, label: "一次觉醒" },
+    { value: 2, label: "二次觉醒" }
+];
+// 觉醒档位的参考等级门槛（前端展示层约定，防误操作；协议层只校验取值范围与组合关系）
+const AWAKEN_MIN_LEVEL = { 1: 48, 2: 75 };
+const ROLE_LEVEL_MAX = 86;
+
 export default {
     name: "SendItemView",
-    components: { ElButton, ElCascader, ElInput, ElSelect, ElOption, ElInputNumber },
+    components: { ElButton, ElCascader, ElCheckbox, ElInput, ElSelect, ElOption, ElInputNumber },
     setup() {
         const store = useGameStore();
-        return { store };
+        return {
+            store,
+            // 模板内直接使用的协议常量（Options API 下经 setup 返回值暴露）
+            GROW_FIRST_OPTIONS,
+            GROW_SECOND_OPTIONS,
+            AWAKEN_MIN_LEVEL,
+            ROLE_LEVEL_MAX
+        };
     },
     data() {
         return {
@@ -35,6 +61,15 @@ export default {
             itemsRoleId: "",
             itemsLoadingRoles: false,
             clearingMailbox: false,
+            // ── 修改角色（CMD_UPDATE_ROLE）面板状态：三组修改独立启用，未启用组不下发 ──
+            roleEnableName: false,
+            roleEnableLevel: false,
+            roleEnableGrow: false,
+            roleName: "",
+            roleLevel: null,
+            roleGrowFirst: null,
+            roleGrowSecond: null,
+            updatingRole: false,
             itemsTitle: "GM物品发放",
             itemsBody: "",
             itemsList: [],
@@ -65,6 +100,68 @@ export default {
                 label: t.label,
                 children: this.validKinds(t.value).map(k => ({ value: k, label: this.kindName(k) }))
             }));
+        },
+        // 当前选中角色（修改角色面板的参照值来源）
+        selectedRole() {
+            return this.itemsRoles.find(r => String(r.character_id) === this.itemsRoleId) || null;
+        },
+        // 参考等级：启用等级修改时取目标输入等级，否则取所选角色当前等级
+        roleRefLevel() {
+            if (this.roleEnableLevel && this.roleLevel != null) return Number(this.roleLevel);
+            return this.selectedRole ? Number(this.selectedRole.level) || 0 : 0;
+        },
+        // 前置关系判定（详见 docs/gateway-update-role.md §3）：
+        // 未转职 -> 觉醒锁定为未觉醒；觉醒档位受参考等级门槛约束
+        roleGrowBlocked() {
+            if (!this.roleEnableGrow) return null;
+            const first = this.roleGrowFirst;
+            const second = this.roleGrowSecond;
+            if (first == null || second == null) return "请选择转职分支与觉醒档位";
+            if (first === 0 && second !== 0) return "未转职的角色不能设置觉醒档位";
+            const min = AWAKEN_MIN_LEVEL[second];
+            if (min != null && this.roleRefLevel < min) {
+                return `一次/二次觉醒要求参考等级 ≥ ${min}，当前参考等级为 ${this.roleRefLevel}（请将目标等级一并调高后提交）`;
+            }
+            return null;
+        },
+        // 至少启用一组修改才可提交（避免网关 1019 往返）
+        roleUpdateReady() {
+            const nameOn = this.roleEnableName && !!this.roleName.trim();
+            const levelOn = this.roleEnableLevel && this.roleLevel != null;
+            const growOn = this.roleEnableGrow && !this.roleGrowBlocked;
+            return nameOn || levelOn || growOn;
+        },
+        // 角色基础职业是否在枚举表中（不在时觉醒下拉回退泛化档位文案）
+        roleJobIndexed() {
+            return getBranchOptions(this.selectedRole?.job) != null;
+        },
+        // 转职下拉选项：按角色基础职业动态生成（真实分支名），无表回退泛化选项。
+        // 角色当前已落在表外分支（如协议允许但枚举未收录的 5 转）时，追加当前值兜底项避免显示裸数字
+        roleBranchOptions() {
+            const options = getBranchOptions(this.selectedRole?.job);
+            if (!options) return GROW_FIRST_OPTIONS;
+            if (!this.selectedRole) return options;
+            const curFirst = this.growParts(this.selectedRole.grow_type).first;
+            if (curFirst && !options.some(o => o.value === curFirst)) {
+                options.push({ value: curFirst, label: `${this.jobName(this.selectedRole.job)}·分支${curFirst}（当前）` });
+            }
+            return options;
+        },
+        // 觉醒下拉选项：按所选分支觉醒名单驱动；二觉名缺失则不出二觉选项。
+        // 注意不受「转职/觉醒」启用开关门控——否则查询后未勾选时下拉缺项，
+        // 已二觉角色的当前值（如「二次觉醒：帝血弑天」）会回显为空白（2026-08-27 实测缺陷）；
+        // 是否可改由 :disabled 控制
+        roleAwakenOptions() {
+            const prefix = { 1: "一次觉醒", 2: "二次觉醒" };
+            return getAwakeningOptions(this.selectedRole?.job, this.roleGrowFirst).map(o => ({ ...o, label: `${prefix[o.value]}：${o.label}` }));
+        },
+        // 当前觉醒档位不在选项集内时的兜底项（如表外分支无名单而角色实际二觉），null 表示不需要
+        roleSecondFallback() {
+            const second = this.roleGrowSecond;
+            if (!(second > 0)) return null;
+            if (this.roleAwakenOptions.some(o => o.value === second)) return null;
+            if (!this.roleJobIndexed && [1, 2].includes(second)) return null;
+            return { value: second, label: `${this.growOptionLabel(GROW_SECOND_OPTIONS, second)}（当前）` };
         }
     },
     async mounted() {
@@ -106,25 +203,158 @@ export default {
             return false;
         },
         jobName(job) {
-            const names = {
-                0: "鬼剑士(男)",
-                1: "格斗家(女)",
-                2: "神枪手(男)",
-                3: "魔法师(女)",
-                4: "圣职者",
-                5: "神枪手(女)",
-                6: "暗夜使者",
-                7: "格斗家(男)",
-                8: "魔法师(男)",
-                9: "黑暗武士",
-                10: "缔造者",
-                11: "鬼剑士(女)",
-                12: "守护者"
-            };
-            return names[job ?? 0] || `职业${job}`;
+            const v = job ?? 0;
+            return JOB_NAMES[v] || `职业${job}`;
         },
         roleLabel(role) {
             return `${role.name} (Lv${role.level} / ${this.jobName(role.job)})`;
+        },
+        // grow_type 解码：低 4 位转职分支、高 4 位觉醒档位（(second<<4)|first）
+        growParts(growType) {
+            const v = Number(growType) || 0;
+            return { first: v & 0xf, second: (v >> 4) & 0xf };
+        },
+        growOptionLabel(options, value) {
+            const hit = options.find(o => o.value === value);
+            return hit ? hit.label : `档位${value}`;
+        },
+        // 组合展示文案：有枚举表时用「转职名·觉醒名」，否则回退泛化档位文案
+        growComboLabel(job, first, second) {
+            const label = growLabel(job, first, second);
+            if (label != null) return label;
+            return `${this.growOptionLabel(GROW_FIRST_OPTIONS, first)} + ${this.growOptionLabel(GROW_SECOND_OPTIONS, second)}`;
+        },
+        onRoleEnableGrowToggle(on) {
+            this.roleEnableGrow = !!on;
+            if (!on) return;
+            if (this.roleGrowFirst == null) this.roleGrowFirst = this.selectedRole ? this.growParts(this.selectedRole.grow_type).first : 0;
+            if (this.roleGrowSecond == null) this.roleGrowSecond = this.selectedRole ? this.growParts(this.selectedRole.grow_type).second : 0;
+            // 未转职前置：分支为 0 时锁定觉醒为未觉醒
+            if (this.roleGrowFirst === 0) this.roleGrowSecond = 0;
+        },
+        onRoleGrowFirstChange(v) {
+            this.roleGrowFirst = v;
+            // 未转职 -> 觉醒必须为未觉醒；切到无可觉醒数据的分支时同样归零
+            if (!v || !getAwakeningOptions(this.selectedRole?.job, v).length) {
+                this.roleGrowSecond = 0;
+                return;
+            }
+            // 切换后当前觉醒档位超出新分支名单（如新分支仅一觉）时钳回一觉
+            if (this.roleGrowSecond > 0 && !getAwakeningOptions(this.selectedRole?.job, v).some(o => o.value === this.roleGrowSecond)) {
+                this.roleGrowSecond = 1;
+            }
+        },
+        async doUpdateRole() {
+            if (!this.itemsMid.trim()) {
+                this.itemsErrors = { ...this.itemsErrors, mid: "账号不能为空" };
+                return;
+            }
+            if (!this.itemsKey.trim()) {
+                this.itemsErrors = { ...this.itemsErrors, key: "管理密钥不能为空" };
+                return;
+            }
+            if (!this.itemsRoleId) {
+                this.itemsErrors = { ...this.itemsErrors, role: "请选择角色" };
+                return;
+            }
+            const role = this.selectedRole;
+            if (!role) return;
+            if (!this.roleUpdateReady) {
+                await alertModal({ title: "未选择修改项", message: "请至少启用并填写一项修改内容。" });
+                return;
+            }
+            if (!(await this.ensureGatewayOnline())) return;
+
+            const changes = {};
+            const summaryLines = [];
+            let nameOn = false;
+            if (this.roleEnableName && this.roleName.trim()) {
+                // 回显机制下启用改名但未改动（与当前名相同）视为无操作，不进入变更集
+                if (this.roleName.trim() === role.name) {
+                    await alertModal({ title: "改名未变化", message: `新角色名与当前角色名「${role.name}」相同，如需改名请修改内容。` });
+                    return;
+                }
+                nameOn = true;
+                changes.name = this.roleName.trim();
+                summaryLines.push(`改名：${role.name} → ${changes.name}`);
+            } else if (this.roleEnableName) {
+                await alertModal({ title: "改名未填写", message: "已启用改名但未填写新角色名。" });
+                return;
+            }
+            if (this.roleEnableLevel && this.roleLevel != null) {
+                if (this.roleLevel < 1 || this.roleLevel > ROLE_LEVEL_MAX) {
+                    await alertModal({ title: "等级超出范围", message: `等级须为 1-${ROLE_LEVEL_MAX}。` });
+                    return;
+                }
+                changes.level = Number(this.roleLevel);
+                summaryLines.push(`等级：Lv${role.level} → Lv${changes.level}`);
+            }
+            if (this.roleEnableGrow && !this.roleGrowBlocked) {
+                const cur = this.growParts(role.grow_type);
+                changes.grow_first = Number(this.roleGrowFirst);
+                changes.grow_second = Number(this.roleGrowSecond);
+                summaryLines.push(`转职/觉醒：${this.growComboLabel(role.job, cur.first, cur.second)} → ${this.growComboLabel(role.job, changes.grow_first, changes.grow_second)}`);
+            }
+
+            const willResetSkills =
+                (changes.level != null && changes.level !== role.level) ||
+                (changes.grow_first != null && (changes.grow_first !== this.growParts(role.grow_type).first || changes.grow_second !== this.growParts(role.grow_type).second));
+            const confirmed = await confirmModal({
+                title: "修改角色确认",
+                message: [
+                    `目标角色：「${role.name}」`,
+                    ...summaryLines.map(l => `· ${l}`),
+                    "",
+                    willResetSkills ? "实际变更等级或转职/觉醒将清空该角色全部已学技能，下次选角自动重建。" : "",
+                    "仅对离线角色生效；在线角色的修改会被服务端内存态覆盖。是否继续？"
+                ]
+                    .filter(Boolean)
+                    .join("\n"),
+                confirmText: "确认修改",
+                cancelText: "取消"
+            });
+            if (!confirmed) return;
+
+            this.updatingRole = true;
+            const data = await this.callApi(api.updateRole(this.itemsMid.trim(), Number(this.itemsRoleId), changes, this.itemsKey.trim()), { errorTitle: "修改角色失败" });
+            this.updatingRole = false;
+            if (!data) return;
+            this.saveAuthKey();
+            const flags = [];
+            if (data.name_updated) flags.push("改名");
+            if (data.level_updated) flags.push(`等级 Lv${data.level}`);
+            if (data.grow_type_updated) flags.push("转职/觉醒");
+            if (data.skills_reset) flags.push("已清空技能（下次选角重建）");
+            await alertModal({
+                title: "修改成功",
+                message: [
+                    flags.length ? `本次生效：${flags.join("、")}。` : "请求成功，但所有字段与当前值相同，均未发生变更。",
+                    `当前值：${data.character_name} · Lv${data.level} · 累计经验 ${data.exp}`,
+                    "若角色在线，需下线后重新选角才能看到修改结果。"
+                ].join("\n")
+            });
+            // 成功后重查角色列表，刷新下拉中的名字/等级标签
+            const mid = this.itemsMid.trim();
+            const key = this.itemsKey.trim();
+            const refreshed = await this.callApi(api.getRoles(mid, key), { errorTitle: "刷新角色失败" });
+            if (refreshed && Array.isArray(refreshed.roles) && refreshed.roles.length) {
+                this.itemsRoles = refreshed.roles;
+                if (refreshed.roles.some(r => String(r.character_id) === this.itemsRoleId)) {
+                    this.resetRoleForm(refreshed.roles.find(r => String(r.character_id) === this.itemsRoleId));
+                }
+            }
+        },
+        // 重置修改角色面板：各组开关关闭，但输入控件一律回显所查询角色的当前值
+        // （名/等级/转职觉醒档位），启用开关仅解锁编辑——未启用时也能看到现状
+        resetRoleForm(role) {
+            const parts = role ? this.growParts(role.grow_type) : { first: 0, second: 0 };
+            this.roleEnableName = false;
+            this.roleEnableLevel = false;
+            this.roleEnableGrow = false;
+            this.roleName = role?.name ?? "";
+            this.roleLevel = role ? Number(role.level) || null : null;
+            this.roleGrowFirst = parts.first;
+            this.roleGrowSecond = parts.second;
         },
         validKinds(itemType) {
             switch (itemType) {
@@ -152,6 +382,11 @@ export default {
             const names = { 0: "未知", 1: "装备", 2: "消耗品", 3: "材料", 5: "宠物本体", 6: "宠物装备", 7: "宠物消耗品", 8: "时装", 9: "时装徽章", 10: "副职业材料", 12: "公会勋章", 13: "守护珠" };
             return names[kind] || `种类${kind}`;
         },
+        onRoleSelectChange(v) {
+            this.itemsErrors.role = "";
+            const role = this.itemsRoles.find(r => String(r.character_id) === String(v));
+            this.resetRoleForm(role);
+        },
         async loadRoles() {
             const mid = this.itemsMid.trim();
             if (!mid) {
@@ -177,6 +412,7 @@ export default {
             }
             this.itemsRoles = roles;
             this.itemsRoleId = String(roles[0].character_id);
+            this.resetRoleForm(roles[0]);
         },
         async doClearMailbox() {
             const mid = this.itemsMid.trim();
@@ -378,7 +614,7 @@ export default {
                 <div class="target-row">
                     <div class="field grow" :class="{ 'is-error': itemsErrors.role }">
                         <span class="field-label">收件角色</span>
-                        <el-select v-model="itemsRoleId" placeholder="请选择角色" filterable popper-class="ep-popper-dark" @update:model-value="itemsErrors.role = ''">
+                        <el-select v-model="itemsRoleId" placeholder="请选择角色" filterable popper-class="ep-popper-dark" @update:model-value="onRoleSelectChange">
                             <el-option v-for="r in itemsRoles" :key="r.character_id" :value="String(r.character_id)" :label="roleLabel(r)" />
                         </el-select>
                         <span v-if="itemsErrors.role" class="field-error">{{ itemsErrors.role }}</span>
@@ -386,6 +622,68 @@ export default {
                     <el-button class="clear-btn" type="danger" plain :loading="clearingMailbox" @click="doClearMailbox">清空邮件</el-button>
                 </div>
             </template>
+        </section>
+
+        <section v-if="itemsRoles.length" class="panel">
+            <div class="panel-head">
+                <div class="panel-title">修改角色</div>
+                <span class="role-update-hint">仅离线角色生效 · 改等级/转职觉醒会清空已学技能（下次选角自动重建）</span>
+            </div>
+
+            <div v-if="selectedRole" class="role-baseline">
+                当前：<b>{{ selectedRole.name }}</b> · Lv{{ selectedRole.level }} · {{ jobName(selectedRole.job) }} ·
+                {{ growComboLabel(selectedRole.job, growParts(selectedRole.grow_type).first, growParts(selectedRole.grow_type).second) }}
+            </div>
+
+            <div class="role-update-grid">
+                <div class="att-card role-group">
+                    <el-checkbox :model-value="roleEnableName" @update:model-value="v => (roleEnableName = v)">改名</el-checkbox>
+                    <div class="field">
+                        <el-input v-model="roleName" :disabled="!roleEnableName" maxlength="9" show-word-limit placeholder="新角色名（中文/英文/数字）" clearable />
+                        <p class="att-tip">默认回显当前名；修改后提交（2-18 个 GBK 字节，全服唯一）。</p>
+                    </div>
+                </div>
+
+                <div class="att-card role-group">
+                    <el-checkbox :model-value="roleEnableLevel" @update:model-value="v => (roleEnableLevel = v)">设等级</el-checkbox>
+                    <div class="field">
+                        <el-input-number v-model="roleLevel" :min="1" :max="ROLE_LEVEL_MAX" :disabled="!roleEnableLevel" controls-position="right" placeholder="1-86" class="block-input" />
+                        <p class="att-tip">1-{{ ROLE_LEVEL_MAX }}；累计经验按内置阈值表联动写入。</p>
+                    </div>
+                </div>
+
+                <div class="att-card role-group">
+                    <el-checkbox :model-value="roleEnableGrow" @update:model-value="onRoleEnableGrowToggle">转职 / 觉醒</el-checkbox>
+                    <div class="role-grow-row">
+                        <el-select v-model="roleGrowFirst" :disabled="!roleEnableGrow" popper-class="ep-popper-dark" placeholder="转职分支" @update:model-value="onRoleGrowFirstChange">
+                            <el-option v-for="o in roleBranchOptions" :key="o.value" :value="o.value" :label="o.label" />
+                        </el-select>
+                        <el-select v-model="roleGrowSecond" :disabled="!roleEnableGrow || roleGrowFirst === 0" popper-class="ep-popper-dark" placeholder="觉醒档位">
+                            <el-option :value="0" label="未觉醒" />
+                            <el-option v-if="roleSecondFallback" :key="'cur-' + roleSecondFallback.value" :value="roleSecondFallback.value" :label="roleSecondFallback.label" />
+                            <template v-if="roleAwakenOptions.length">
+                                <el-option v-for="o in roleAwakenOptions" :key="o.value" :value="o.value" :label="o.label" />
+                            </template>
+                            <template v-else-if="!roleJobIndexed && roleGrowFirst > 0">
+                                <el-option :value="1" label="一次觉醒" />
+                                <el-option :value="2" label="二次觉醒" />
+                            </template>
+                        </el-select>
+                    </div>
+                    <p class="att-tip">
+                        未转职或分支不支持觉醒时锁定未觉醒<template v-if="roleEnableGrow && roleGrowSecond > 0"
+                            >；{{ roleGrowSecond === 2 ? "二次" : "一次" }}觉醒要求参考等级 ≥ {{ AWAKEN_MIN_LEVEL[roleGrowSecond] }}</template
+                        >。
+                    </p>
+                </div>
+            </div>
+
+            <p v-if="roleGrowBlocked && roleEnableGrow" class="grow-block-tip">{{ roleGrowBlocked }}</p>
+
+            <div class="bar-actions role-submit-bar">
+                <el-button link @click="resetRoleForm(selectedRole)">重置面板</el-button>
+                <el-button type="primary" plain :disabled="!roleUpdateReady" :loading="updatingRole" @click="doUpdateRole">提交修改</el-button>
+            </div>
         </section>
 
         <section class="panel">
@@ -686,6 +984,52 @@ export default {
     font-size: 0.72rem;
     opacity: 0.75;
     margin-bottom: 14px;
+}
+
+/* ── 修改角色面板 ── */
+.role-update-hint {
+    font-size: 0.68rem;
+    color: var(--text-muted);
+    opacity: 0.85;
+}
+.role-baseline {
+    padding: 8px 12px;
+    margin-bottom: 12px;
+    border: 1px dashed var(--divider);
+    border-radius: 10px;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+}
+.role-baseline b {
+    color: var(--text);
+}
+.role-update-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 12px;
+}
+.role-group {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+.role-grow-row {
+    display: flex;
+    gap: 8px;
+}
+.role-grow-row > * {
+    flex: 1;
+    min-width: 0;
+}
+.grow-block-tip {
+    margin: 10px 0 0;
+    font-size: 0.74rem;
+    line-height: 1.5;
+    color: var(--error);
+}
+.role-submit-bar {
+    justify-content: flex-end;
+    margin-top: 14px;
 }
 
 .attachment-grid {
