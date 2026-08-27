@@ -6,9 +6,9 @@ import { api } from "@/utils/gateway";
 import { getBranchOptions, getAwakeningOptions, growLabel, JOB_NAMES } from "@/utils/jobGrowNames";
 
 // 物品种类（对齐网关 ItemCore 枚举与 validateItemSpec 校验，kind 必填 1-14）：
-// 主背包(0|2)配 1=装备/2=消耗品/3=材料/9=时装徽章/10=副职业材料/12=公会勋章/13=守护珠；
+// 主背包(0|2)配 1=装备/2=消耗品/3=材料/4=任务品/9=时装徽章/10=副职业材料/12=公会勋章/13=守护珠；
 // 时装(1)配 8=时装；宠物(3|7)配 5=宠物本体/6=宠物装备/7=宠物消耗品。
-// 0=未知非法；4=任务品暂未开放；11=特殊材料（账号仓库物品）与 14=史诗碎片（账号图鉴通道）拒收。
+// 0=未知非法；11=特殊材料（账号仓库物品）与 14=史诗碎片（账号图鉴通道）拒收。
 const ITEM_TYPE_OPTIONS = [
     { value: 0, label: "主背包" },
     { value: 1, label: "时装" },
@@ -407,7 +407,7 @@ export default {
                     return [5, 6, 7];
                 default:
                     // item_type 0 与 2（主背包次要入口）允许集一致
-                    return [1, 2, 3, 9, 10, 12, 13];
+                    return [1, 2, 3, 4, 9, 10, 12, 13];
             }
         },
         isNonStackable(kind) {
@@ -421,7 +421,21 @@ export default {
             return att.item_type === 1 || ((att.item_type === 3 || att.item_type === 7) && att.kind === 5);
         },
         kindName(kind) {
-            const names = { 0: "未知", 1: "装备", 2: "消耗品", 3: "材料", 5: "宠物本体", 6: "宠物装备", 7: "宠物消耗品", 8: "时装", 9: "时装徽章", 10: "副职业材料", 12: "公会勋章", 13: "守护珠" };
+            const names = {
+                0: "未知",
+                1: "装备",
+                2: "消耗品",
+                3: "材料",
+                4: "任务品",
+                5: "宠物本体",
+                6: "宠物装备",
+                7: "宠物消耗品",
+                8: "时装",
+                9: "时装徽章",
+                10: "副职业材料",
+                12: "公会勋章",
+                13: "守护珠"
+            };
             return names[kind] || `种类${kind}`;
         },
         onRoleSelectChange(v) {
