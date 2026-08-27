@@ -32,8 +32,10 @@ const GROW_SECOND_OPTIONS = [
     { value: 1, label: "一次觉醒" },
     { value: 2, label: "二次觉醒" }
 ];
-// 觉醒档位的参考等级门槛（前端展示层约定，防误操作；协议层只校验取值范围与组合关系）
-const AWAKEN_MIN_LEVEL = { 1: 48, 2: 75 };
+// 转职/觉醒档位的参考等级门槛（86 版本：15 级转职、50 级一觉、75 级二觉；
+// 前端展示层约定，防误操作；协议层只校验取值范围与组合关系，见 docs/gateway-update-role.md §3.3）
+const TRANSFER_MIN_LEVEL = 15;
+const AWAKEN_MIN_LEVEL = { 1: 50, 2: 75 };
 const ROLE_LEVEL_MAX = 86;
 
 export default {
@@ -46,6 +48,7 @@ export default {
             // 模板内直接使用的协议常量（Options API 下经 setup 返回值暴露）
             GROW_FIRST_OPTIONS,
             GROW_SECOND_OPTIONS,
+            TRANSFER_MIN_LEVEL,
             AWAKEN_MIN_LEVEL,
             ROLE_LEVEL_MAX
         };
@@ -111,23 +114,48 @@ export default {
             return this.selectedRole ? Number(this.selectedRole.level) || 0 : 0;
         },
         // 前置关系判定（详见 docs/gateway-update-role.md §3）：
-        // 未转职 -> 觉醒锁定为未觉醒；觉醒档位受参考等级门槛约束
+        // 未转职 -> 觉醒锁定为未觉醒；转职与觉醒档位受参考等级门槛约束（15 级转职 / 50 级一觉 / 75 级二觉）
         roleGrowBlocked() {
             if (!this.roleEnableGrow) return null;
             const first = this.roleGrowFirst;
             const second = this.roleGrowSecond;
             if (first == null || second == null) return "请选择转职分支与觉醒档位";
             if (first === 0 && second !== 0) return "未转职的角色不能设置觉醒档位";
+            const ref = this.roleRefLevel;
+            if (first !== 0 && ref < TRANSFER_MIN_LEVEL) {
+                return `转职要求参考等级 ≥ ${TRANSFER_MIN_LEVEL}，当前参考等级为 ${ref}（请将目标等级一并调高后提交）`;
+            }
             const min = AWAKEN_MIN_LEVEL[second];
-            if (min != null && this.roleRefLevel < min) {
-                return `一次/二次觉醒要求参考等级 ≥ ${min}，当前参考等级为 ${this.roleRefLevel}（请将目标等级一并调高后提交）`;
+            if (min != null && ref < min) {
+                return `一次/二次觉醒要求参考等级 ≥ ${min}，当前参考等级为 ${ref}（请将目标等级一并调高后提交）`;
             }
             return null;
         },
-        // 至少启用一组修改才可提交（避免网关 1019 往返）
+        // 等级与觉醒双向约束（docs/gateway-update-role.md §3.4）：
+        // 设等级时以最终形态（启用转职/觉醒取下拉值，否则角色当前档位）校验门槛，
+        // 拦截「高觉醒角色把等级改至门槛之下」的反向破坏形态；仅改名不触发
+        roleLevelBlocked() {
+            if (!this.roleEnableLevel || this.roleLevel == null) return null;
+            const target = Number(this.roleLevel);
+            const role = this.selectedRole;
+            const cur = role ? this.growParts(role.grow_type) : { first: 0, second: 0 };
+            const finalFirst = this.roleEnableGrow ? this.roleGrowFirst : cur.first;
+            const finalSecond = this.roleEnableGrow ? this.roleGrowSecond : cur.second;
+            if (finalFirst !== 0 && target < TRANSFER_MIN_LEVEL) {
+                return `等级 ${target} 低于转职门槛 ${TRANSFER_MIN_LEVEL}，无法保持当前转职状态（需 ≥ ${TRANSFER_MIN_LEVEL}）`;
+            }
+            if (finalSecond === 1 && target < AWAKEN_MIN_LEVEL[1]) {
+                return `等级 ${target} 低于一次觉醒门槛 ${AWAKEN_MIN_LEVEL[1]}，无法保持当前一觉状态（需 ≥ ${AWAKEN_MIN_LEVEL[1]}）`;
+            }
+            if (finalSecond === 2 && target < AWAKEN_MIN_LEVEL[2]) {
+                return `等级 ${target} 低于二次觉醒门槛 ${AWAKEN_MIN_LEVEL[2]}，无法保持当前二觉状态（需 ≥ ${AWAKEN_MIN_LEVEL[2]}）`;
+            }
+            return null;
+        },
+        // 至少启用一组修改才可提交（避免网关 1019 往返），且须通过等级门槛双向校验
         roleUpdateReady() {
             const nameOn = this.roleEnableName && !!this.roleName.trim();
-            const levelOn = this.roleEnableLevel && this.roleLevel != null;
+            const levelOn = this.roleEnableLevel && this.roleLevel != null && !this.roleLevelBlocked;
             const growOn = this.roleEnableGrow && !this.roleGrowBlocked;
             return nameOn || levelOn || growOn;
         },
@@ -206,8 +234,14 @@ export default {
             const v = job ?? 0;
             return JOB_NAMES[v] || `职业${job}`;
         },
+        // 角色标签：基础职业（RoleInfo.job，proto3 下 job=0 缺失回退鬼剑士男）+
+        // 完整成长形态（转职·觉醒，经职业枚举表解析，未知分支回退泛化文案）
         roleLabel(role) {
-            return `${role.name} (Lv${role.level} / ${this.jobName(role.job)})`;
+            const job = Number(role.job) || 0;
+            const parts = this.growParts(role.grow_type);
+            const grow = growLabel(job, parts.first, parts.second);
+            const growText = grow != null ? grow : this.growComboLabel(job, parts.first, parts.second);
+            return `${role.name} (Lv${role.level} / ${this.jobName(job)}${growText ? ` · ${growText}` : ""})`;
         },
         // grow_type 解码：低 4 位转职分支、高 4 位觉醒档位（(second<<4)|first）
         growParts(growType) {
@@ -259,6 +293,14 @@ export default {
             }
             const role = this.selectedRole;
             if (!role) return;
+            if (this.roleEnableGrow && this.roleGrowBlocked) {
+                await alertModal({ title: "转职/觉醒门槛未满足", message: this.roleGrowBlocked });
+                return;
+            }
+            if (this.roleEnableLevel && this.roleLevelBlocked) {
+                await alertModal({ title: "等级门槛未满足", message: this.roleLevelBlocked });
+                return;
+            }
             if (!this.roleUpdateReady) {
                 await alertModal({ title: "未选择修改项", message: "请至少启用并填写一项修改内容。" });
                 return;
@@ -578,249 +620,323 @@ export default {
 
 <template>
     <div class="send-item">
-        <header class="page-head">
-            <div class="head-text">
-                <h1 class="page-title">物品发放</h1>
-                <p class="page-desc">通过系统邮件向角色投递物品，大数量堆叠由网关自动拆分为多封</p>
+        <!-- 顶部通栏菜单（header） -->
+        <header class="app-header">
+            <div class="header-brand">
+                <span class="brand-mark">T</span>
+                <div class="brand-text">
+                    <h1 class="header-title">物品发放</h1>
+                    <p class="header-desc">通过系统邮件向角色投递物品，大数量堆叠由网关自动拆分为多封</p>
+                </div>
             </div>
-            <span class="service-badge" :class="{ online: serviceOnline === true, offline: serviceOnline === false }">
-                <span class="dot"></span>{{ serviceOnline === true ? "网关在线" : serviceOnline === false ? "网关离线" : "检测中" }}
-            </span>
+
+            <div class="header-right">
+                <button class="header-back" @click="backToLogin">返回登录</button>
+                <span class="service-badge" :class="{ online: serviceOnline === true, offline: serviceOnline === false }">
+                    <span class="dot"></span>{{ serviceOnline === true ? "网关在线" : serviceOnline === false ? "网关离线" : "检测中" }}
+                </span>
+            </div>
         </header>
 
-        <section class="panel">
-            <div class="panel-title">收件目标</div>
-            <div class="target-row">
-                <div class="field grow" :class="{ 'is-error': itemsErrors.mid }">
-                    <span class="field-label">账号</span>
-                    <el-input v-model="itemsMid" placeholder="目标账号" clearable @update:model-value="itemsErrors.mid = ''" />
-                    <span v-if="itemsErrors.mid" class="field-error">{{ itemsErrors.mid }}</span>
-                </div>
-                <div class="field grow" :class="{ 'is-error': itemsErrors.key }">
-                    <span class="field-label">
-                        管理密钥
-                        <span v-if="keyRemembered" class="key-chip">
-                            已记忆
-                            <button class="key-forget" title="清除缓存的密钥" @click="forgetKey">×</button>
-                        </span>
-                    </span>
-                    <el-input v-model="itemsKey" type="password" show-password placeholder="管理接口授权密钥" @update:model-value="itemsErrors.key = ''" />
-                    <span v-if="itemsErrors.key" class="field-error">{{ itemsErrors.key }}</span>
-                </div>
-                <el-button class="query-btn" plain :loading="itemsLoadingRoles" @click="loadRoles">查询角色</el-button>
-            </div>
-
-            <template v-if="itemsRoles.length">
-                <div class="target-row">
-                    <div class="field grow" :class="{ 'is-error': itemsErrors.role }">
-                        <span class="field-label">收件角色</span>
-                        <el-select v-model="itemsRoleId" placeholder="请选择角色" filterable popper-class="ep-popper-dark" @update:model-value="onRoleSelectChange">
-                            <el-option v-for="r in itemsRoles" :key="r.character_id" :value="String(r.character_id)" :label="roleLabel(r)" />
-                        </el-select>
-                        <span v-if="itemsErrors.role" class="field-error">{{ itemsErrors.role }}</span>
-                    </div>
-                    <el-button class="clear-btn" type="danger" plain :loading="clearingMailbox" @click="doClearMailbox">清空邮件</el-button>
-                </div>
-            </template>
-        </section>
-
-        <section v-if="itemsRoles.length" class="panel">
-            <div class="panel-head">
-                <div class="panel-title">修改角色</div>
-                <span class="role-update-hint">仅离线角色生效 · 改等级/转职觉醒会清空已学技能（下次选角自动重建）</span>
-            </div>
-
-            <div v-if="selectedRole" class="role-baseline">
-                当前：<b>{{ selectedRole.name }}</b> · Lv{{ selectedRole.level }} · {{ jobName(selectedRole.job) }} ·
-                {{ growComboLabel(selectedRole.job, growParts(selectedRole.grow_type).first, growParts(selectedRole.grow_type).second) }}
-            </div>
-
-            <div class="role-update-grid">
-                <div class="att-card role-group">
-                    <el-checkbox :model-value="roleEnableName" @update:model-value="v => (roleEnableName = v)">改名</el-checkbox>
-                    <div class="field">
-                        <el-input v-model="roleName" :disabled="!roleEnableName" maxlength="9" show-word-limit placeholder="新角色名（中文/英文/数字）" clearable />
-                        <p class="att-tip">默认回显当前名；修改后提交（2-18 个 GBK 字节，全服唯一）。</p>
-                    </div>
-                </div>
-
-                <div class="att-card role-group">
-                    <el-checkbox :model-value="roleEnableLevel" @update:model-value="v => (roleEnableLevel = v)">设等级</el-checkbox>
-                    <div class="field">
-                        <el-input-number v-model="roleLevel" :min="1" :max="ROLE_LEVEL_MAX" :disabled="!roleEnableLevel" controls-position="right" placeholder="1-86" class="block-input" />
-                        <p class="att-tip">1-{{ ROLE_LEVEL_MAX }}；累计经验按内置阈值表联动写入。</p>
-                    </div>
-                </div>
-
-                <div class="att-card role-group">
-                    <el-checkbox :model-value="roleEnableGrow" @update:model-value="onRoleEnableGrowToggle">转职 / 觉醒</el-checkbox>
-                    <div class="role-grow-row">
-                        <el-select v-model="roleGrowFirst" :disabled="!roleEnableGrow" popper-class="ep-popper-dark" placeholder="转职分支" @update:model-value="onRoleGrowFirstChange">
-                            <el-option v-for="o in roleBranchOptions" :key="o.value" :value="o.value" :label="o.label" />
-                        </el-select>
-                        <el-select v-model="roleGrowSecond" :disabled="!roleEnableGrow || roleGrowFirst === 0" popper-class="ep-popper-dark" placeholder="觉醒档位">
-                            <el-option :value="0" label="未觉醒" />
-                            <el-option v-if="roleSecondFallback" :key="'cur-' + roleSecondFallback.value" :value="roleSecondFallback.value" :label="roleSecondFallback.label" />
-                            <template v-if="roleAwakenOptions.length">
-                                <el-option v-for="o in roleAwakenOptions" :key="o.value" :value="o.value" :label="o.label" />
-                            </template>
-                            <template v-else-if="!roleJobIndexed && roleGrowFirst > 0">
-                                <el-option :value="1" label="一次觉醒" />
-                                <el-option :value="2" label="二次觉醒" />
-                            </template>
-                        </el-select>
-                    </div>
-                    <p class="att-tip">
-                        未转职或分支不支持觉醒时锁定未觉醒<template v-if="roleEnableGrow && roleGrowSecond > 0"
-                            >；{{ roleGrowSecond === 2 ? "二次" : "一次" }}觉醒要求参考等级 ≥ {{ AWAKEN_MIN_LEVEL[roleGrowSecond] }}</template
-                        >。
-                    </p>
-                </div>
-            </div>
-
-            <p v-if="roleGrowBlocked && roleEnableGrow" class="grow-block-tip">{{ roleGrowBlocked }}</p>
-
-            <div class="bar-actions role-submit-bar">
-                <el-button link @click="resetRoleForm(selectedRole)">重置面板</el-button>
-                <el-button type="primary" plain :disabled="!roleUpdateReady" :loading="updatingRole" @click="doUpdateRole">提交修改</el-button>
-            </div>
-        </section>
-
-        <section class="panel">
-            <div class="panel-head">
-                <div class="panel-title">
-                    邮件附件
-                    <span class="count-chip">{{ itemsList.length }}</span>
-                </div>
-                <el-button plain size="small" @click="addAttachment">＋ 添加物品</el-button>
-            </div>
-
-            <div v-if="!itemsList.length" class="empty-state">
-                <p>尚未添加物品附件</p>
-                <p class="empty-sub">支持全部可发放类型：装备、消耗品、材料、时装、宠物系、时装徽章、副职业材料、公会勋章、守护珠</p>
-                <el-button plain size="small" @click="addAttachment">＋ 添加第一个物品</el-button>
-            </div>
-
-            <div v-else class="attachment-grid">
-                <div v-for="(att, idx) in itemsList" :key="idx" class="att-card">
-                    <div class="att-top">
-                        <span class="att-no">#{{ idx + 1 }}</span>
-                        <button class="att-remove" title="移除" @click="removeAttachment(idx)">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                <line x1="18" y1="6" x2="6" y2="18" />
-                                <line x1="6" y1="6" x2="18" y2="18" />
-                            </svg>
-                        </button>
-                    </div>
-                    <div class="att-fields">
-                        <div class="field">
-                            <span class="att-label">类型 / 种类</span>
-                            <el-cascader
-                                :model-value="[att.item_type, att.kind]"
-                                :options="typeKindOptions"
-                                placeholder="背包类型 / 物品种类"
-                                popper-class="ep-popper-dark"
-                                @change="v => onTypeKindChange(att, v)" />
+        <div class="layout-body">
+            <!-- 左侧 side：查询账号角色 -->
+            <aside class="side">
+                <section class="panel">
+                    <div class="panel-title">查询账号角色</div>
+                    <div class="target-col">
+                        <div class="field" :class="{ 'is-error': itemsErrors.mid }">
+                            <span class="field-label">账号</span>
+                            <el-input v-model="itemsMid" placeholder="目标账号" clearable @update:model-value="itemsErrors.mid = ''" />
+                            <span v-if="itemsErrors.mid" class="field-error">{{ itemsErrors.mid }}</span>
                         </div>
-                        <div class="field">
-                            <span class="att-label">物品ID</span>
-                            <el-input-number
-                                :model-value="att.item_id"
-                                :min="0"
-                                :max="2147483647"
-                                step-strictly
-                                controls-position="right"
-                                placeholder="物品模板ID"
-                                class="block-input"
-                                @change="v => updateAttachment(att, 'item_id', v)" />
+                        <div class="field" :class="{ 'is-error': itemsErrors.key }">
+                            <span class="field-label">
+                                管理密钥
+                                <span v-if="keyRemembered" class="key-chip">
+                                    已记忆
+                                    <button class="key-forget" title="清除缓存的密钥" @click="forgetKey">×</button>
+                                </span>
+                            </span>
+                            <el-input v-model="itemsKey" type="password" show-password placeholder="管理接口授权密钥" @update:model-value="itemsErrors.key = ''" />
+                            <span v-if="itemsErrors.key" class="field-error">{{ itemsErrors.key }}</span>
                         </div>
-                        <div class="field">
-                            <span class="att-label">数量{{ isNonStackable(att.kind) ? "（固定 1）" : "" }}</span>
-                            <el-input-number
-                                :model-value="att.count"
-                                :min="1"
-                                controls-position="right"
-                                placeholder="1"
-                                class="block-input"
-                                :disabled="isNonStackable(att.kind)"
-                                @change="v => updateAttachment(att, 'count', v)" />
+                        <el-button class="query-btn" plain :loading="itemsLoadingRoles" @click="loadRoles">查询角色</el-button>
+                    </div>
+
+                    <template v-if="itemsRoles.length">
+                        <div class="side-divider"></div>
+                        <div class="field" :class="{ 'is-error': itemsErrors.role }">
+                            <span class="field-label">收件角色</span>
+                            <el-select v-model="itemsRoleId" placeholder="请选择角色" filterable popper-class="ep-popper-dark" @update:model-value="onRoleSelectChange">
+                                <el-option v-for="r in itemsRoles" :key="r.character_id" :value="String(r.character_id)" :label="roleLabel(r)" />
+                            </el-select>
+                            <span v-if="itemsErrors.role" class="field-error">{{ itemsErrors.role }}</span>
                         </div>
-                        <template v-if="isEquipLike(att.kind)">
+                        <div class="side-actions">
+                            <el-button class="clear-btn" type="danger" plain :loading="clearingMailbox" @click="doClearMailbox">清空邮件</el-button>
+                        </div>
+                    </template>
+                </section>
+            </aside>
+
+            <!-- 右侧 main：其余功能卡片 -->
+            <main class="main">
+                <section v-if="itemsRoles.length" class="panel">
+                    <div class="panel-head">
+                        <div class="panel-title">修改角色</div>
+                        <div v-if="selectedRole" class="role-baseline">
+                            <span class="role-current"
+                                >当前：<b>{{ selectedRole.name }}</b> · Lv{{ selectedRole.level }} · {{ jobName(selectedRole.job) }} ·
+                                {{ growComboLabel(selectedRole.job, growParts(selectedRole.grow_type).first, growParts(selectedRole.grow_type).second) }}</span
+                            >
+                            <span class="role-update-hint">仅离线角色生效 · 改等级/转职觉醒会清空已学技能（下次选角自动重建）</span>
+                        </div>
+                    </div>
+
+                    <div class="role-update-grid">
+                        <div class="att-card role-group">
+                            <el-checkbox :model-value="roleEnableName" @update:model-value="v => (roleEnableName = v)">改名</el-checkbox>
                             <div class="field">
-                                <span class="att-label">红字类型</span>
-                                <el-select :model-value="att.amplify_type" popper-class="ep-popper-dark" @change="v => updateAttachment(att, 'amplify_type', v)">
-                                    <el-option :value="0" label="无红字" />
-                                    <el-option :value="1" label="体力" />
-                                    <el-option :value="2" label="精神" />
-                                    <el-option :value="3" label="力量" />
-                                    <el-option :value="4" label="智力" />
-                                    <el-option :value="128" label="未净化" />
+                                <el-input v-model="roleName" :disabled="!roleEnableName" maxlength="9" show-word-limit placeholder="新角色名（中文/英文/数字）" clearable />
+                                <p class="att-tip">默认回显当前名；修改后提交（2-18 个 GBK 字节，全服唯一）。</p>
+                            </div>
+                        </div>
+
+                        <div class="att-card role-group">
+                            <el-checkbox :model-value="roleEnableLevel" @update:model-value="v => (roleEnableLevel = v)">设等级</el-checkbox>
+                            <div class="field">
+                                <el-input-number v-model="roleLevel" :min="1" :max="ROLE_LEVEL_MAX" :disabled="!roleEnableLevel" controls-position="right" placeholder="1-86" class="block-input" />
+                                <p class="att-tip">
+                                    1-{{ ROLE_LEVEL_MAX }}；累计经验按内置阈值表联动写入。{{ TRANSFER_MIN_LEVEL }} 级转职、{{ AWAKEN_MIN_LEVEL[1] }} 级一觉、{{ AWAKEN_MIN_LEVEL[2] }} 级二觉。
+                                </p>
+                                <p v-if="roleLevelBlocked" class="grow-block-tip">{{ roleLevelBlocked }}</p>
+                            </div>
+                        </div>
+
+                        <div class="att-card role-group">
+                            <el-checkbox :model-value="roleEnableGrow" @update:model-value="onRoleEnableGrowToggle">转职 / 觉醒</el-checkbox>
+                            <div class="role-grow-row">
+                                <el-select v-model="roleGrowFirst" :disabled="!roleEnableGrow" popper-class="ep-popper-dark" placeholder="转职分支" @update:model-value="onRoleGrowFirstChange">
+                                    <el-option v-for="o in roleBranchOptions" :key="o.value" :value="o.value" :label="o.label" />
+                                </el-select>
+                                <el-select v-model="roleGrowSecond" :disabled="!roleEnableGrow || roleGrowFirst === 0" popper-class="ep-popper-dark" placeholder="觉醒档位">
+                                    <el-option :value="0" label="未觉醒" />
+                                    <el-option v-if="roleSecondFallback" :key="'cur-' + roleSecondFallback.value" :value="roleSecondFallback.value" :label="roleSecondFallback.label" />
+                                    <template v-if="roleAwakenOptions.length">
+                                        <el-option v-for="o in roleAwakenOptions" :key="o.value" :value="o.value" :label="o.label" />
+                                    </template>
+                                    <template v-else-if="!roleJobIndexed && roleGrowFirst > 0">
+                                        <el-option :value="1" label="一次觉醒" />
+                                        <el-option :value="2" label="二次觉醒" />
+                                    </template>
                                 </el-select>
                             </div>
-                            <div class="field">
-                                <span class="att-label">强化等级</span>
-                                <el-input-number
-                                    :model-value="att.upgrade_level"
-                                    :min="0"
-                                    :max="att.amplify_type === 128 ? 0 : 31"
-                                    controls-position="right"
-                                    class="block-input"
-                                    :disabled="att.amplify_type === 128"
-                                    @change="v => updateAttachment(att, 'upgrade_level', v)" />
-                            </div>
-                        </template>
-                        <div v-if="expireEnabled(att)" class="field">
-                            <span class="att-label">限时天数</span>
-                            <el-select :model-value="att.expire_days" popper-class="ep-popper-dark" @change="v => updateAttachment(att, 'expire_days', v)">
-                                <el-option v-for="d in expireDayOptions" :key="d" :value="d" :label="d === 0 ? '无期限' : `${d} 天`" />
-                            </el-select>
+                            <p class="att-tip">
+                                未转职或分支不支持觉醒时锁定未觉醒；转职要求参考等级 ≥ {{ TRANSFER_MIN_LEVEL
+                                }}<template v-if="roleEnableGrow && roleGrowSecond > 0"
+                                    >；{{ roleGrowSecond === 2 ? "二次" : "一次" }}觉醒要求参考等级 ≥ {{ AWAKEN_MIN_LEVEL[roleGrowSecond] }}</template
+                                >。
+                            </p>
                         </div>
                     </div>
-                    <p class="att-tip">
-                        种类须与物品 ID 实际类型一致，否则领取后落入错误背包{{ isEquipLike(att.kind) ? "；强化/红字仅对装备与公会勋章生效" : ""
-                        }}{{ expireEnabled(att) ? "；到期时间以提交时刻起算" : "" }}
-                    </p>
-                </div>
-            </div>
-        </section>
 
-        <footer class="action-bar">
-            <span class="stat-text"
-                >共 {{ itemsList.length }} 个附件<template v-if="itemsList.length"> · 预计投递 {{ mailEstimate }} 封邮件</template></span
-            >
-            <div class="bar-actions">
-                <el-button link @click="backToLogin">返回登录</el-button>
-                <el-button type="primary" :disabled="!itemsRoles.length" :loading="loading" @click="doSendItems">确认发放</el-button>
-            </div>
-        </footer>
+                    <p v-if="roleGrowBlocked && roleEnableGrow" class="grow-block-tip">{{ roleGrowBlocked }}</p>
+
+                    <div class="bar-actions role-submit-bar">
+                        <el-button link @click="resetRoleForm(selectedRole)">重置信息</el-button>
+                        <el-button type="primary" plain :disabled="!roleUpdateReady" :loading="updatingRole" @click="doUpdateRole">提交修改</el-button>
+                    </div>
+                </section>
+
+                <section class="panel">
+                    <div class="panel-head">
+                        <div class="panel-title">
+                            邮件附件
+                            <span class="count-chip">{{ itemsList.length }}</span>
+                        </div>
+                        <el-button plain size="small" @click="addAttachment">＋ 添加物品</el-button>
+                    </div>
+
+                    <div v-if="!itemsList.length" class="empty-state">
+                        <p>尚未添加物品附件</p>
+                        <p class="empty-sub">支持全部可发放类型：装备、消耗品、材料、时装、宠物系、时装徽章、副职业材料、公会勋章、守护珠</p>
+                        <el-button plain size="small" @click="addAttachment">＋ 添加第一个物品</el-button>
+                    </div>
+
+                    <div v-else class="attachment-grid">
+                        <div v-for="(att, idx) in itemsList" :key="idx" class="att-card">
+                            <div class="att-top">
+                                <span class="att-no">#{{ idx + 1 }}</span>
+                                <button class="att-remove" title="移除" @click="removeAttachment(idx)">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                        <line x1="18" y1="6" x2="6" y2="18" />
+                                        <line x1="6" y1="6" x2="18" y2="18" />
+                                    </svg>
+                                </button>
+                            </div>
+                            <div class="att-fields">
+                                <div class="field">
+                                    <span class="att-label">类型 / 种类</span>
+                                    <el-cascader
+                                        :model-value="[att.item_type, att.kind]"
+                                        :options="typeKindOptions"
+                                        placeholder="背包类型 / 物品种类"
+                                        popper-class="ep-popper-dark"
+                                        @change="v => onTypeKindChange(att, v)" />
+                                </div>
+                                <div class="field">
+                                    <span class="att-label">物品ID</span>
+                                    <el-input-number
+                                        :model-value="att.item_id"
+                                        :min="0"
+                                        :max="2147483647"
+                                        step-strictly
+                                        controls-position="right"
+                                        placeholder="物品模板ID"
+                                        class="block-input"
+                                        @change="v => updateAttachment(att, 'item_id', v)" />
+                                </div>
+                                <div class="field">
+                                    <span class="att-label">数量{{ isNonStackable(att.kind) ? "（固定 1）" : "" }}</span>
+                                    <el-input-number
+                                        :model-value="att.count"
+                                        :min="1"
+                                        controls-position="right"
+                                        placeholder="1"
+                                        class="block-input"
+                                        :disabled="isNonStackable(att.kind)"
+                                        @change="v => updateAttachment(att, 'count', v)" />
+                                </div>
+                                <template v-if="isEquipLike(att.kind)">
+                                    <div class="field">
+                                        <span class="att-label">红字类型</span>
+                                        <el-select :model-value="att.amplify_type" popper-class="ep-popper-dark" @change="v => updateAttachment(att, 'amplify_type', v)">
+                                            <el-option :value="0" label="无红字" />
+                                            <el-option :value="1" label="体力" />
+                                            <el-option :value="2" label="精神" />
+                                            <el-option :value="3" label="力量" />
+                                            <el-option :value="4" label="智力" />
+                                            <el-option :value="128" label="未净化" />
+                                        </el-select>
+                                    </div>
+                                    <div class="field">
+                                        <span class="att-label">强化等级</span>
+                                        <el-input-number
+                                            :model-value="att.upgrade_level"
+                                            :min="0"
+                                            :max="att.amplify_type === 128 ? 0 : 31"
+                                            controls-position="right"
+                                            class="block-input"
+                                            :disabled="att.amplify_type === 128"
+                                            @change="v => updateAttachment(att, 'upgrade_level', v)" />
+                                    </div>
+                                </template>
+                                <div v-if="expireEnabled(att)" class="field">
+                                    <span class="att-label">限时天数</span>
+                                    <el-select :model-value="att.expire_days" popper-class="ep-popper-dark" @change="v => updateAttachment(att, 'expire_days', v)">
+                                        <el-option v-for="d in expireDayOptions" :key="d" :value="d" :label="d === 0 ? '无期限' : `${d} 天`" />
+                                    </el-select>
+                                </div>
+                            </div>
+                            <p class="att-tip">
+                                种类须与物品 ID 实际类型一致，否则领取后落入错误背包{{ isEquipLike(att.kind) ? "；强化/红字仅对装备与公会勋章生效" : ""
+                                }}{{ expireEnabled(att) ? "；到期时间以提交时刻起算" : "" }}
+                            </p>
+                        </div>
+                    </div>
+
+                    <div class="send-bar">
+                        <span class="stat-text"
+                            >共 {{ itemsList.length }} 个附件<template v-if="itemsList.length"> · 预计投递 {{ mailEstimate }} 封邮件</template></span
+                        >
+                        <div class="bar-actions">
+                            <el-button type="primary" plain :disabled="!itemsRoles.length" :loading="loading" @click="doSendItems">确认发放</el-button>
+                        </div>
+                    </div>
+                </section>
+            </main>
+        </div>
     </div>
 </template>
 
 <style scoped>
 .send-item {
-    max-width: 1040px;
     width: 100%;
-    margin: auto;
     font-family: system-ui, sans-serif;
 }
-.page-head {
+
+/* ── 顶部通栏菜单（header）── */
+.app-header {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    width: 100%;
+    box-sizing: border-box;
     display: flex;
-    align-items: flex-end;
-    justify-content: space-between;
-    gap: 16px;
+    align-items: center;
+    gap: 20px;
+    padding: 12px 20px;
     margin-bottom: 20px;
+    background: rgba(10, 14, 26, 0.85);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border-bottom: 1px solid var(--surface-border);
 }
-.page-title {
-    margin: 0 0 6px;
-    font-size: 1.45rem;
+.header-brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-shrink: 0;
+}
+.brand-mark {
+    padding: 8px 12px;
+    border-radius: 10px;
+    background: var(--accent-gradient);
+    color: #fff;
+    font-size: 0.9rem;
+    font-weight: 800;
+    letter-spacing: 1px;
+    box-shadow: 0 4px 14px var(--accent-shadow);
+    user-select: none;
+}
+.header-title {
+    margin: 0;
+    font-size: 1.15rem;
     font-weight: 700;
     letter-spacing: 0.5px;
     color: var(--text);
+    line-height: 1.2;
 }
-.page-desc {
-    margin: 0;
-    font-size: 0.8rem;
+.header-desc {
+    margin: 2px 0 0;
+    font-size: 0.72rem;
     color: var(--text-muted);
+}
+.header-right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-shrink: 0;
+    margin-left: auto;
+}
+.header-back {
+    padding: 7px 14px;
+    border: 1px solid var(--surface-border);
+    background: var(--surface);
+    color: var(--text-muted);
+    border-radius: 8px;
+    font-size: 0.78rem;
+    cursor: pointer;
+    transition:
+        color 0.2s,
+        border-color 0.2s,
+        background 0.2s;
+    white-space: nowrap;
+}
+.header-back:hover {
+    color: var(--text);
+    border-color: var(--outline-3-hover-border);
+    background: var(--outline-3-hover-bg);
 }
 .service-badge {
     display: inline-flex;
@@ -855,6 +971,45 @@ export default {
     background: var(--error);
 }
 
+/* ── 主体左右布局（side + main）── */
+.layout-body {
+    display: flex;
+    align-items: flex-start;
+    gap: 16px;
+    width: 100%;
+    padding: 0 20px;
+    box-sizing: border-box;
+}
+.side {
+    width: 340px;
+    flex-shrink: 0;
+    flex-grow: 0;
+    position: sticky;
+    top: 84px;
+}
+.main {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+.target-col {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+.side-divider {
+    height: 1px;
+    background: var(--divider);
+    margin: 16px 0;
+}
+.side-actions {
+    margin-top: 14px;
+    display: flex;
+    justify-content: flex-end;
+}
+.query-btn,
+.clear-btn {
+    width: 100%;
+}
 .panel {
     background: var(--surface);
     backdrop-filter: blur(24px);
@@ -901,19 +1056,6 @@ export default {
     font-size: 0.7rem;
     letter-spacing: 0;
 }
-
-.target-row {
-    display: flex;
-    align-items: flex-start;
-    gap: 12px;
-}
-.target-row + .target-row {
-    margin-top: 14px;
-}
-.field.grow,
-.grow {
-    flex: 1;
-}
 .field {
     display: flex;
     flex-direction: column;
@@ -938,11 +1080,6 @@ export default {
 .field.is-error :deep(.el-input__wrapper),
 .field.is-error :deep(.el-select__wrapper) {
     box-shadow: 0 0 0 1px var(--error) inset;
-}
-.query-btn,
-.clear-btn {
-    margin-top: 21px;
-    flex-shrink: 0;
 }
 .key-chip {
     display: inline-flex;
@@ -987,21 +1124,25 @@ export default {
 }
 
 /* ── 修改角色面板 ── */
+.role-baseline {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 3px;
+    text-align: right;
+    font-size: 0.74rem;
+    color: var(--text-muted);
+}
+.role-current {
+    line-height: 1.4;
+}
+.role-baseline b {
+    color: var(--text);
+}
 .role-update-hint {
     font-size: 0.68rem;
     color: var(--text-muted);
     opacity: 0.85;
-}
-.role-baseline {
-    padding: 8px 12px;
-    margin-bottom: 12px;
-    border: 1px dashed var(--divider);
-    border-radius: 10px;
-    font-size: 0.78rem;
-    color: var(--text-muted);
-}
-.role-baseline b {
-    color: var(--text);
 }
 .role-update-grid {
     display: grid;
@@ -1099,12 +1240,14 @@ export default {
     opacity: 0.85;
 }
 
-.action-bar {
+.send-bar {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 12px;
-    padding: 4px 2px 8px;
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 1px solid var(--divider);
 }
 .stat-text {
     font-size: 0.78rem;
@@ -1116,14 +1259,19 @@ export default {
     gap: 10px;
 }
 
-@media (max-width: 720px) {
-    .target-row {
+@media (max-width: 960px) {
+    .layout-body {
+        flex-direction: column;
+    }
+    .side {
+        width: 100%;
+        position: static;
+    }
+    .app-header {
         flex-wrap: wrap;
     }
-    .query-btn,
-    .clear-btn {
-        margin-top: 0;
-    }
+}
+@media (max-width: 720px) {
     .attachment-grid {
         grid-template-columns: 1fr;
     }

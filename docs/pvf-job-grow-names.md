@@ -133,16 +133,18 @@ grow_type = (second << 4) | first
 | `JOB_NAMES`                         | jobId → 显示名（用户口径，含性别后缀；job13 补记「魔枪士」）                                                                                         |
 | `JOB_GROWS`                         | jobId → { first → { name: 转职名, awakens: 觉醒名单(长度 0-2) } }，86JPL 提取值；仅收录已实装分支 first=1-4 与直进职业，5 转未定案分支不收录（§4.2） |
 | `getJobDisplayName(jobId)`          | 显示名；未知 job 返回空串                                                                                                                            |
-| `getBranchOptions(jobId)`           | 转职下拉选项 [{ value, label }]：value=first（0 未转职 + 表内分支）；job 无表返回 null                                                               |
-| `getAwakeningOptions(jobId, first)` | 觉醒下拉选项：[{ value: 1, label: 一觉名 }, (二觉存在时){ value: 2, label: 二觉名 }]；分支无数据或未转职返回 []                                      |
+| `getBranchOptions(jobId)`           | 转职下拉选项 [{ value, label }]：value=first（0 未转职 + 表内分支）；job 无表返回 null。`jobId` 缺失（undefined/null）按 0 归一化，不视为无表          |
+| `getAwakeningOptions(jobId, first)` | 觉醒下拉选项：[{ value: 1, label: 一觉名 }, (二觉存在时){ value: 2, label: 二觉名 }]；分支无数据或未转职返回 []。`jobId` 缺失按 0 归一化              |
 
 ### 5.2 SendItemView.vue 行为约定（展示层）
 
 1. **卡片默认回显查询结果**：选中角色后，修改角色面板各输入控件一律回显当前值——
    当前值行显示 `JOB_NAMES[job]` + `growComboLabel`（转职名·觉醒名），改名框回显当前名、
    等级框回显当前等级、转职/觉醒下拉回显当前档位；三组启用开关默认关闭仅解锁编辑，
-   未启用时也可看到现状。角色无 `job` 字段或表中无该 job / 分支时回退既有泛化文案
-   （「转职分支 N」「一次觉醒」等）。
+   未启用时也可看到现状。`RoleInfo.job` 为 proto3 int32，网关侧 job=0（鬼剑士男）不序列化、
+   前端解码后字段缺失（undefined）——枚举层统一按 0 归一化处理（§5.1），
+   仍以真实分支名/觉醒名展示；仅当表中确无该 job / 分支（如未实装 5 转、未知职业）时
+   才回退既有泛化文案（「转职分支 N」「一次觉醒」等）。
 2. 转职下拉：按角色 job 动态生成（真实分支名），未转职固定为首项「未转职」；
    无枚举表回退泛化选项；角色当前已落在表外分支（协议允许但未收录的 5 转）时
    追加「（当前）」兜底项避免显示裸数字。

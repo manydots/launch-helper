@@ -109,14 +109,17 @@ export const JOB_GROWS = {
 
 // 显示名；未知 job 返回空串（调用方回退泛化文案）
 export function getJobDisplayName(jobId) {
-    if (jobId == null || !(jobId in JOB_NAMES)) return "";
-    return JOB_NAMES[jobId];
+    const v = jobId == null ? 0 : jobId;
+    if (!(v in JOB_NAMES)) return "";
+    return JOB_NAMES[v];
 }
 
 // 转职下拉选项：[{ value: 0, label: "未转职" }, ...表内分支]；
-// job 无枚举表返回 null（调用方回退既有泛化选项）
+// job 无枚举表返回 null（调用方回退既有泛化选项）。
+// jobId 缺失（undefined/null，proto3 默认 0 不序列化）按 0 归一化，不视为无表
 export function getBranchOptions(jobId) {
-    const grows = jobId != null ? JOB_GROWS[jobId] : null;
+    const v = jobId == null ? 0 : jobId;
+    const grows = JOB_GROWS[v];
     if (!grows) return null;
     const options = [{ value: 0, label: "未转职" }];
     for (const first of Object.keys(grows)
@@ -129,20 +132,22 @@ export function getBranchOptions(jobId) {
 
 // 觉醒下拉选项（按所选分支觉醒名单驱动）：
 // [{ value: 1, label: 一觉名 }, (存在二觉时){ value: 2, label: 二觉名 }]；
-// 未转职或分支无可觉醒数据返回 []（调用方锁定未觉醒）
+// 未转职或分支无可觉醒数据返回 []（调用方锁定未觉醒）。jobId 缺失按 0 归一化
 export function getAwakeningOptions(jobId, first) {
     if (!first) return [];
-    const g = JOB_GROWS[jobId]?.[first];
+    const v = jobId == null ? 0 : jobId;
+    const g = JOB_GROWS[v]?.[first];
     if (!g || !g.awakens.length) return [];
     const options = [{ value: 1, label: g.awakens[0] }];
     if (g.awakens.length > 1) options.push({ value: 2, label: g.awakens[1] });
     return options;
 }
 
-// 按档位取展示文案（转职 first / 觉醒 second），未知时返回 null 回退泛化文案
+// 按档位取展示文案（转职 first / 觉醒 second），未知时返回 null 回退泛化文案。jobId 缺失按 0 归一化
 export function growLabel(jobId, first, second = 0) {
     if (!first) return second ? null : "未转职";
-    const g = JOB_GROWS[jobId]?.[first];
+    const v = jobId == null ? 0 : jobId;
+    const g = JOB_GROWS[v]?.[first];
     if (!g) return null;
     if (!second) return g.name;
     return `${g.name}·${g.awakens[second - 1] || `觉醒${second}`}`;
