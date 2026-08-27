@@ -6,61 +6,68 @@
 
 ## 功能特性
 
-- 自定义协议启动 Windows 游戏，无需手动执行命令
-- 账号、密码、游戏路径、启动参数本地持久化（localStorage），刷新不丢失
-- 网关认证（注册 / 登录 / 修改密码），WebSocket + Protobuf 二进制协议
-- 服务状态实时探测：网关启用时登录框左上角圆点显示在线 / 离线 / 检测中
-- Material 风格输入框，聚焦时支持一键清空
-- 打字机动效副标题、毛玻璃卡片界面
-- 注册表一键生成 / 卸载，非 Windows 环境自动提示
-- 内置 PVF 文件解析与编辑器：解密解析 `Script.pvf`，支持文件树浏览、脚本语法高亮、多编码切换、编辑 / 重命名 / 删除 / 导入 / 导出、重新打包
-- 繁体（TW）PVF 独立解析层：无魔数、`0x81A79011` 密钥流协议，`stringtable.bin` 字符串表与 `n_string.lst`（strlst）引用表解析，`key>text` 三色渲染，.ani 动画 / UTF-16LE .lua 源码解析
-- 大文件全量浏览：数万行文件虚拟滚动查看，支持内容搜索（含 name 映射中文命中）与逐条跳转
-- 物品编码查看：解析 `Script.pvf` 中的 `stackable/stackable.lst`、`equipment/equipment.lst`、`creature/creature.lst`，映射展示物品 ID / 类型 / 名称 / 品质 / 使用等级 / 引用路径，支持 JP / JPAG（0x55 XOR）/ CN、US（protected_nkpi）/ TW 四种格式
-- 兼容旧版浏览器（@vitejs/plugin-legacy 自动注入 polyfill）
+### 游戏启动
+
+- 自定义协议启动 Windows 游戏，无需手动执行命令；注册表一键生成 / 卸载，非 Windows 环境自动提示
+- 账号、密码、游戏路径、管理密钥本地持久化（localStorage）
+- 网关启用时登录鉴权返回 `launch_args` 自动填入启动参数，服务状态实时探测（在线 / 离线 / 检测中）
+
+### Stackable 物品编码
+
+- 打开 `.pvf` 自动定位解析 `stackable/stackable.lst` 与 `equipment/equipment.lst`，虚拟滚动表格展示物品 ID / 类型徽标 / 名称 / 品质 / 使用等级 / 引用路径
+- 物品名称经字符串表映射为中文，品质（普通 ~ 传说七档）依客户端串表着色
+- 多维筛选：类型 / 分类级联（装备 · 宠物 · 装扮侧栏分组，堆叠物背包七段）、品质细分（传承 / 领主神器 / 魔法封印）、期限、使用等级区间；单框搜索按物品 ID（精确）/ 名称 / 引用路径实时过滤
+- JP / JPAG（`0x55 XOR`）/ CN、US（protected_nkpi）/ TW 四种包头格式打开时自动识别；TW 走独立解析层，名称读自 `stringtable.bin`
+
+### PVF 编辑
+
+- 解密解析 `Script.pvf`：文件树浏览 / 搜索（增量缓存），脚本语法高亮、标签折叠与悬停提示，UTF-8 / GBK / Big5 / EUC-KR 多编码切换，二进制 hex 查看
+- 脚本可直接编辑，保存前语法校验阻断错误；文件支持重命名 / 删除 / 导入替换 / 导出原始字节，`Ctrl+S` 暂存、「导出 PVF」重新加密打包下载
+- 超大文件先只读预览前 2,000 行，一键进入虚拟滚动全量视图；内容搜索大小写不敏感，未命中时将 `name_数字` 经字符串表映射为中文再匹配，逐条跳转并高亮
+- TW 独立解析层：无魔数密钥流协议，`stringtable.bin` 串表编辑回写还原字节，`n_string.lst` 引用关联展示文本，`key>text` 三色渲染，`.ani` 动画与 UTF-16LE `.lua` 源码解析
+
+### 注册账号
+
+- 网关注册（`CMD_REGISTER`）：账号 3-20 位字母数字，密码 6-32 位并二次确认
+- 注册成功账号自动回填登录表；网关未启用时提示前往官网办理
+
+### 修改密码
+
+- 网关修改密码（`CMD_CHANGE_PASSWORD`）：需验证旧密码，新密码 6-32 位、不得与旧密码相同并二次确认
+
+### 重置密码
+
+- 管理接口强制重置（`CMD_ACCOUNT_RESET`）：无需旧密码，凭账号 + 管理密钥直接设定新密码
+- 管理密钥成功使用一次后缓存到本地，进入相关页面自动填充，可一键清除
+
+### 物品发放
+
+- 系统邮件投递（`CMD_SEND_ITEMS`）：主背包 / 时装 / 宠物三类附件，支持装备、消耗品、材料、时装、宠物系、时装徽章、副职业材料、公会勋章、守护珠
+- 按账号查询角色下拉选择收件人（`CMD_GET_ROLES`），支持一键清空角色邮箱（`CMD_CLEAR_MAILBOX`）
+- 数量与拆分：不可堆叠物品数量恒为 1，堆叠类由网关按单附件 2,000、单封 10 件自动拆分为多封；时限天数档位换算 `expire_time`
+- 修改离线角色（`CMD_UPDATE_ROLE`）：改名 / 设定等级 / 调整转职觉醒分支，觉醒档位带参考等级门槛防误操作
 
 ## 使用方式
 
-### GitHub Pages 演示
+### 启动游戏
 
-1. 填写游戏 exe 完整路径（如 `D:\Games\Game.exe`）
-2. 填写启动参数（如 `99?127.0.0.1?7001?...`）
-3. 点击「生成注册表」，下载 `register-LaunchHelper.reg` 并双击运行
-4. 点击「登录并启动」，浏览器启动游戏
+1. 首次使用填写游戏 exe 完整路径与启动参数，点击「生成注册表」并运行下载的 `.reg` 文件，注册 `LaunchHelper:` 协议；「卸载注册表」可移除该协议
+2. 点击「登录并启动」，通过自定义协议拉起游戏；网关启用时登录成功后返回的 `launch_args` 自动填入启动参数
 
-> 账号、路径、参数在首次输入后会自动保存到本地，下次打开无需重新填写。
+> 游戏路径、账号等首次输入后自动保存到本地，下次打开无需重新填写。
 
-### 网关启用
+### PVF 编辑
 
-1. 填写账号、密码（首次需先「注册账号」）
-2. 网关验证身份后返回 `launch_args`，自动填入启动参数
-3. 确认游戏路径后点击「登录并启动」
+1. 启动页右上角「PVF 编辑」进入，打开 `.pvf` 文件（如 `Script.pvf`）自动解密解析并生成文件树
+2. 文件树浏览 / 搜索，脚本文件支持语法高亮、代码折叠与直接编辑，右键文件可重命名 / 删除 / 导入替换 / 导出原始字节
+3. `Ctrl+S` 暂存当前文件修改，「导出 PVF」重新打包下载；离开编辑器时若有未保存修改会提示确认
 
-### 卸载协议
+> 打开时自动探测四种 PVF 包头格式——JP / JPAG（`0x55 XOR`）/ CN·US（protected_nkpi）/ TW，无需手动选择。
 
-点击「卸载注册表」，下载 `uninstall-LaunchHelper.reg` 并运行即可移除自定义协议。
+### 物品编码
 
-### PVF 文件编辑
-
-1. 在游戏启动页点击右上角「PVF 编辑」入口进入编辑器
-2. 打开 `.pvf` 文件（如 `Script.pvf`），自动解密解析并生成文件树
-3. 左侧文件树浏览 / 搜索，点击文件查看内容
-4. 脚本文件支持语法高亮、代码折叠、标签悬停提示，可直接编辑
-5. 超大文件（默认超过 50 万字符）只读预览前 2,000 行，点「加载全部内容」进入虚拟滚动全量视图，可搜索并逐条跳转命中行
-6. 右键文件可重命名、删除、导出原始字节、导入外部文件替换
-7. `Ctrl+S` 暂存当前文件修改，点击「导出 PVF」重新打包下载
-
-> 支持修改 / 删除 / 重命名后重新打包，离开编辑器时若有未保存修改会提示确认。
->
-> **关于格式**：工具自动识别四种 PVF 包头格式——JP（原版）、JPAG（Guard，`0x55 XOR`）、CN / US（新版 `protected_nkpi`，UTF-16 seed 密钥流，字符串池使用 `StRa`/`StRw` 大写密钥）、TW（繁体，无文件头魔数，首 4 字节为 `0x81A79011` 密钥流的 32 字节表头、文件树与数据区独立加密），打开时自动探测，无需手动选择。
-
-### 查看物品编码
-
-1. 在游戏启动页点击右上角「查看物品编码」入口进入
-2. 打开 `.pvf` 文件（如 `Script.pvf`），自动定位并解析 `stackable/stackable.lst`、`equipment/equipment.lst`、`creature/creature.lst`
-3. 表格展示物品 ID、类型徽标、物品名称（经字符串表映射）、品质与使用等级、引用路径，大列表虚拟滚动渲染
-4. 顶部搜索框可按物品 ID / 类型 / 物品名称 / 引用路径过滤
-5. 品质色依客户端串表着色（普通 ~ 传说），支持 JP / JPAG（0x55 XOR）/ CN、US（protected_nkpi）/ TW 四种 PVF 包头格式，打开时自动识别并标注；TW 走独立解析层（`TwPvfArchive`），字符串表从 `stringtable.bin` 读取，Big5 编码自动检测
+1. 启动页右上角入口进入，打开 `.pvf` 后自动解析 Stackable / Equipment 两张物品清单
+2. 顶部搜索框与筛选条件定位物品，包头格式在页首自动识别标注
 
 ## 环境变量
 
@@ -75,75 +82,30 @@
 
 环境变量通过 `.env.*` 文件按 Vite 模式加载，`process.env` 优先级高于文件值。
 
-## 部署场景
+## 部署
 
-### 一、本地开发
+| 命令 | 模式 | 网关 | 用途 |
+|---|---|---|---|
+| `yarn dev` | development | 桥接 `127.0.0.1:8000` | 本地开发 |
+| `yarn build` | production | 直连 `VITE_GATEWAY_PATH` | 配合网关部署 |
+| `yarn workflow` | workflow | 关闭认证 | GitHub Pages |
 
-```sh
-yarn install
-yarn dev
-```
-
-- Vite 模式 `development`，加载 `.env` + `.env.development`
-- `VITE_GATEWAY_ENABLED=true`，`VITE_GATEWAY_TARGET=127.0.0.1`，`VITE_GATEWAY_PORT=8000`，`VITE_GATEWAY_PATH=/gateway`
-- `vite-plugin-gateway-bridge.js` 在 dev server 挂载 `VITE_GATEWAY_PATH`（默认 `/gateway`），将浏览器 WebSocket 桥接到后端 TCP `127.0.0.1:8000`（4 字节大端长度前缀帧）
-- 需要后端网关监听 `127.0.0.1:8000`
-- `VITE_PLATFORM_CHECK=false`，便于在非 Windows 环境调试界面
-
-### 二、配合网关部署
-
-```sh
-yarn build
-```
-
-- Vite 模式 `production`，加载 `.env` + `.env.production`
-- `VITE_GATEWAY_ENABLED=true`，前端直连 `ws(s)://<部署域名>${VITE_GATEWAY_PATH}`
-- 产物在 `dist/`，需自行部署到服务器
-- 部署侧需确保 `VITE_GATEWAY_PATH`（默认 `/gateway`）可达：由网关原生 WebSocket 或独立桥接服务（同 dev bridge 的 WS↔TCP 转发）提供
-
-### 三、GitHub Pages（仅演示）
-
-```sh
-yarn workflow
-```
-
-- Vite 模式 `workflow`，加载 `.env` + `.env.workflow`
-- `VITE_GATEWAY_ENABLED=false`，无认证，登录直接走 `LaunchHelper:` 协议本地启动
-- 服务状态圆点不显示、不轮询
-- GitHub Actions 自动执行 `yarn workflow` 构建并部署到 Pages（`.github/workflows/deploy.yml`）
-- `base` 在 CI 环境自动设为 `/launch-helper/`（检测 `GITHUB_ACTIONS`）
-
-#### 启用步骤
-
-1. 将代码推送到 `main` 分支
-2. 进入仓库 **Settings → Pages**，Source 选择 **GitHub Actions**
-3. Workflow 自动构建部署，访问 `https://<用户名>.github.io/launch-helper/`
+- **本地开发**：dev server 通过 `vite-plugin-gateway-bridge.js` 把 `/gateway` 的 WebSocket 以 4 字节大端长度前缀帧桥接到 TCP `127.0.0.1:8000`，需本机运行网关；`VITE_PLATFORM_CHECK=false` 便于非 Windows 调试界面。
+- **配合网关部署**：产物在 `dist/`，前端直连 `ws(s)://<域名>/gateway`，部署侧需保证该路径可达（网关原生 WebSocket 或独立 WS↔TCP 桥接服务）。
+- **GitHub Pages**：关闭网关认证，推送到 `main` 后 Actions 自动构建部署；Pages 来源选 GitHub Actions，访问 `https://<用户名>.github.io/launch-helper/`。
 
 ## 技术实现
 
-### 自定义协议启动流程
+### 自定义协议启动
 
-1. 浏览器通过 `window.location.href = "LaunchHelper:启动参数"` 触发协议
-2. Windows 查找注册表中 `HKEY_CLASSES_ROOT\LaunchHelper\shell\open\command` 的命令
-3. 执行 cmd 命令，从 URL 中剥离协议前缀，以正确的**工作目录**启动游戏 exe
-
-### 注册表命令
-
-生成的注册表命令使用 PowerShell 启动游戏：
+浏览器跳转 `LaunchHelper:<参数>`（不带 `//`，避免 Windows URL 规范化在路径插入多余 `/`）触发协议，Windows 执行注册表项 `HKEY_CLASSES_ROOT\LaunchHelper\shell\open\command` 的命令，剥离协议前缀并以正确的工作目录启动游戏 exe。注册表命令经 PowerShell 隐藏窗口启动：
 
 ```powershell
 powershell -NoProfile -WindowStyle Hidden -Command "$u='%1';$p=$u.Substring($u.IndexOf(':')+1);Start-Process -FilePath '游戏.exe' -ArgumentList $p -WorkingDirectory '游戏目录'"
 ```
 
-- `-NoProfile` 跳过用户配置，确保干净的执行环境
-- `-WindowStyle Hidden` 避免闪现 PowerShell 窗口
-- `$u.Substring($u.IndexOf(':')+1)` 按第一个 `:` 剥离协议前缀，精确无误
-- `Start-Process -WorkingDirectory` 设置工作目录为游戏所在目录，确保游戏能找到自身资源文件
-- `Start-Process -ArgumentList` 将参数作为数据传递给目标进程，规避 `&` `%` `^` 等 cmd 元字符的注入风险
-
-### 协议 URL 格式
-
-使用 `LaunchHelper:参数`（不带 `//`），避免 Windows 对 URL 规范化时在路径中插入多余的 `/`。
+- `-WorkingDirectory` 设为游戏所在目录，确保游戏能找到自身资源文件
+- 参数经 `-ArgumentList` 作数据传递，规避 `&` `%` `^` 等 cmd 元字符的注入风险
 
 ### 网关协议
 
@@ -160,9 +122,12 @@ Response { success, code, message, body, sequence }
 | `CMD_REGISTER` | 2 | 注册账号 |
 | `CMD_LOGIN` | 3 | 登录，返回 `launch_args` |
 | `CMD_CHANGE_PASSWORD` | 4 | 修改密码 |
-| `CMD_ACCOUNT_RESET` | 6 | 管理接口：强制重置密码 |
+| `CMD_ACCOUNT_INFO` | 5 | 查询账号信息（各代币 / 方块数量、注册与最近登录） |
+| `CMD_ACCOUNT_RESET` | 6 | 管理接口：无需旧密码强制重置密码 |
 | `CMD_SEND_ITEMS` | 7 | 管理接口：系统邮件投递物品 / 装备 / 时装 / 宠物 |
-| `CMD_GET_ROLES` | 8 | 管理接口：查询账号角色二维数据 |
+| `CMD_GET_ROLES` | 8 | 管理接口：查询账号角色二维数据（树） |
+| `CMD_CLEAR_MAILBOX` | 9 | 管理接口：清空角色邮箱（软删除打标，不要求先领附件） |
+| `CMD_UPDATE_ROLE` | 10 | 管理接口：修改离线角色基础数据（改名 / 设等级 / 转职觉醒） |
 
 每个请求携带递增 `sequence`，响应按 `sequence` 匹配回调；单请求超时 15s。
 
@@ -170,94 +135,41 @@ Response { success, code, message, body, sequence }
 
 ### 物品发放规则
 
-通过 `CMD_SEND_ITEMS`（管理接口，需管理密钥）以系统邮件投递物品，每个附件为一条 `MailAttachment`。以下规则与游戏服务端（GMTool / 网关）的最终行为保持一致：
+通过 `CMD_SEND_ITEMS`（管理接口，需管理密钥）以系统邮件投递物品，每个附件为一条 `MailAttachment`。规则与游戏服务端（GMTool / 网关）最终行为保持一致：
 
-**背包类型（`item_type`）与物品种类（`kind`）**
-
-| 背包类型 | `item_type` | 允许的 `kind` | 领取落库列表 |
+| 背包类型 | `item_type` | 允许的 `kind` | 领取落库 |
 |---|---|---|---|
-| 主背包 | 0 或 2 | 1 装备 / 2 消耗品 / 3 材料 / 9 时装徽章 / 10 副职业材料 / 12 公会勋章 / 13 守护珠 | 主背包（Main=0） |
-| 时装 | 1 | 8 时装 | 时装列表（Avatar=1） |
-| 宠物 | 3 或 7 | 5 宠物本体 / 6 宠物装备 / 7 宠物消耗品 | 宠物列表（Pet=7） |
+| 主背包 | 0 或 2 | 1 装备 / 2 消耗品 / 3 材料 / 9 时装徽章 / 10 副职业材料 / 12 公会勋章 / 13 守护珠 | 主背包 |
+| 时装 | 1 | 8 时装 | 时装列表 |
+| 宠物 | 3 或 7 | 5 宠物本体 / 6 宠物装备 / 7 宠物消耗品 | 宠物列表 |
 
-- 服务端映射：`item_type` 0|2→主背包、1→时装、3|7→宠物，其余取值非法（返回 `code=1014`）；`2` 为权威 GM 工具的主背包次要入口（case 2 -> Main）。落库时 `item_type` 列写请求原值，映射值只写入 `source_list_type` 列。
-- **拒收种类**：11 特殊材料（账号仓库物品）与 14 史诗碎片（账号图鉴通道）不能作为邮件附件，与权威 GM 工具附件黑名单一致（返回 `code=1014`）；4 任务品暂未开放。
-- **公会勋章（12）/ 守护珠（13）**：可作为主背包附件投递；领取后由服务端按 ItemKind 路由到公会列表（GuildMedal=38）。公会勋章按装备类编码，支持强化 / 增幅。
-- **`kind` 必须与物品 ID 的实际类型一致**：网关按 `kind` 直接编码 99B `item_core` BLOB（82B legacy + 17B A21 尾，无 PVF 兜底解析），服务端领取时按 kind 字节决定落库列表（8→时装列表、5/6/7→宠物列表），不一致会被网关拒绝（`code=1014`）或落入错误背包。物品 ID 的实际类型按 PVF 元数据判定：路径含 `/avatar/`→时装、装备类型 `[creature]`→宠物本体、`artifact`→宠物装备、堆叠 `[creature]`/`[feed]`→宠物消耗品。
+- `kind` 必须与物品 ID 的实际类型一致（按 PVF 元数据判定：路径含 `/avatar/`→时装、装备 `[creature]`→宠物本体、`artifact`→宠物装备、堆叠 `[creature]`/`[feed]`→宠物消耗品），网关按 `kind` 直接编码 BLOB，不一致返回 `code=1014` 或落入错误背包。
+- 拒收种类：11 特殊材料、14 史诗碎片（账号级通道不能作邮件附件）；4 任务品暂未开放。
+- 数量：不可堆叠物品恒为 1；堆叠物单附件上限 `STACKABLE_COUNT_LIMIT`，服务端超 2000 自动按 2000 拆分，10 条附件/封自动拆多封（标题正文相同）。
+- 限时天数 0=永久；>0 前端换算 `expire_time = now + 天数×86400` 编入 BLOB，仅对装备 / 时装 / 宠物有意义（前端仅对时装与宠物本体开放输入）。
+- 邮件标题可留空，收件箱回退显示正文；发件人固定显示 "GM"。可选幂等键保证整单重试不重复投递。
 
-**数量（`count`）**
+### 服务状态探测与持久化
 
-- 装备 / 时装 / 宠物本体 / 宠物装备 / 公会勋章为不可堆叠物品，数量强制为 1（服务端 `NormalizeInsertCount` 对不可堆叠物品恒返回 1）。
-- 堆叠物品（消耗品 / 材料 / 宠物消耗品 / 时装徽章 / 副职业材料 / 守护珠等）单个附件数量前端上限统一为固定参数 `STACKABLE_COUNT_LIMIT`；服务端单附件超过 2000 时自动按 2000/附件拆分。
+- 网关启用时启动页每 `VITE_HEALTH_INTERVAL` 秒轮询一次 `CMD_HEALTH`：成功且 `status=ok` 显示绿色「服务在线」，否则红色「离线」，请求中灰色「检测中」。
+- Pinia + `pinia-plugin-persistedstate` 将游戏路径、账号、密码、网关状态、管理密钥持久化到 localStorage（key：`launch-helper:game`）。
 
-**限时天数（`expire_days` → `expire_time`）**
+### PVF 编辑器
 
-- 0=永久（默认）。
-- \>0 时前端换算为 Unix 秒：`expire_time = now + 天数 × 86400`。
-- 服务端写入 `item_core.ExpireTime`（编入 99B BLOB），领取时转为时装 / 宠物 detail 的到期时间；仅对限时装备 / 时装 / 宠物有意义。
-- 前端界面对时装（`item_type=1`）与宠物本体（宠物背包 `kind=5`）开放天数输入；其余种类恒填 0（永久）。
+纯前端解析 PVF 归档格式（移植自 C# PvfLib），无需后端：读文件头、分块表、文件表按 key 解密还原数据，编辑后重新加密打包导出。实现要点：
 
-**宠物序列号（`pet_serial_or_handle`）**
-
-- 协议支持传非零 CreatureUid：网关将其编码进 item_core BLOB 的 `Value` 字段，并同源落库 `instance_value` / `pet_serial_or_handle` 两列。
-- 本界面未提供该输入框，恒传 0：即新建宠物 UID=0，由游戏服务端在领取时分配。
-
-**幂等键（`idempotency_key`）**
-
-- 可选：非空时相同键的重试不重复投递（多封时网关按 `键#序号` 派生独立键，整单可安全重试）。
-
-**校验**
-
-- 前端在发放前校验：附件不能为空、每个附件需填写物品 ID 并选择种类；不可堆叠物品（装备 / 时装 / 宠物本体 / 宠物装备 / 公会勋章）数量必须为 1，堆叠物品单附件数量 ≤ `STACKABLE_COUNT_LIMIT`。
-- 网关强制校验：`kind` 必填（1-14 且非 11/14，`0` 非法）、`item_type` 取值必须为 0/1/2/3/7 且与 `kind` 匹配，违例均返回 `code=1014`。
-- 服务端按 10 条附件/封上限自动拆分多封邮件（标题 / 正文相同）；装备附件的强化 / 增幅属性仅对装备类 `kind=1/12` 生效。
-- 邮件标题可留空：留空（或全空白）时收件箱标题回退显示正文内容（对齐权威落库语义）。系统邮件发件人固定显示 "GM"（对齐权威 GM 工具）。
-
-### 服务状态探测
-
-网关启用时，`GameLauncher.vue` 挂载后每 `VITE_HEALTH_INTERVAL` 秒发送一次 `CMD_HEALTH`：
-
-- `data.success && data.status === "ok"` → 绿色「服务在线」（脉冲动画）
-- 否则 → 红色「服务离线」
-- 请求进行中 → 灰色「检测中」（闪烁）
-
-组件卸载时清除定时器。
-
-### 数据持久化
-
-使用 Pinia + `pinia-plugin-persistedstate`，将以下状态写入 `localStorage`（key：`launch-helper:game`）：
-
-- `gamePath` 游戏路径
-- `launchParam` 启动参数
-- `account` 账号
-- `password` 密码
-
-### PVF 文件编辑器（TODO）
-
-纯前端解析 PVF 归档格式（移植自 C# PvfLib），支持解密、解码、编辑、重新打包，无需后端。
-
-- **解析**：读取 PVF 文件头、分块表、文件表，按 key 解密还原原始数据
-- **文件树**：层级树 + 搜索过滤 + 虚拟滚动，支持展开 / 折叠
-- **语法高亮**：highlight.js 自定义 PVF 语言，块标签 `[tag]...[/tag]` 代码折叠、标签悬停提示
-- **多编码**：UTF-8 / GBK / Big5 / EUC-KR，自动检测归档编码，可手动切换
-- **十六进制视图**：二进制文件以 hex 查看
-- **语法校验**：脚本文件保存前校验，错误阻断保存
-- **大文件全量浏览**：超过 50 万字符的文件进入只读分支，虚拟滚动（固定行高 + 缓冲行）渲染数万行不掉帧，行号固定列、横向滚动跟随
-- **内容搜索**：全量视图内置搜索，大小写不敏感匹配原始行；未命中时通过字符串表将 `name_数字` 映射为中文名称后再匹配（如搜「金锭」命中 `name_97`），支持上 / 下一个跳转、行内 `<mark>` 高亮
-- **重新打包**：暂存修改 / 删除 / 重命名后重新加密压缩，导出新 PVF 文件
-- **解析性能**：字符串表 offset→value 缓存 + 文本解码器复用，文件表数百万次 `resolveString` 全 O(1) 查表（百万次约 4ms）；标签按 token 流偏移定向扫描、按 chunk 批量解压（每 chunk 仅解压一次）；文件树增量缓存，删除 / 重命名外零重建，50 万文件大档案秒级加载
-- **繁体（TW）独立解析层**：TW 协议无文件头魔数与分块压缩，由 `TwPvfArchive` 独立实现——32 字节表头 key 流（首 4 字节 `0x81A79011`）+ 文件树/数据区双密钥流加密；`stringtable.bin` 解析为 `索引>文本` 视图（184K 条，内部换行转义 `\n` 显示、编辑回写还原并重建字节）；`n_string.lst`（strlst）引用表关联展示 `*.kor.str` 文本；`.str` 与 `.bin` 统一 `key>text` 三色渲染（前缀红 / `>` 淡蓝 / 内容灰，`//` 注释整行灰）；`.ani` 解析帧数、图像路径与帧数据；UTF-16LE 编码的 `.lua` 自动检测解码为源码；`.lst` 行内提取的名称以灰色展示（hljs 高亮后整体替换），点击引用路径按小写不敏感命中跳转；Big5 文本以 `big5Encoder` 解码，无修改保存字节一致
+- **解析性能**：字符串表 offset→value 缓存 + 文本解码器复用，文件表数百万次 `resolveString` 全 O(1) 查表；标签按 token 流偏移定向扫描、按 chunk 批量解压；文件树增量缓存，删除 / 重命名外零重建，50 万文件大档案秒级加载
+- **语法高亮**：highlight.js 自定义 PVF 语言，块标签代码折叠、标签悬停提示；脚本保存前经 `pvfValidator.js` 校验，错误阻断
+- **底层库分层**：`pvfTool.js` 的 `PvfArchive` 覆盖 JP / JPAG / CN·US 格式，繁体 TW 无魔数双密钥流协议由 `pvfToolTw.js` 的 `TwPvfArchive` 独立实现（表头 key 流首 4 字节 `0x81A79011`，文件树与数据区独立加密，Big5 解码无修改保存字节一致）；加解密、压缩与二进制读写进一步下沉到 `pvfCodec.js`
+- **TW 内容渲染**：`.str` / `.bin` 统一 `key>text` 三色渲染（`//` 注释整行灰），`n_string.lst` 引用关联展示文本，点击引用路径小写不敏感命中跳转；`.ani` 解析帧与图像路径，UTF-16LE `.lua` 自动检测解码
 
 ### 物品编码查看
 
-独立于编辑器的只读工具，复用 `PvfArchive` 解析能力：
+独立于编辑器的只读工具，复用 `PvfArchive` / `TwPvfArchive` 解析能力：
 
-- **自动定位**：打开 `Script.pvf` 后自动检索 `stackable/stackable.lst`、`equipment/equipment.lst`、`creature/creature.lst`（忽略大小写），对应「物品 / 装备 / 宠物」三类
-- **名称映射**：逐行解析编码 / 引用路径，配合字符串表将 `name_数字` 映射为中文物品名（TW 从 `stringtable.bin` 读取，Big5 解码）
-- **品质与使用等级**：按 `[rarity]` / `[minimum level]` 标签从 token 流定向提取，品质色依客户端串表着色（普通 ~ 传说）
-- **虚拟滚动表格**：物品 ID / 类型 / 名称 / 品质 / 使用等级 / 引用路径六列，数万行仅渲染可视区域
-- **搜索过滤**：单输入框按 ID / 类型 / 名称 / 路径实时过滤，带清除按钮
-- **格式识别**：顶部徽章区分「JPAG」（`0x55 XOR` 头）与「JP」、「PROTECTED」（新版 `protected_nkpi`，CN / US），以及「TW」（繁体，走 `TwPvfArchive` 独立解析层，无魔数识别）
+- **自动定位**：打开 `Script.pvf` 后忽略大小写检索 `stackable/stackable.lst` 与 `equipment/equipment.lst`
+- **名称与品质**：逐行解析编码 / 引用路径，`name_数字` 经字符串表映射为中文（TW 从 `stringtable.bin` 读 Big5）；品质细分（传承 / 领主神器 / 魔法封印）与期限分类从 token 流定向提取
+- **筛选维度**：装备 / 宠物 / 装扮侧栏分组与堆叠物背包七段级联过滤（对齐权威 GM 工具分组），加品质、期限、等级区间与单框搜索；虚拟滚动表格仅渲染可视区域
 
 ## 项目结构
 
@@ -265,40 +177,34 @@ Response { success, code, message, body, sequence }
 src/
 ├── App.vue                       # 根组件，全局样式、平台检测
 ├── main.js                       # 应用入口，注册 Pinia 持久化插件
-├── router/index.js               # 路由配置
-├── env.d.ts                      # Vite 环境变量类型声明
+├── router/index.js               # 路由配置（hash 模式）
 ├── components/
-│   ├── GameLauncher.vue          # 启动器主界面（登录、配置、注册表、状态探测）
-│   ├── PvfEditor.vue             # PVF 文件编辑器（解析、编辑、重打包，TW 三色渲染 / 虚拟滚动）
-│   ├── ItemCodeView.vue          # 物品编码查看页（stackable/equipment/creature.lst、品质/等级、虚拟滚动、搜索、TW 解析）
+│   ├── GameLauncher.vue          # 启动器主界面（登录注册改密、协议启动、状态探测）
+│   ├── PvfEditor.vue             # PVF 编辑器（解析、编辑、重打包，TW 渲染、虚拟滚动）
+│   ├── ItemCodeView.vue          # 物品编码查看页（双清单、多维筛选、虚拟滚动）
+│   ├── SendItemView.vue          # 物品发放页（查角色、发邮件、改角色、清邮箱）
 │   ├── MaterialTextField.vue     # Material 风格输入框
 │   └── ModalHost.vue             # 全局弹窗挂载点
-├── hooks/
-│   └── useModal.js               # 弹窗调用 hook（alertModal / openModal）
-├── stores/
-│   └── game.js                   # 游戏状态（路径、参数、账号、密码、注册表生成）
+├── hooks/useModal.js             # 弹窗调用（alertModal / confirmModal / openModal）
+├── stores/game.js                # 游戏状态（路径、账号、密码、管理密钥、注册表生成）
+├── styles/element-plus-dark.css  # Element Plus 弹层深色主题
 └── utils/
     ├── gateway.js                # WebSocket + Protobuf 网关客户端
     ├── gateway.proto             # Protobuf 协议定义
-    ├── pvfTool.js                # PVF 归档库（解析、解密、编辑、重打包）
-    ├── pvfToolTw.js              # 繁体（TW）PVF 独立解析层（无魔数、密钥流协议、stringtable.bin / strlst / .ani / UTF-16LE）
+    ├── pvfCodec.js               # PVF 底层加解密、压缩、二进制读写
+    ├── pvfTool.js                # PVF 归档库 JP/JPAG/CN·US（解析、编辑、重打包）
+    ├── pvfToolTw.js              # 繁体 TW 独立解析层（stringtable.bin / strlst / .ani）
+    ├── jobGrowNames.js           # 职业转职觉醒枚举常量（86JPL 快照固化）
     ├── pvfHighlight.js           # PVF 语法高亮语言定义（highlight.js）
     ├── pvfTags.js                # PVF 标签元数据与提示
     ├── pvfValidator.js           # PVF 脚本语法校验
     ├── encoding.js               # 文本编解码（UTF-8 / GBK / Big5 / EUC-KR）
+    ├── gbkEncoder.js             # GBK 编码映射生成
     ├── big5Encoder.js            # Big5 文本编码（TW 解码支持）
     └── registry.js               # 注册表与 PowerShell 命令生成
 vite-plugin-gateway-bridge.js     # dev server WS↔TCP 桥接插件
 ```
 
-## 构建命令
-
-| 命令 | 模式 | 网关 | 用途 |
-|---|---|---|---|
-| `yarn dev` | development | 桥接 `127.0.0.1:8000` | 本地开发 |
-| `yarn build` | production | 直连 `VITE_GATEWAY_PATH` | 配合网关部署 |
-| `yarn workflow` | workflow | 关闭 | GitHub Pages 部署 |
-
 ## 浏览器支持
 
-推荐使用 Chromium 内核浏览器（Chrome、Edge、Brave 等）。
+推荐 Chromium 内核浏览器（Chrome、Edge、Brave 等），旧版浏览器由 @vitejs/plugin-legacy 自动注入 polyfill。
