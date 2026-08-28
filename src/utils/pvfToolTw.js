@@ -660,8 +660,7 @@ export class TwPvfArchive {
                     out.push("[SPECTRUM]", String(rd.byte()));
                     out.push("[SPECTRUM TERM]", String(rd.i32()));
                     out.push("[SPECTRUM LIFE TIME]", String(rd.i32()));
-                    out.push("[SPECTRUM COLOR]", [this._twPct(rd.byte()), this._twPct(rd.byte()),
-                        this._twPct(rd.byte()), this._twPct(rd.byte())].join("\t"));
+                    out.push("[SPECTRUM COLOR]", [this._twPct(rd.byte()), this._twPct(rd.byte()), this._twPct(rd.byte()), this._twPct(rd.byte())].join("\t"));
                     const se = rd.u16();
                     out.push("[SPECTRUM EFFECT]", `\`${this._twAniEffectName(se)}\``);
                 } else throw new Error("overall tag " + tag + " (" + j + "/" + overallCount + ")");
@@ -690,35 +689,66 @@ export class TwPvfArchive {
                     const tag = rd.u16();
                     const t = this._twAniTagName(tag);
                     switch (tag) {
-                        case 0: case 1: case 10: out.push(`[${t}]`, String(rd.byte())); break;
-                        case 3: out.push(`[${t}]`, String(rd.u16())); break;
-                        case 17: out.push(`[${t}]`, "1"); break;
-                        case 7: out.push(`[${t}]`, `${this._twFmtF(rd.f32())}\t${this._twFmtF(rd.f32())}`); break;
-                        case 8: out.push(`[${t}]`, this._twFmtF(rd.f32())); break;
-                        case 9: out.push(`[${t}]`, [this._twPct(rd.byte()), this._twPct(rd.byte()),
-                            this._twPct(rd.byte()), this._twPct(rd.byte())].join("\t")); break;
+                        case 0:
+                        case 1:
+                        case 10:
+                            out.push(`[${t}]`, String(rd.byte()));
+                            break;
+                        case 3:
+                            out.push(`[${t}]`, String(rd.u16()));
+                            break;
+                        case 17:
+                            out.push(`[${t}]`, "1");
+                            break;
+                        case 7:
+                            out.push(`[${t}]`, `${this._twFmtF(rd.f32())}\t${this._twFmtF(rd.f32())}`);
+                            break;
+                        case 8:
+                            out.push(`[${t}]`, this._twFmtF(rd.f32()));
+                            break;
+                        case 9:
+                            out.push(`[${t}]`, [this._twPct(rd.byte()), this._twPct(rd.byte()), this._twPct(rd.byte()), this._twPct(rd.byte())].join("\t"));
+                            break;
                         case 11: {
                             const e = rd.u16();
                             out.push(`[${t}]`, `\`${this._twAniEffectName(e)}\``);
-                            if (e === 5) out.push([this._twPct(rd.byte()), this._twPct(rd.byte()),
-                                this._twPct(rd.byte())].join("\t"));
+                            if (e === 5) out.push([this._twPct(rd.byte()), this._twPct(rd.byte()), this._twPct(rd.byte())].join("\t"));
                             if (e === 6) out.push(`${rd.i16()}\t${rd.i16()}`);
                             break;
                         }
-                        case 12: out.push(`[${t}]`, String(rd.i32())); break;
-                        case 13: { const v = rd.u16(); out.push(`[${t}]`, `\`${this._twAniDamageName(v)}\``); break; }
+                        case 12:
+                            out.push(`[${t}]`, String(rd.i32()));
+                            break;
+                        case 13: {
+                            const v = rd.u16();
+                            out.push(`[${t}]`, `\`${this._twAniDamageName(v)}\``);
+                            break;
+                        }
                         case 16: {
                             const len = rd.i32();
                             if (len <= 0 || len > 512) throw new Error("frame" + k + " sound len " + len);
                             out.push(`[${t}]`, `\`${rd.str(len)}\``);
                             break;
                         }
-                        case 23: out.push(`[${t}]`, String(rd.i32())); break;
-                        case 24: { const v = rd.u16(); out.push(`[${t}]`, `\`${this._twAniFlipName(v)}\``); break; }
-                        case 25: out.push(`[${t}]`); break;
-                        case 26: out.push(`[${t}]`, String(rd.i32())); break;
-                        case 27: out.push(`[${t}]`, `${rd.i16()}\t${rd.i16()}\t${rd.i16()}\t${rd.i16()}`); break;
-                        default: throw new Error("frame" + k + " item tag " + tag);
+                        case 23:
+                            out.push(`[${t}]`, String(rd.i32()));
+                            break;
+                        case 24: {
+                            const v = rd.u16();
+                            out.push(`[${t}]`, `\`${this._twAniFlipName(v)}\``);
+                            break;
+                        }
+                        case 25:
+                            out.push(`[${t}]`);
+                            break;
+                        case 26:
+                            out.push(`[${t}]`, String(rd.i32()));
+                            break;
+                        case 27:
+                            out.push(`[${t}]`, `${rd.i16()}\t${rd.i16()}\t${rd.i16()}\t${rd.i16()}`);
+                            break;
+                        default:
+                            throw new Error("frame" + k + " item tag " + tag);
                     }
                 }
                 out.push(...boxLines);
@@ -732,16 +762,47 @@ export class TwPvfArchive {
         return out.join("\n") + "\n";
     }
 
-    _twPct(b) { return String((256.0 + b) % 256.0); }
+    _twPct(b) {
+        return String((256.0 + b) % 256.0);
+    }
 
-    _twFmtF(v) { return Number(v.toPrecision(7)).toString(); }
+    _twFmtF(v) {
+        return Number(v.toPrecision(7)).toString();
+    }
 
     _twAniTagName(tag) {
-        const ANI_TAGS = ["LOOP", "SHADOW", "?", "COORD", "?", "?", "?", "IMAGE RATE",
-            "IMAGE ROTATE", "RGBA", "INTERPOLATION", "GRAPHIC EFFECT", "DELAY", "DAMAGE TYPE",
-            "DAMAGE BOX", "ATTACK BOX", "PLAY SOUND", "PRELOAD", "SPECTRUM", "?", "?", "?", "?",
-            "SET FLAG", "FLIP TYPE", "LOOP START", "LOOP END", "CLIP", "OPERATION"];
-        return ANI_TAGS[tag] ?? ("TAG" + tag);
+        const ANI_TAGS = [
+            "LOOP",
+            "SHADOW",
+            "?",
+            "COORD",
+            "?",
+            "?",
+            "?",
+            "IMAGE RATE",
+            "IMAGE ROTATE",
+            "RGBA",
+            "INTERPOLATION",
+            "GRAPHIC EFFECT",
+            "DELAY",
+            "DAMAGE TYPE",
+            "DAMAGE BOX",
+            "ATTACK BOX",
+            "PLAY SOUND",
+            "PRELOAD",
+            "SPECTRUM",
+            "?",
+            "?",
+            "?",
+            "?",
+            "SET FLAG",
+            "FLIP TYPE",
+            "LOOP START",
+            "LOOP END",
+            "CLIP",
+            "OPERATION"
+        ];
+        return ANI_TAGS[tag] ?? "TAG" + tag;
     }
 
     _twAniEffectName(e) {
@@ -763,12 +824,38 @@ export class TwPvfArchive {
         const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
         return {
             pos: () => i,
-            byte() { return dv.getUint8(i++); },
-            u16() { const v = dv.getUint16(i, true); i += 2; return v; },
-            i16() { const v = dv.getInt16(i, true); i += 2; return v; },
-            i32() { const v = dv.getInt32(i, true); i += 4; return v; },
-            f32() { const v = dv.getFloat32(i, true); i += 4; return v; },
-            str(len) { let s = ""; for (let p = i, e = i + len; p < e; p++) { const b = data[p]; s += b < 0x80 ? String.fromCharCode(b) : "?"; } i += len; return s; }
+            byte() {
+                return dv.getUint8(i++);
+            },
+            u16() {
+                const v = dv.getUint16(i, true);
+                i += 2;
+                return v;
+            },
+            i16() {
+                const v = dv.getInt16(i, true);
+                i += 2;
+                return v;
+            },
+            i32() {
+                const v = dv.getInt32(i, true);
+                i += 4;
+                return v;
+            },
+            f32() {
+                const v = dv.getFloat32(i, true);
+                i += 4;
+                return v;
+            },
+            str(len) {
+                let s = "";
+                for (let p = i, e = i + len; p < e; p++) {
+                    const b = data[p];
+                    s += b < 0x80 ? String.fromCharCode(b) : "?";
+                }
+                i += len;
+                return s;
+            }
         };
     }
 
