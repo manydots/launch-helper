@@ -299,7 +299,7 @@ export default {
             if (!this.validateResetPassword()) return;
             if (!(await this.ensureGatewayOnline())) return;
             this.loading = true;
-            const data = await this.callApi(api.adminResetPassword(this.resetMid.trim(), this.resetNew, this.resetConfirm, this.resetKey.trim()), { errorTitle: "重置失败" });
+            const data = await this.callApi(api.accountResetPassword(this.resetMid.trim(), this.resetNew, this.resetConfirm, this.resetKey.trim()), { errorTitle: "重置失败" });
             this.loading = false;
             if (!data) return;
             if (this.resetKey.trim()) this.store.setAdminAuthKey(this.resetKey.trim());
