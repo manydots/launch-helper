@@ -295,6 +295,26 @@ div.ivc-cascader-popper.el-popper {
 .ivc-cascader-popper .el-scrollbar__thumb {
     background-color: rgba(255, 255, 255, 0.15);
 }
+
+/* ---- el-tag：暗色主题下默认 light 效果（浅色底）刺眼，统一收敛为
+   plain 效果（透明底 + 半透明主色描边 + 主色文字），贴合应用暗色卡片风格。
+   EP 组件样式后加载，.el-tag--plain 会重设 border-color 为 light-5（亮蓝），
+   故用 .el-tag.el-tag--plain 双类提权 + :root:root 前缀双重压制；描边改用
+   rgba 主色半透明（对齐 --outline-3-border 的暗色半透明描边风格）。 ---- */
+:root:root .el-tag.el-tag--plain,
+:root:root .el-tag.el-tag--primary.el-tag--plain {
+    --el-tag-bg-color: transparent;
+    --el-tag-border-color: rgba(91, 140, 255, 0.35);
+    --el-tag-text-color: var(--accent);
+    --el-tag-hover-color: var(--el-color-primary);
+}
+:root:root .el-tag.el-tag--plain .el-tag__close {
+    color: var(--accent);
+}
+:root:root .el-tag.el-tag--plain .el-tag__close:hover {
+    color: #fff;
+    background-color: var(--el-color-primary);
+}
 .ep-popper-dark .el-scrollbar__thumb:hover,
 .ivc-cascader-popper .el-scrollbar__thumb:hover {
     background-color: rgba(255, 255, 255, 0.25);

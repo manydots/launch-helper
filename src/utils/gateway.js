@@ -23,6 +23,8 @@ const ClearMailboxRequest = root.lookupType("gateway.ClearMailboxRequest");
 const ClearMailboxResponse = root.lookupType("gateway.ClearMailboxResponse");
 const UpdateRoleRequest = root.lookupType("gateway.UpdateRoleRequest");
 const UpdateRoleResponse = root.lookupType("gateway.UpdateRoleResponse");
+const ClearInventoryRequest = root.lookupType("gateway.ClearInventoryRequest");
+const ClearInventoryResponse = root.lookupType("gateway.ClearInventoryResponse");
 
 const CMD = {
     HEALTH: 1,
@@ -34,7 +36,8 @@ const CMD = {
     SEND_ITEMS: 7,
     GET_ROLES: 8,
     CLEAR_MAILBOX: 9,
-    UPDATE_ROLE: 10
+    UPDATE_ROLE: 10,
+    CLEAR_INVENTORY: 11
 };
 
 const RESPONSE_TYPES = {
@@ -47,7 +50,8 @@ const RESPONSE_TYPES = {
     [CMD.SEND_ITEMS]: SendItemsResponse,
     [CMD.GET_ROLES]: AccountRoleTree,
     [CMD.CLEAR_MAILBOX]: ClearMailboxResponse,
-    [CMD.UPDATE_ROLE]: UpdateRoleResponse
+    [CMD.UPDATE_ROLE]: UpdateRoleResponse,
+    [CMD.CLEAR_INVENTORY]: ClearInventoryResponse
 };
 
 const CMD_NAMES = {
@@ -60,7 +64,8 @@ const CMD_NAMES = {
     [CMD.SEND_ITEMS]: "SEND_ITEMS",
     [CMD.GET_ROLES]: "GET_ROLES",
     [CMD.CLEAR_MAILBOX]: "CLEAR_MAILBOX",
-    [CMD.UPDATE_ROLE]: "UPDATE_ROLE"
+    [CMD.UPDATE_ROLE]: "UPDATE_ROLE",
+    [CMD.CLEAR_INVENTORY]: "CLEAR_INVENTORY"
 };
 
 const REQUEST_TYPES = {
@@ -73,7 +78,8 @@ const REQUEST_TYPES = {
     [CMD.SEND_ITEMS]: SendItemsRequest,
     [CMD.GET_ROLES]: GetRolesRequest,
     [CMD.CLEAR_MAILBOX]: ClearMailboxRequest,
-    [CMD.UPDATE_ROLE]: UpdateRoleRequest
+    [CMD.UPDATE_ROLE]: UpdateRoleRequest,
+    [CMD.CLEAR_INVENTORY]: ClearInventoryRequest
 };
 
 const TIMEOUT_MS = 15000;
@@ -288,6 +294,13 @@ class GatewayClient {
         const body = UpdateRoleRequest.encode(UpdateRoleRequest.create(payload)).finish();
         return this.send(CMD.UPDATE_ROLE, body, authKey);
     }
+
+    // 按物品类别清除角色背包槽位（CMD_CLEAR_INVENTORY）。
+    // categories 为空数组表示清全部 12 个分类（1-10、12、13）；非空时仅清指定分类。
+    async clearInventory(m_id, character_id, categories, authKey) {
+        const body = ClearInventoryRequest.encode(ClearInventoryRequest.create({ m_id, character_id, categories: categories || [] })).finish();
+        return this.send(CMD.CLEAR_INVENTORY, body, authKey);
+    }
 }
 
 const client = new GatewayClient();
@@ -303,6 +316,5 @@ export const api = {
     getRoles: (m_id, authKey) => client.getRoles(m_id, authKey),
     clearMailbox: (m_id, character_id, authKey) => client.clearMailbox(m_id, character_id, authKey),
     updateRole: (m_id, character_id, changes, authKey) => client.updateRole(m_id, character_id, changes, authKey),
-    // 向后兼容别名
-    adminResetPassword: (m_id, new_password, new_password_confirm, authKey) => client.accountResetPassword(m_id, new_password, new_password_confirm, authKey)
+    clearInventory: (m_id, character_id, categories, authKey) => client.clearInventory(m_id, character_id, categories, authKey)
 };

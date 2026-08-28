@@ -18,6 +18,41 @@ const ITEM_TYPE_OPTIONS = [
 // 限时天数固定档位（0=无期限），协议 expire_time 按提交时刻 + 天数换算
 const EXPIRE_DAY_OPTIONS = [0, 1, 3, 5, 7, 15, 30];
 
+// 清空背包分类（对齐网关 CMD_CLEAR_INVENTORY categories 白名单 1-10、12、13，
+// 取值 = 权威 ItemKind 值；分组仅作前端展示，下发保持原值）。不在清除范围：
+// 个人/账号仓库、穿戴栏、快捷栏、货币槽、晶块/灵魂、特殊材料、史诗碎片。
+const INVENTORY_CATEGORY_OPTIONS = [
+    { value: 1, label: "物品栏·装备", group: "物品栏" },
+    { value: 2, label: "物品栏·消耗品", group: "物品栏" },
+    { value: 3, label: "物品栏·材料", group: "物品栏" },
+    { value: 4, label: "物品栏·任务", group: "物品栏" },
+    { value: 10, label: "物品栏·副职业", group: "物品栏" },
+    { value: 9, label: "装扮·徽章", group: "装扮" },
+    { value: 8, label: "装扮·装扮", group: "装扮" },
+    { value: 5, label: "宠物·宠物", group: "宠物" },
+    { value: 6, label: "宠物·宠物装备", group: "宠物" },
+    { value: 7, label: "宠物·消耗品", group: "宠物" },
+    { value: 12, label: "勋章·勋章", group: "勋章" },
+    { value: 13, label: "勋章·守护珠", group: "勋章" }
+];
+
+// 清空背包分组选项（级联/分组展示用）
+const INVENTORY_CATEGORY_GROUPS = [
+    { value: "item", label: "物品栏", children: [] },
+    { value: "avatar", label: "装扮", children: [] },
+    { value: "pet", label: "宠物", children: [] },
+    { value: "medal", label: "勋章", children: [] }
+].map(g => ({
+    ...g,
+    children: INVENTORY_CATEGORY_OPTIONS.filter(o => o.group === g.label).map(o => ({ value: o.value, label: o.label.replace(`${g.label}·`, "") }))
+}));
+
+// 清空背包分类展示文案（结果明细用）
+const INVENTORY_CATEGORY_NAMES = INVENTORY_CATEGORY_OPTIONS.reduce((acc, o) => {
+    acc[o.value] = o.label;
+    return acc;
+}, {});
+
 // 转职分支（grow_first 0-5）与觉醒档位（grow_second 0-2），对齐网关 grow_type 编码 (second<<4|first)
 const GROW_FIRST_OPTIONS = [
     { value: 0, label: "未转职" },
@@ -50,7 +85,8 @@ export default {
             GROW_SECOND_OPTIONS,
             TRANSFER_MIN_LEVEL,
             AWAKEN_MIN_LEVEL,
-            ROLE_LEVEL_MAX
+            ROLE_LEVEL_MAX,
+            INVENTORY_CATEGORY_GROUPS
         };
     },
     data() {
@@ -64,6 +100,9 @@ export default {
             itemsRoleId: "",
             itemsLoadingRoles: false,
             clearingMailbox: false,
+            // ── 清空背包（CMD_CLEAR_INVENTORY）面板状态 ──
+            clearInvSelected: [],
+            clearingInventory: false,
             // ── 修改角色（CMD_UPDATE_ROLE）面板状态：三组修改独立启用，未启用组不下发 ──
             roleEnableName: false,
             roleEnableLevel: false,
@@ -506,6 +545,79 @@ export default {
                     : `角色「${data.character_name || roleName}」收件箱没有可清理的邮件。`
             });
         },
+        onClearInvCategoryChange(v) {
+            // 多选级联下第一级分组节点（value 为字符串）会随联动进入数组，需过滤，
+            // 只保留叶子分类的数字值，避免分组占位值（NaN）混入提交的 categories
+            this.clearInvSelected = (Array.isArray(v) ? v : []).map(Number).filter(n => Number.isInteger(n) && n > 0);
+        },
+        clearInvCategoryName(category) {
+            return INVENTORY_CATEGORY_NAMES[category] || `分类${category}`;
+        },
+        // 校验账号/密钥/角色（与 doClearMailbox 同一套前置检查），返回目标角色名
+        async clearInvPreflight() {
+            const mid = this.itemsMid.trim();
+            if (!mid) {
+                this.itemsErrors = { ...this.itemsErrors, mid: "账号不能为空" };
+                return null;
+            }
+            if (!this.itemsKey.trim()) {
+                this.itemsErrors = { ...this.itemsErrors, key: "管理密钥不能为空" };
+                return null;
+            }
+            if (!this.itemsRoleId) {
+                this.itemsErrors = { ...this.itemsErrors, role: "请选择角色" };
+                return null;
+            }
+            if (!(await this.ensureGatewayOnline())) return null;
+            const role = this.itemsRoles.find(r => String(r.character_id) === this.itemsRoleId);
+            return role ? role.name : `角色ID ${this.itemsRoleId}`;
+        },
+        async doClearInventory() {
+            const roleName = await this.clearInvPreflight();
+            if (roleName == null) return;
+            const categories = this.clearInvSelected;
+            if (!categories.length) {
+                await alertModal({ title: "未选择分类", message: "请至少选择一个清除分类。" });
+                return;
+            }
+            const scopeLine = `分类：${categories.map(c => this.clearInvCategoryName(c)).join("、")}`;
+            const confirmed = await confirmModal({
+                title: "清空背包确认",
+                message: [
+                    `目标角色：「${roleName}」`,
+                    `清除范围：${scopeLine}`,
+                    "",
+                    "将对选中分类的背包槽位执行物理删除（数量清为 0 的物品行一并移除），不可恢复。",
+                    "不含仓库与穿戴栏：装备/货币/晶块/灵魂等始终保留。",
+                    "仅对离线角色生效；在线角色的背包会被服务端内存态覆盖，请先下线再操作。是否继续？"
+                ].join("\n"),
+                confirmText: "确认清空",
+                cancelText: "取消"
+            });
+            if (!confirmed) return;
+            this.clearingInventory = true;
+            const data = await this.callApi(api.clearInventory(this.itemsMid.trim(), Number(this.itemsRoleId), categories, this.itemsKey.trim()), { errorTitle: "清空背包失败" });
+            this.clearingInventory = false;
+            if (!data) return;
+            this.saveAuthKey();
+            const lines = [`目标角色：${data.character_name || roleName}`];
+            const detail = (data.results || []).filter(r => r && r.deleted_count > 0);
+            if (data.deleted_count > 0) {
+                if (detail.length) {
+                    lines.push(`共清除 ${data.deleted_count} 行物品，明细如下：`);
+                    detail.forEach(r => lines.push(`· ${this.clearInvCategoryName(r.category)}：${r.deleted_count} 行`));
+                } else {
+                    lines.push(`共清除 ${data.deleted_count} 行物品。`);
+                }
+            } else {
+                lines.push("所选分类下没有可清除的物品。");
+            }
+            lines.push("若角色在线，需下线后重新选角才能看到清理结果。");
+            await alertModal({
+                title: data.deleted_count ? "清空成功" : "无需清理",
+                message: lines.join("\n")
+            });
+        },
         addAttachment() {
             const incomplete = this.itemsList.find(a => a.item_type === "" || !a.kind || !a.item_id || a.count < 1);
             if (incomplete) {
@@ -686,8 +798,27 @@ export default {
                             </el-select>
                             <span v-if="itemsErrors.role" class="field-error">{{ itemsErrors.role }}</span>
                         </div>
+                        <div class="side-divider"></div>
+                        <div class="field">
+                            <span class="field-label">清空背包分类</span>
+                            <el-cascader
+                                v-model="clearInvSelected"
+                                :options="INVENTORY_CATEGORY_GROUPS"
+                                :props="{ multiple: true, checkStrictly: false, emitPath: false, value: 'value', label: 'label', children: 'children' }"
+                                :show-all-levels="false"
+                                collapse-tags-tooltip
+                                tag-type="primary"
+                                tag-effect="plain"
+                                clearable
+                                filterable
+                                placeholder="选择要清除的分类（可多选）"
+                                popper-class="ep-popper-dark"
+                                @update:model-value="onClearInvCategoryChange" />
+                            <p class="att-tip">按物品类别清除对应背包槽位；不含仓库与穿戴栏，仅离线角色生效。</p>
+                        </div>
                         <div class="side-actions">
                             <el-button class="clear-btn" type="danger" plain :loading="clearingMailbox" @click="doClearMailbox">清空邮件</el-button>
+                            <el-button v-if="clearInvSelected.length" class="clear-btn" type="danger" plain :loading="clearingInventory" @click="doClearInventory">清空背包</el-button>
                         </div>
                     </template>
                 </section>
@@ -1018,11 +1149,15 @@ export default {
 .side-actions {
     margin-top: 14px;
     display: flex;
-    justify-content: flex-end;
+    flex-direction: column;
+    gap: 8px;
 }
 .query-btn,
 .clear-btn {
     width: 100%;
+    /* 压掉 EP 的 .el-button + .el-button { margin-left: 12px } 相邻间距，
+       本处垂直排列由 .side-actions 的 column flex + gap 控制 */
+    margin-left: 0;
 }
 .panel {
     background: var(--surface);
@@ -1280,6 +1415,10 @@ export default {
     .side {
         width: 100%;
         position: static;
+    }
+    .main {
+        width: 100%;
+        flex: 1 0 auto;
     }
     .app-header {
         flex-wrap: wrap;

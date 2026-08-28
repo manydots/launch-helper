@@ -17,6 +17,7 @@ enum Command {
   CMD_GET_ROLES       = 8; // 管理接口：查询账号角色二维数据(树)
   CMD_CLEAR_MAILBOX   = 9; // 管理接口：清空角色邮箱（软删除打标，GM 不要求先领附件）
   CMD_UPDATE_ROLE     = 10; // 管理接口：修改角色基础数据（改名/设等级/转职觉醒），仅适用于离线角色
+  CMD_CLEAR_INVENTORY = 11; // 管理接口：按物品类别分类清除角色背包槽位（仓库/穿戴栏不可清），仅适用于离线角色
 }
 
 // 通用请求头（TCP + UDP + WebSocket 共用）
@@ -226,4 +227,48 @@ message ClearMailboxResponse {
   int32  character_id   = 2; // 实际清理角色
   string character_name = 3; // 实际清理角色名
   int32  deleted_count  = 4; // 本次打删除标记的邮件数（0 表示无可清理邮件，仍为成功）
+}
+
+// --- CMD_CLEAR_INVENTORY ---
+// 按物品类别（ItemKind 口径）分类清除角色背包槽位。仅适用于离线角色：
+// 在线角色的背包真源在服务端内存，直改 DB 会被内存态覆盖。
+// 清除分类（categories 取值 = 权威 ItemKind 值）与清除范围（槽位段含两端）：
+//   1  物品栏·装备     Main(0)          slot 9-64
+//   2  物品栏·消耗品   Main(0)          slot 65-120
+//   3  物品栏·材料     Main(0)          slot 121-176
+//   4  物品栏·任务     Main(0)          slot 177-232
+//   5  宠物·宠物       Pet(7)           slot 0-139
+//   6  宠物·宠物装备   Pet(7)           slot 140-188
+//   7  宠物·消耗品     Pet(7)           slot 189-239
+//   8  装扮·装扮       Avatar(1)        整容器 slot 0-209
+//   9  装扮·徽章       Main(0)          slot 289-351
+//   10 物品栏·副职业   Main(0)          slot 233-288
+//   12 勋章·勋章       GuildMedal(38)   slot 0-48
+//   13 勋章·守护珠     GuildMedal(38)   slot 49-97
+// 不在清除范围：个人仓库(2)、账号仓库(12)、穿戴栏 Equipment(3)（唯一穿戴态容器，
+// 穿戴装备 = 武器/称号/防具/首饰/辅助装备/副武器/魅力，穿戴中的时装、出战宠物、
+// 宠物神器装备、穿戴勋章）、主背包快捷栏段、货币槽、晶块/灵魂（accounts 同源）、
+// 预留段、特殊材料（ItemKind 11，无对应 UI 分类）、称号簿/QuickSlot/骑士盾、
+// 史诗碎片（账号图鉴通道）。
+// categories 白名单为 1-10、12、13；白名单外取值（含 11/14/101/102 等）返回 code=1020。
+// 删除为物理 DELETE（不是数量置 0）；清装扮(8)联动删 character_avatar_detail、
+// 清宠物(5)联动删 character_creatures；装备锁记录原样保留；
+// 逐槽写入 inventory_audit_log；不发系统邮件、不触碰点券（accounts.cera）。
+message ClearInventoryRequest {
+  string m_id         = 1; // 目标账号
+  int32  character_id = 2; // 目标角色ID（必填，必须 > 0）
+  // 可选分类过滤（清除分类，取值 = 权威 ItemKind 值）：为空 = 清全部 12 个分类
+  // （1-10、12、13）；非空 = 仅清指定分类（白名单校验，未定义取值返回 code=1020）
+  repeated int32 categories = 3;
+}
+message ClearInventoryListResult {
+  int32 category      = 1; // 清除分类（权威 ItemKind 值）
+  int32 deleted_count = 2; // 该分类本次删除的物品行数
+}
+message ClearInventoryResponse {
+  int64  account_id     = 1; // 账号ID
+  int32  character_id   = 2; // 实际清理角色
+  string character_name = 3; // 实际清理角色名
+  int32  deleted_count  = 4; // 本次删除的物品总行数（0 表示无可清理物品，仍为成功）
+  repeated ClearInventoryListResult results = 5; // 按分类细分的删除计数
 }
