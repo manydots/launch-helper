@@ -4,8 +4,10 @@
 // NpkImageDecoder / PngEncoder），格式规则见 docs/npk-format.md。
 // 零第三方依赖：zlib 用浏览器原生 DecompressionStream("deflate")，PNG 编码手写。
 //
-// 加解密算法以注册表形式组织（NPK_FORMATS），当前仅实现 JP；后续扩展其它客户端
-// 类型时在注册表追加 { id, label, magic, parse } 即可，界面自动跟随下拉。
+// 加解密算法以注册表形式组织（NPK_FORMATS）。JP 与 TW（台服）NPK 格式同构：
+// 魔数与条目名 XOR 密钥一致，实测台服 NPK（如 sprite_interface2_charactercreate.NPK）
+// 可直接按 JP 规则解析（IMG 同为 v2 / ARGB8888），故共用一个实现。
+// 后续扩展其它客户端类型时在注册表追加 { id, label, magic, parse } 即可，界面自动跟随下拉。
 
 const NPK_MAGIC_JP = "NeoplePack_Bill";
 
@@ -82,8 +84,8 @@ function parseJp(buffer) {
     return { count: entries.length, entries };
 }
 
-// 加解密算法注册表。后续扩展其它客户端类型时在此追加。
-export const NPK_FORMATS = [{ id: "jp", label: "JP", magic: NPK_MAGIC_JP, parse: parseJp }];
+// 加解密算法注册表。JP 与 TW 格式同构共用实现；后续扩展其它客户端类型时在此追加。
+export const NPK_FORMATS = [{ id: "jp", label: "JP / TW", magic: NPK_MAGIC_JP, parse: parseJp }];
 
 export function parseNpk(buffer, formatId = "jp") {
     const format = NPK_FORMATS.find(f => f.id === formatId) || NPK_FORMATS[0];
@@ -366,7 +368,8 @@ export function encodeBmp(width, height, rgba) {
     const out = new Uint8Array(fileSize);
 
     // BITMAPFILEHEADER (14 bytes)
-    out[0] = 0x42; out[1] = 0x4D; // 'BM'
+    out[0] = 0x42;
+    out[1] = 0x4d; // 'BM'
     writeU32LE(out, 2, fileSize);
     writeU16LE(out, 6, 0); // reserved
     writeU16LE(out, 8, 0); // reserved
@@ -388,14 +391,14 @@ export function encodeBmp(width, height, rgba) {
     // 像素数据（BMP bottom-up：从最后一行开始写入）
     for (let y = 0; y < height; y++) {
         const srcY = height - 1 - y;
-        const srcOff = (srcY * width * 4);
+        const srcOff = srcY * width * 4;
         const dstOff = headerSize + y * stride;
         for (let x = 0; x < width; x++) {
             const si = srcOff + x * 4;
             const di = dstOff + x * 4;
-            out[di] = rgba[si + 2];     // B
+            out[di] = rgba[si + 2]; // B
             out[di + 1] = rgba[si + 1]; // G
-            out[di + 2] = rgba[si];     // R
+            out[di + 2] = rgba[si]; // R
             out[di + 3] = rgba[si + 3]; // A
         }
     }
@@ -512,16 +515,16 @@ export function encodePixels(rgba, width, height, type) {
         if (type === 0x0e) {
             // ARGB1555
             const aBit = a >= 128 ? 0x8000 : 0;
-            const r5 = ((r * 31 / 255) + 0.5) | 0;
-            const g5 = ((g * 31 / 255) + 0.5) | 0;
-            const b5 = ((b * 31 / 255) + 0.5) | 0;
+            const r5 = ((r * 31) / 255 + 0.5) | 0;
+            const g5 = ((g * 31) / 255 + 0.5) | 0;
+            const b5 = ((b * 31) / 255 + 0.5) | 0;
             pixel = aBit | (r5 << 10) | (g5 << 5) | b5;
         } else {
             // ARGB4444
-            const a4 = ((a * 15 / 255) + 0.5) | 0;
-            const r4 = ((r * 15 / 255) + 0.5) | 0;
-            const g4 = ((g * 15 / 255) + 0.5) | 0;
-            const b4 = ((b * 15 / 255) + 0.5) | 0;
+            const a4 = ((a * 15) / 255 + 0.5) | 0;
+            const r4 = ((r * 15) / 255 + 0.5) | 0;
+            const g4 = ((g * 15) / 255 + 0.5) | 0;
+            const b4 = ((b * 15) / 255 + 0.5) | 0;
             pixel = (a4 << 12) | (r4 << 8) | (g4 << 4) | b4;
         }
         out[i] = pixel & 0xff;

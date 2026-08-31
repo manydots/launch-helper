@@ -1,14 +1,14 @@
-# NPK 归档预览与编辑格式（JP / ImagePacks2）
+# NPK 归档预览与编辑格式（JP / TW / ImagePacks2）
 
 ## 1. 概述
 
-本模块在 launch-helper 中提供 **NPK**（客户端 `ImagePacks2`）归档的**预览与编辑**能力：选择单个 `.NPK` 文件，解密条目名并解码 IMG 帧，以 PNG 预览；支持 IMG 帧替换、导入/导出、保存（下载修改后的 NPK）。适配 JP（日服）NPK 格式。
+本模块在 launch-helper 中提供 **NPK**（客户端 `ImagePacks2`）归档的**预览与编辑**能力：选择单个 `.NPK` 文件，解密条目名并解码 IMG 帧，以 PNG 预览；支持 IMG 帧替换、导入/导出、保存（下载修改后的 NPK）。适配 JP（日服）与 TW（台服）NPK 格式。
 
 实现为纯前端解析（`src/utils/npkTool.js`），零第三方依赖：zlib 解压使用浏览器原生 `DecompressionStream("deflate")`，PNG 编码手写（IHDR / IDAT / IEND + CRC32），BMP 编码手写，SHA256 用 WebCrypto（Node 回退 `node:crypto`）。
 
 **加解密算法保持不变**：条目名解密/加密沿用原有 XOR 算法；保存时重建 NPK 头部、条目表与 SHA256 校验（参考权威工具 ExtractorSharp 的 `NpkCoder.WriteNpk / CompileHash` 布局）。
 
-## 2. 格式规则（JP）
+## 2. 格式规则（JP / TW）
 
 ### 2.1 NPK 归档头
 
@@ -82,7 +82,7 @@ S4A21GmTool 对非 0 统一走 zlib 尝试解压、失败回退原始字节；�
 ## 3. 实现
 
 - `src/utils/npkTool.js`：NPK 解析 / IMG 帧解析 / 帧解码 / PNG / BMP 编码 / IMG 与 NPK 重建。
-  - `NPK_FORMATS`：加解密算法注册表，每项 `{ id, label, magic, parse }`；当前仅实现 **JP**（XOR 名称解密），后续其它客户端类型在注册表追加实现即可。
+  - `NPK_FORMATS`：加解密算法注册表，每项 `{ id, label, magic, parse }`；当前实现 **JP / TW**（二者格式同构，共用 XOR 名称解密实现），后续其它客户端类型在注册表追加实现即可。
   - `parseNpk(buffer, format)` → `{ entries: [{ name, offset, size }], count }`
   - `readImgEntry(buffer, entry)` → `{ frames: [...] }`（静态预览用正常帧）
   - `readImgFull(buffer, entry)` → `{ frames: [...] }`（含链接帧 + pixelOffset，编辑用）
@@ -100,7 +100,8 @@ S4A21GmTool 对非 0 统一走 zlib 尝试解压、失败回退原始字节；�
   - **导出**：导出当前帧为 PNG / JPEG / WebP / BMP（多格式贴图），或导出整个 IMG `.img` 字节。
   - **保存**：下载修改后的 NPK（每次编辑后内存缓冲整体重建，加解密算法保持不变）。
   - 修改后显示「N 处修改」角标；所有成功/失败提示使用项目标准弹窗（`useModal`）。
-- **加解密算法下拉选择**：顶栏格式下拉（`NPK_FORMATS` 列表），当前为「JP」；切换格式后重新解析当前文件，便于后期扩展其它客户端 NPK 类型。
+- **加解密算法下拉选择**：顶栏格式下拉（`NPK_FORMATS` 列表），当前为「JP / TW」；切换格式后重新解析当前文件，便于后期扩展其它客户端 NPK 类型。
+  - JP 与 TW（台服）格式同构：魔数与条目名 XOR 密钥一致，实测台服 NPK（如 `sprite_interface2_charactercreate.NPK`，IMG v2 / ARGB8888）可直接按 JP 规则解析预览，无需独立加解密实现。
 - 入口：`src/App.vue` 右上角「NPK 预览」按钮 → 路由 `/Npk`。
 
 ## 4. 测试脚本

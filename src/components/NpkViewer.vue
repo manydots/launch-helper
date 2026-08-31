@@ -3,17 +3,7 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { alertModal, confirmModal } from "@/hooks/useModal";
 import { ElInput, ElInputNumber, ElSelect, ElOption, ElSwitch, ElTree } from "element-plus";
-import {
-    NPK_FORMATS,
-    parseNpk,
-    readImgEntry,
-    readImgFull,
-    decodeFrameToPng,
-    encodeFrameFromRgba,
-    encodeImg,
-    encodeNpk,
-    encodeBmp
-} from "@/utils/npkTool.js";
+import { NPK_FORMATS, parseNpk, readImgEntry, readImgFull, decodeFrameToPng, encodeFrameFromRgba, encodeImg, encodeNpk, encodeBmp } from "@/utils/npkTool.js";
 
 const FORMAT_KEY = "launch-helper:npk-format";
 const PLAY_KEY = "launch-helper:npk-play-interval";
@@ -420,7 +410,24 @@ async function commitFrameReplace(rgba, width, height, type, meta) {
     const newFrame = await encodeFrameFromRgba(rgba, width, height, type, meta.keyX, meta.keyY, meta.maxWidth, meta.maxHeight);
     const u8 = new Uint8Array(rawBuffer.value);
     const full = readImgFull(u8, entry);
-    const frames = full.frames.map((f, i) => (i === targetFrameIndex ? newFrame : f));
+    // readImgFull 的像素帧仅含 pixelOffset（无 pixelData），encodeImg 需要逐帧 pixelData，
+    // 未替换帧需从原始 buffer 提取（对齐 importImgFile 的规范化重建）
+    const frames = full.frames.map((f, i) => {
+        if (i === targetFrameIndex) return newFrame;
+        if (f.type === 0x11) return f;
+        return {
+            type: f.type,
+            compression: f.compression,
+            width: f.width,
+            height: f.height,
+            size: f.size,
+            keyX: f.keyX,
+            keyY: f.keyY,
+            maxWidth: f.maxWidth,
+            maxHeight: f.maxHeight,
+            pixelData: u8.subarray(f.pixelOffset, f.pixelOffset + f.size)
+        };
+    });
     const imgBytes = await encodeImg(frames);
     loading.value = true;
     loadingMessage.value = "正在重建 NPK...";
@@ -484,7 +491,7 @@ function saveNpk() {
         editedNames.clear();
         dirty.value = false;
         dirtyCount.value = 0;
-        alertModal({ title: "保存完成", message: "已生成保存文件（下载中），加解密算法保持不变。" });
+        alertModal({ title: "保存完成", message: "已生成保存文件（下载中）。" });
     } catch (err) {
         alertModal({ title: "保存失败", message: (err && err.message) || "保存失败。" });
     }
@@ -850,8 +857,21 @@ onBeforeUnmount(() => {
                 <span class="npk-edit-actions">
                     <!-- 替换当前帧 -->
                     <span class="npk-menu-wrap">
-                        <button class="npk-edit-btn" :disabled="!selected || !currentFrameMeta || currentFrameMeta.type === 0x11" title="替换当前帧" @click="replaceMenu = !replaceMenu; exportMenu = false; importMenu = false">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12a9 9 0 0 1 15-6.7L21 8" /><polyline points="21 3 21 8 16 8" /><path d="M21 12a9 9 0 0 1-15 6.7L3 16" /><polyline points="3 21 3 16 8 16" /></svg>
+                        <button
+                            class="npk-edit-btn"
+                            :disabled="!selected || !currentFrameMeta || currentFrameMeta.type === 0x11"
+                            title="替换当前帧"
+                            @click="
+                                replaceMenu = !replaceMenu;
+                                exportMenu = false;
+                                importMenu = false;
+                            ">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                                <path d="M3 12a9 9 0 0 1 15-6.7L21 8" />
+                                <polyline points="21 3 21 8 16 8" />
+                                <path d="M21 12a9 9 0 0 1-15 6.7L3 16" />
+                                <polyline points="3 21 3 16 8 16" />
+                            </svg>
                             替换
                         </button>
                         <div v-if="replaceMenu" class="npk-menu">
@@ -869,8 +889,19 @@ onBeforeUnmount(() => {
 
                     <!-- 导入 IMG -->
                     <span class="npk-menu-wrap">
-                        <button class="npk-edit-btn" title="导入 .img 替换当前 IMG" @click="importMenu = !importMenu; replaceMenu = false; exportMenu = false">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" /></svg>
+                        <button
+                            class="npk-edit-btn"
+                            title="导入 .img 替换当前 IMG"
+                            @click="
+                                importMenu = !importMenu;
+                                replaceMenu = false;
+                                exportMenu = false;
+                            ">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                                <polyline points="17 8 12 3 7 8" />
+                                <line x1="12" y1="3" x2="12" y2="15" />
+                            </svg>
                             导入
                         </button>
                         <div v-if="importMenu" class="npk-menu">
@@ -883,8 +914,20 @@ onBeforeUnmount(() => {
 
                     <!-- 导出 -->
                     <span class="npk-menu-wrap">
-                        <button class="npk-edit-btn" :disabled="!selected" title="导出当前帧 / IMG" @click="exportMenu = !exportMenu; replaceMenu = false; importMenu = false">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
+                        <button
+                            class="npk-edit-btn"
+                            :disabled="!selected"
+                            title="导出当前帧 / IMG"
+                            @click="
+                                exportMenu = !exportMenu;
+                                replaceMenu = false;
+                                importMenu = false;
+                            ">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                                <polyline points="7 10 12 15 17 10" />
+                                <line x1="12" y1="15" x2="12" y2="3" />
+                            </svg>
                             导出
                         </button>
                         <div v-if="exportMenu" class="npk-menu">
@@ -902,7 +945,11 @@ onBeforeUnmount(() => {
 
                     <!-- 保存 -->
                     <button class="npk-edit-btn npk-edit-save" :class="{ disabled: !dirty }" :disabled="!dirty" title="保存修改（下载 NPK）" @click="saveNpk">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" /><polyline points="17 21 17 13 7 13 7 21" /><polyline points="7 3 7 8 15 8" /></svg>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                            <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+                            <polyline points="17 21 17 13 7 13 7 21" />
+                            <polyline points="7 3 7 8 15 8" />
+                        </svg>
                         保存
                     </button>
                     <span v-if="dirty" class="npk-dirty-badge" title="已修改条目数">{{ dirtyCount }} 处修改</span>
@@ -1672,11 +1719,7 @@ onBeforeUnmount(() => {
 }
 .npk-dirty-badge {
     font-size: 0.72rem;
-    color: var(--accent);
-    background: rgba(91, 140, 255, 0.12);
-    border: 1px solid rgba(91, 140, 255, 0.35);
-    border-radius: 10px;
-    padding: 2px 8px;
+    color: var(--text-muted);
     white-space: nowrap;
 }
 .npk-menu-wrap {
