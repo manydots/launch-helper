@@ -29,7 +29,7 @@ const routes = [
     {
         path: "/Npk",
         name: "Npk",
-        component: () => import("@/components/NpkViewer.vue"),
+        component: () => import("@/components/NpkView.vue"),
         meta: { title: "NPK 预览" }
     }
 ];

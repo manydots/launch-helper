@@ -4,10 +4,8 @@
 // NpkImageDecoder / PngEncoder），格式规则见 docs/npk-format.md。
 // 零第三方依赖：zlib 用浏览器原生 DecompressionStream("deflate")，PNG 编码手写。
 //
-// 加解密算法以注册表形式组织（NPK_FORMATS）。JP 与 TW（台服）NPK 格式同构：
-// 魔数与条目名 XOR 密钥一致，实测台服 NPK（如 sprite_interface2_charactercreate.NPK）
-// 可直接按 JP 规则解析（IMG 同为 v2 / ARGB8888），故共用一个实现。
-// 后续扩展其它客户端类型时在注册表追加 { id, label, magic, parse } 即可，界面自动跟随下拉。
+// 加解密算法以注册表形式组织（NPK_FORMATS）。所有 NPK 使用同一套加解密格式：
+// 魔数 `NeoplePack_Bill` + 条目名 XOR 密钥。
 
 const NPK_MAGIC_JP = "NeoplePack_Bill";
 
@@ -84,7 +82,7 @@ function parseJp(buffer) {
     return { count: entries.length, entries };
 }
 
-// 加解密算法注册表。JP 与 TW 格式同构共用实现；后续扩展其它客户端类型时在此追加。
+// 加解密算法注册表。所有 NPK 使用同一套格式。
 export const NPK_FORMATS = [{ id: "jp", label: "JP / TW", magic: NPK_MAGIC_JP, parse: parseJp }];
 
 export function parseNpk(buffer, formatId = "jp") {

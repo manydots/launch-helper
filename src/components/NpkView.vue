@@ -832,7 +832,7 @@ onBeforeUnmount(() => {
                 </svg>
                 <span class="npk-title-text">NPK 预览</span>
             </span>
-            <el-select v-model="formatId" size="small" class="npk-format-select" popper-class="ep-popper-dark" title="加解密算法" @update:model-value="onFormatChange">
+            <el-select v-if="NPK_FORMATS.length > 1" v-model="formatId" size="small" class="npk-format-select" popper-class="ep-popper-dark" title="加解密算法" @update:model-value="onFormatChange">
                 <el-option v-for="f in NPK_FORMATS" :key="f.id" :label="f.label" :value="f.id" />
             </el-select>
             <label v-if="archive" class="npk-autoplay" :class="{ on: autoPlay }" title="自动播放帧预览">
@@ -972,7 +972,7 @@ onBeforeUnmount(() => {
                 </div>
                 <h2>NPK 素材预览</h2>
                 <p>解析 ImagePacks2 的 NPK，解密 IMG帧 并预览</p>
-                <p>加解密算法按格式下拉选择（{{ currentFormatLabel }}）</p>
+                <p v-if="NPK_FORMATS.length > 1">加解密算法按格式下拉选择（{{ currentFormatLabel }}）</p>
                 <button class="btn btn-primary" @click="$refs.fileInputEl && $refs.fileInputEl.click()">
                     <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />

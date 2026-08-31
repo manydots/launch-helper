@@ -82,7 +82,7 @@ S4A21GmTool 对非 0 统一走 zlib 尝试解压、失败回退原始字节；�
 ## 3. 实现
 
 - `src/utils/npkTool.js`：NPK 解析 / IMG 帧解析 / 帧解码 / PNG / BMP 编码 / IMG 与 NPK 重建。
-  - `NPK_FORMATS`：加解密算法注册表，每项 `{ id, label, magic, parse }`；当前实现 **JP / TW**（二者格式同构，共用 XOR 名称解密实现），后续其它客户端类型在注册表追加实现即可。
+  - `NPK_FORMATS`：加解密算法注册表，每项 `{ id, label, magic, parse }`；当前所有 NPK 使用同一套加解密格式（`NeoplePack_Bill` 魔数 + XOR 名称加密）。
   - `parseNpk(buffer, format)` → `{ entries: [{ name, offset, size }], count }`
   - `readImgEntry(buffer, entry)` → `{ frames: [...] }`（静态预览用正常帧）
   - `readImgFull(buffer, entry)` → `{ frames: [...] }`（含链接帧 + pixelOffset，编辑用）
@@ -93,15 +93,14 @@ S4A21GmTool 对非 0 统一走 zlib 尝试解压、失败回退原始字节；�
   - `encodeFrameFromRgba(rgba, w, h, type, keyX, keyY, maxW, maxH)` → `Promise<frame>`（zlib 压缩像素帧）
   - `encodeImg(frames)` → `Promise<Uint8Array>`（重建 IMG v2）
   - `encodeNpk(entries)` → `Promise<Uint8Array>`（重建 NPK：头部 + 条目名加密 + SHA256 校验，布局对齐 ExtractorSharp）
-- `src/components/NpkViewer.vue`：选择 `.NPK` → IMG 树列表 → 点击 IMG 静态预览首帧，点击帧节点切换到指定帧，自动播放可在顶栏配置间隔与模式（无限重复 / 播放一次）。
+- `src/components/NpkView.vue`：选择 `.NPK` → IMG 树列表 → 点击 IMG 静态预览首帧，点击帧节点切换到指定帧，自动播放可在顶栏配置间隔与模式（无限重复 / 播放一次）。
 - **编辑能力**（顶栏按钮，参考 ExtractorSharp 操作逻辑）：
   - **替换**：替换当前帧为本地图片（自动缩放至帧尺寸，可选保持原格式 / ARGB1555 / ARGB4444 / ARGB8888）。
   - **导入**：导入 `.img` 文件替换当前条目（校验 `Neople Img File` 魔数，规范化重建帧）。
   - **导出**：导出当前帧为 PNG / JPEG / WebP / BMP（多格式贴图），或导出整个 IMG `.img` 字节。
   - **保存**：下载修改后的 NPK（每次编辑后内存缓冲整体重建，加解密算法保持不变）。
   - 修改后显示「N 处修改」角标；所有成功/失败提示使用项目标准弹窗（`useModal`）。
-- **加解密算法下拉选择**：顶栏格式下拉（`NPK_FORMATS` 列表），当前为「JP / TW」；切换格式后重新解析当前文件，便于后期扩展其它客户端 NPK 类型。
-  - JP 与 TW（台服）格式同构：魔数与条目名 XOR 密钥一致，实测台服 NPK（如 `sprite_interface2_charactercreate.NPK`，IMG v2 / ARGB8888）可直接按 JP 规则解析预览，无需独立加解密实现。
+- **加解密算法下拉选择**：顶栏格式下拉（`NPK_FORMATS` 列表）；当注册表仅有一项时，下拉框自动隐藏。
 - 入口：`src/App.vue` 右上角「NPK 预览」按钮 → 路由 `/Npk`。
 
 ## 4. 测试脚本
