@@ -26,6 +26,12 @@
 - 超大文件先只读预览前 2,000 行，一键进入虚拟滚动全量视图；内容搜索大小写不敏感，未命中时将 `name_数字` 经字符串表映射为中文再匹配，逐条跳转并高亮
 - TW 独立解析层：无魔数密钥流协议，`stringtable.bin` 串表编辑回写还原字节，`n_string.lst` 引用关联展示文本，`key>text` 三色渲染，`.ani` 动画与 UTF-16LE `.lua` 源码解析
 
+### NPK 预览
+
+- 打开客户端 `ImagePacks2` 的 `.NPK` 归档，解密条目名并虚拟滚动浏览全部条目
+- 点击条目预览 IMG 帧：自动解码为 PNG（ARGB1555 / ARGB4444 / ARGB8888，zlib 解压），多帧条目可切换帧号，显示帧尺寸与像素格式
+- 加解密算法顶栏下拉选择（当前为 JP，XOR 名称解密），切换后自动重新解析，便于扩展其它客户端类型
+
 ### 注册账号
 
 - 网关注册（`CMD_REGISTER`）：账号 3-20 位字母数字，密码 6-32 位并二次确认
@@ -68,6 +74,12 @@
 
 1. 启动页右上角入口进入，打开 `.pvf` 后自动解析 Stackable / Equipment 两张物品清单
 2. 顶部搜索框与筛选条件定位物品，包头格式在页首自动识别标注
+
+### NPK 预览
+
+1. 启动页右上角「NPK 预览」进入，选择 `.NPK` 文件（如 `sprite_common_etc.NPK`）自动解密条目名
+2. 左侧条目列表虚拟滚动浏览全部条目，搜索框按路径过滤
+3. 点击条目右侧预览 IMG 首帧，多帧条目可切换帧号；帧尺寸与像素格式显示在顶部
 
 ## 环境变量
 
@@ -171,6 +183,14 @@ Response { success, code, message, body, sequence }
 - **名称与品质**：逐行解析编码 / 引用路径，`name_数字` 经字符串表映射为中文（TW 从 `stringtable.bin` 读 Big5）；品质细分（传承 / 领主神器 / 魔法封印）与期限分类从 token 流定向提取
 - **筛选维度**：装备 / 宠物 / 装扮侧栏分组与堆叠物背包七段级联过滤（对齐权威 GM 工具分组），加品质、期限、等级区间与单框搜索；虚拟滚动表格仅渲染可视区域
 
+### NPK 素材预览
+
+纯前端只读解析客户端 `ImagePacks2` 的 NPK 归档（`src/utils/npkTool.js`，移植自权威 GM 工具 ImagePack 模块，零第三方依赖）：
+
+- **加解密注册表**：`NPK_FORMATS` 以 `{ id, label, magic, parse }` 组织，当前实现 JP（魔数 `NeoplePack_Bill`、条目名 256 字节 XOR——前缀 `puchikon@neople dungeon and fighter ` + 循环填充 `DNF`）；扩展其它客户端类型时在注册表追加即可，界面顶栏下拉自动跟随
+- **IMG 帧解码**：version 2，像素格式 ARGB1555 / ARGB4444 / ARGB8888，zlib 压缩（浏览器原生 `DecompressionStream`）；链接帧（0x11）静态预览跳过，带偏移画布的帧按 alpha 混合 Blit
+- **PNG 编码**：手写 IHDR / IDAT / IEND + CRC32，解码帧直接输出 PNG 供 `<img>` 预览
+
 ## 项目结构
 
 ```
@@ -182,6 +202,7 @@ src/
 │   ├── GameLauncher.vue          # 启动器主界面（登录注册改密、协议启动、状态探测）
 │   ├── PvfEditor.vue             # PVF 编辑器（解析、编辑、重打包，TW 渲染、虚拟滚动）
 │   ├── ItemCodeView.vue          # 物品编码查看页（双清单、多维筛选、虚拟滚动）
+│   ├── NpkViewer.vue             # NPK 素材预览页（条目列表、IMG 帧解码预览）
 │   ├── SendItemView.vue          # 物品发放页（查角色、发邮件、改角色、清邮箱）
 │   ├── MaterialTextField.vue     # Material 风格输入框
 │   └── ModalHost.vue             # 全局弹窗挂载点
@@ -201,6 +222,7 @@ src/
     ├── encoding.js               # 文本编解码（UTF-8 / GBK / Big5 / EUC-KR）
     ├── gbkEncoder.js             # GBK 编码映射生成
     ├── big5Encoder.js            # Big5 文本编码（TW 解码支持）
+    ├── npkTool.js                # NPK 归档只读解析（加解密注册表、IMG 帧解码、PNG 编码）
     └── registry.js               # 注册表与 PowerShell 命令生成
 vite-plugin-gateway-bridge.js     # dev server WS↔TCP 桥接插件
 ```

@@ -17,6 +17,7 @@
 ## 项目概况
 
 - 核心解析层：`src/utils/pvfTool.js`（JP/JPL/JPAG/CN）、`src/utils/pvfToolTw.js`（繁体 TW 独立层）。
+- NPK 归档只读预览：`docs/npk-format.md`（JP `ImagePacks2` NPK/IMG 格式与加解密算法注册表；解析层 `src/utils/npkTool.js`，界面 `src/components/NpkViewer.vue`，验证脚本 `test/npk-verify.mjs`）。
 - 二进制协议文档：`docs/pvf-tw-format.md`（TW）、`docs/pvf-jp-korean-mojibake.md` / `docs/pvf-us-korean-mojibake.md`（编码修复）、`docs/pvf-item-grant-parsing.md`（脚本语义）。
 - 网关管理协议对接：`docs/gateway-update-role.md`（CMD_UPDATE_ROLE 角色数据修改：proto 同步来源、optional 置位语义、前端前置关系校验与验证脚本；86 版本等级门槛 15 级转职 / 50 级一觉 / 75 级二觉为展示层约定，含等级与觉醒双向约束；物品发放页 `SendItemView.vue` 采用 header / side / main 三区布局——顶部通栏菜单、左侧查询账号角色、右侧功能卡片）。协议真源为同级网关仓库 `proto/gateway.proto`，本仓 `src/utils/gateway.proto` 为运行时副本，两者改动须同步。
 - 职业枚举固化：`docs/pvf-job-grow-names.md`（86JPL `character.lst`/`.chr` 职业→转职→觉醒名单提取语义与快照登记；常量 `src/utils/jobGrowNames.js` 供展示层消费，5 转未定案分支不收录，`test/job-grow-enums.mjs` 为唯一验证脚本）。

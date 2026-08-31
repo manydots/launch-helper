@@ -25,6 +25,12 @@ const routes = [
         name: "SendItem",
         component: () => import("@/components/SendItemView.vue"),
         meta: { title: "物品发放" }
+    },
+    {
+        path: "/Npk",
+        name: "Npk",
+        component: () => import("@/components/NpkViewer.vue"),
+        meta: { title: "NPK 预览" }
     }
 ];
 
