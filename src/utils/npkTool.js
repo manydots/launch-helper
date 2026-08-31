@@ -83,9 +83,7 @@ function parseJp(buffer) {
 }
 
 // 加解密算法注册表。后续扩展其它客户端类型时在此追加。
-export const NPK_FORMATS = [
-    { id: "jp", label: "JP", magic: NPK_MAGIC_JP, parse: parseJp }
-];
+export const NPK_FORMATS = [{ id: "jp", label: "JP", magic: NPK_MAGIC_JP, parse: parseJp }];
 
 export function parseNpk(buffer, formatId = "jp") {
     const format = NPK_FORMATS.find(f => f.id === formatId) || NPK_FORMATS[0];
@@ -179,7 +177,7 @@ function decodePixels(frame, payload) {
             out[di++] = scale5((pixel >> 10) & 0x1f);
             out[di++] = scale5((pixel >> 5) & 0x1f);
             out[di++] = scale5(pixel & 0x1f);
-            out[di++] = (pixel & 0x8000) ? 255 : 0;
+            out[di++] = pixel & 0x8000 ? 255 : 0;
         } else {
             // ARGB4444
             out[di++] = ((pixel >> 8) & 0x0f) * 17;
@@ -192,7 +190,7 @@ function decodePixels(frame, payload) {
 }
 
 function scale5(v) {
-    return (v * 255 / 31) | 0;
+    return ((v * 255) / 31) | 0;
 }
 
 // 带 keyX/keyY/maxWidth/maxHeight 的画布 Blit（alpha 混合，对齐 S4A21GmTool Blit）
@@ -215,11 +213,11 @@ function blit(dest, destW, destH, src, srcW, srcH, x, y) {
                 continue;
             }
             const destAlpha = dest[di + 3];
-            const outAlpha = alpha + (destAlpha * (255 - alpha) / 255) | 0;
+            const outAlpha = (alpha + (destAlpha * (255 - alpha)) / 255) | 0;
             if (outAlpha === 0) continue;
-            dest[di] = (src[si] * alpha + dest[di] * destAlpha * (255 - alpha) / 255) / outAlpha | 0;
-            dest[di + 1] = (src[si + 1] * alpha + dest[di + 1] * destAlpha * (255 - alpha) / 255) / outAlpha | 0;
-            dest[di + 2] = (src[si + 2] * alpha + dest[di + 2] * destAlpha * (255 - alpha) / 255) / outAlpha | 0;
+            dest[di] = ((src[si] * alpha + (dest[di] * destAlpha * (255 - alpha)) / 255) / outAlpha) | 0;
+            dest[di + 1] = ((src[si + 1] * alpha + (dest[di + 1] * destAlpha * (255 - alpha)) / 255) / outAlpha) | 0;
+            dest[di + 2] = ((src[si + 2] * alpha + (dest[di + 2] * destAlpha * (255 - alpha)) / 255) / outAlpha) | 0;
             dest[di + 3] = outAlpha;
         }
     }
@@ -237,7 +235,7 @@ export async function decodeFrameToPng(buffer, entry, frameIndex) {
         try {
             payload = await inflate(raw);
         } catch (err) {
-            throw new Error(`zlib 解压失败：${err && err.message || err}`);
+            throw new Error(`zlib 解压失败：${(err && err.message) || err}`);
         }
     } else {
         payload = raw; // compression 0 / 5 未压缩
@@ -264,7 +262,7 @@ function crc32Table() {
     const table = new Uint32Array(256);
     for (let i = 0; i < 256; i++) {
         let c = i;
-        for (let j = 0; j < 8; j++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+        for (let j = 0; j < 8; j++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
         table[i] = c >>> 0;
     }
     return table;
@@ -345,8 +343,305 @@ function concatBytes(parts) {
     return out;
 }
 
+// ---------- BMP 编码（RGBA -> BMP 32-bit BGRA，零依赖） ----------
+// 写入 LE uint32/uint16
+function writeU32LE(out, offset, v) {
+    out[offset] = v & 0xff;
+    out[offset + 1] = (v >> 8) & 0xff;
+    out[offset + 2] = (v >> 16) & 0xff;
+    out[offset + 3] = (v >> 24) & 0xff;
+}
+function writeU16LE(out, offset, v) {
+    out[offset] = v & 0xff;
+    out[offset + 1] = (v >> 8) & 0xff;
+}
+
+// RGBA → BMP 32-bit（BGRA，每行 4 字节对齐，行倒序）
+export function encodeBmp(width, height, rgba) {
+    const rowBytes = width * 4;
+    const stride = (rowBytes + 3) & ~3; // 4 字节对齐
+    const pixelDataSize = stride * height;
+    const headerSize = 14 + 40; // BITMAPFILEHEADER + BITMAPINFOHEADER
+    const fileSize = headerSize + pixelDataSize;
+    const out = new Uint8Array(fileSize);
+
+    // BITMAPFILEHEADER (14 bytes)
+    out[0] = 0x42; out[1] = 0x4D; // 'BM'
+    writeU32LE(out, 2, fileSize);
+    writeU16LE(out, 6, 0); // reserved
+    writeU16LE(out, 8, 0); // reserved
+    writeU32LE(out, 10, headerSize);
+
+    // BITMAPINFOHEADER (40 bytes)
+    writeU32LE(out, 14, 40); // header size
+    writeI32LE(out, 18, width);
+    writeI32LE(out, 22, height); // positive = bottom-up
+    writeU16LE(out, 26, 1); // planes
+    writeU16LE(out, 28, 32); // bpp
+    writeU32LE(out, 30, 0); // compression BI_RGB
+    writeU32LE(out, 34, pixelDataSize);
+    writeI32LE(out, 38, 2835); // h-res (72 DPI)
+    writeI32LE(out, 42, 2835); // v-res (72 DPI)
+    writeU32LE(out, 46, 0); // colors used
+    writeU32LE(out, 50, 0); // important colors
+
+    // 像素数据（BMP bottom-up：从最后一行开始写入）
+    for (let y = 0; y < height; y++) {
+        const srcY = height - 1 - y;
+        const srcOff = (srcY * width * 4);
+        const dstOff = headerSize + y * stride;
+        for (let x = 0; x < width; x++) {
+            const si = srcOff + x * 4;
+            const di = dstOff + x * 4;
+            out[di] = rgba[si + 2];     // B
+            out[di + 1] = rgba[si + 1]; // G
+            out[di + 2] = rgba[si];     // R
+            out[di + 3] = rgba[si + 3]; // A
+        }
+    }
+    return out;
+}
+
+function writeI32LE(out, offset, v) {
+    if (v < 0) v = 0x100000000 + v;
+    writeU32LE(out, offset, v);
+}
+
 function bytesToAscii(buffer, start, len) {
     let s = "";
     for (let i = start; i < start + len && i < buffer.byteLength; i++) s += String.fromCharCode(buffer[i]);
     return s;
+}
+
+// ---------------------------------------------------------------------------
+// 写回能力（编辑 / 保存）
+//
+// 参考权威工具 ExtractorSharp（d-mod/ExtractorSharp）NpkCoder / Img_Version 的
+// 操作逻辑：IMG 帧替换后按 ARGB 格式重新编码、NPK 保存时重建头部 + 条目名
+// 加密（沿用本模块原有 XOR 算法，加密算法保持不变）+ SHA256 校验。
+// 仅支持 JP（version 2）IMG，与现有只读解析保持一致。
+// ---------------------------------------------------------------------------
+
+// 条目名加密：256 字节按 NAME_KEY 逐字节 XOR（decryptName 的逆运算，算法不变）
+export function encryptName(name) {
+    const raw = new Uint8Array(256);
+    for (let i = 0; i < name.length && i < 256; i++) raw[i] = name.charCodeAt(i) & 0xff;
+    for (let i = 0; i < 256; i++) raw[i] ^= NAME_KEY[i];
+    return raw;
+}
+
+// 读取 IMG 完整帧信息（含链接帧）：与 readImgEntry 一致，但不跳过链接帧，
+// 链接帧记录 { linkIndex }，像素帧附带 pixelOffset（编辑时用于重建）。
+export function readImgFull(buffer, entry) {
+    const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+    if (entry.size < 32) throw new Error("IMG 数据过小");
+    const imgStart = entry.offset;
+    const img = buffer.subarray(imgStart, imgStart + entry.size);
+    if (bytesToAscii(img, 0, 15) !== "Neople Img File") throw new Error("条目数据不是 IMG 文件");
+
+    const indexLength = readU32(view, imgStart + 16);
+    const version = readU32(view, imgStart + 24);
+    const frameCount = readU32(view, imgStart + 28);
+    if (version !== 2 || frameCount <= 0 || frameCount > 100000) throw new Error(`不支持的 IMG 版本/帧数：v${version} frames=${frameCount}`);
+    if (indexLength <= 0 || 32 + indexLength > entry.size) throw new Error("IMG 索引区越界");
+
+    const frames = [];
+    let pos = 32;
+    let pixelCursor = 32 + indexLength;
+    for (let i = 0; i < frameCount; i++) {
+        if (pos + 4 > entry.size) throw new Error("IMG 帧索引越界");
+        const type = readU32(view, imgStart + pos);
+        if (type === 0x11) {
+            const linkIndex = readU32(view, imgStart + pos + 4);
+            frames.push({ type, linkIndex });
+            pos += 8;
+            continue;
+        }
+        if (pos + 36 > entry.size) throw new Error("IMG 像素帧索引越界");
+        const compressed = readU32(view, imgStart + pos + 4);
+        const width = readI32(view, imgStart + pos + 8);
+        const height = readI32(view, imgStart + pos + 12);
+        const size = readI32(view, imgStart + pos + 16);
+        const keyX = readI32(view, imgStart + pos + 20);
+        const keyY = readI32(view, imgStart + pos + 24);
+        const maxWidth = readI32(view, imgStart + pos + 28);
+        const maxHeight = readI32(view, imgStart + pos + 32);
+        if (size < 0 || pixelCursor + size > entry.size) throw new Error("IMG 像素数据越界");
+        frames.push({
+            type,
+            compression: compressed,
+            width,
+            height,
+            size,
+            keyX,
+            keyY,
+            maxWidth,
+            maxHeight,
+            pixelOffset: imgStart + pixelCursor
+        });
+        pos += 36;
+        pixelCursor += size;
+    }
+    return { frames };
+}
+
+// RGBA（4 字节/像素）→ ARGB1555 / ARGB4444 / ARGB8888 像素编码
+// 编码规则与现有 decodePixels 相反（见 docs/npk-format.md 2.5）
+export function encodePixels(rgba, width, height, type) {
+    const n = width * height;
+    if (type === 0x10) {
+        // ARGB8888：RGBA -> BGRA（与 decodePixels 0x10 对称）
+        const out = new Uint8Array(n * 4);
+        for (let i = 0, si = 0; i < out.length; i += 4) {
+            out[i] = rgba[si + 2];
+            out[i + 1] = rgba[si + 1];
+            out[i + 2] = rgba[si];
+            out[i + 3] = rgba[si + 3];
+            si += 4;
+        }
+        return out;
+    }
+    const out = new Uint8Array(n * 2);
+    for (let i = 0, si = 0; i < out.length; i += 2) {
+        const a = rgba[si + 3];
+        const r = rgba[si];
+        const g = rgba[si + 1];
+        const b = rgba[si + 2];
+        si += 4;
+        let pixel;
+        if (type === 0x0e) {
+            // ARGB1555
+            const aBit = a >= 128 ? 0x8000 : 0;
+            const r5 = ((r * 31 / 255) + 0.5) | 0;
+            const g5 = ((g * 31 / 255) + 0.5) | 0;
+            const b5 = ((b * 31 / 255) + 0.5) | 0;
+            pixel = aBit | (r5 << 10) | (g5 << 5) | b5;
+        } else {
+            // ARGB4444
+            const a4 = ((a * 15 / 255) + 0.5) | 0;
+            const r4 = ((r * 15 / 255) + 0.5) | 0;
+            const g4 = ((g * 15 / 255) + 0.5) | 0;
+            const b4 = ((b * 15 / 255) + 0.5) | 0;
+            pixel = (a4 << 12) | (r4 << 8) | (g4 << 4) | b4;
+        }
+        out[i] = pixel & 0xff;
+        out[i + 1] = (pixel >> 8) & 0xff;
+    }
+    return out;
+}
+
+// zlib 压缩（浏览器 CompressionStream；Node 18+ 原生支持）
+async function deflateRaw(raw) {
+    if (typeof CompressionStream === "undefined") throw new Error("当前环境不支持 CompressionStream");
+    const cs = new CompressionStream("deflate");
+    const stream = new Blob([raw]).stream().pipeThrough(cs);
+    return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+// 重建 IMG v2（参考 ExtractorSharp Img 序列化：魔数 + indexLength + version=2
+// + 帧数 + 帧索引 + 像素数据区；链接帧占 8 字节 type+linkIndex，像素帧 36 字节）。
+// frames: [{ type, compression, width, height, size, keyX, keyY, maxWidth,
+//            maxHeight, pixelData | linkIndex }]
+export async function encodeImg(frames) {
+    const frameCount = frames.length;
+    // 逐帧计算索引大小与像素数据
+    const idxSizes = frames.map(f => (f.type === 0x11 ? 8 : 36));
+    const indexLength = idxSizes.reduce((a, b) => a + b, 0);
+    const out = new Uint8Array(32 + indexLength + frames.reduce((a, f) => a + (f.type === 0x11 ? 0 : f.pixelData.length), 0));
+    // 魔数（16 字节）
+    const magic = "Neople Img File";
+    for (let i = 0; i < 16; i++) out[i] = i < magic.length ? magic.charCodeAt(i) : 0;
+    const view = new DataView(out.buffer);
+    view.setUint32(16, indexLength, true);
+    view.setUint32(20, 0, true); // 保留
+    view.setUint32(24, 2, true); // version 2
+    view.setUint32(28, frameCount, true);
+
+    let pos = 32;
+    let pixelCursor = 32 + indexLength;
+    for (const f of frames) {
+        if (f.type === 0x11) {
+            view.setUint32(pos, 0x11, true);
+            view.setUint32(pos + 4, f.linkIndex, true);
+            pos += 8;
+            continue;
+        }
+        view.setUint32(pos, f.type, true);
+        view.setUint32(pos + 4, f.compression, true);
+        view.setInt32(pos + 8, f.width, true);
+        view.setInt32(pos + 12, f.height, true);
+        view.setInt32(pos + 16, f.size, true);
+        view.setInt32(pos + 20, f.keyX, true);
+        view.setInt32(pos + 24, f.keyY, true);
+        view.setInt32(pos + 28, f.maxWidth, true);
+        view.setInt32(pos + 32, f.maxHeight, true);
+        out.set(f.pixelData, pixelCursor);
+        pos += 36;
+        pixelCursor += f.pixelData.length;
+    }
+    return out;
+}
+
+// 把一张 RGBA 图片编码为一个像素帧（zlib 压缩，参考 ExtractorSharp
+// Texture.CreateFromBitmap：ToArray(type) 后 Zlib.Compress）
+export async function encodeFrameFromRgba(rgba, width, height, type, keyX, keyY, maxWidth, maxHeight) {
+    const rawPixels = encodePixels(rgba, width, height, type);
+    const compressed = await deflateRaw(rawPixels);
+    return {
+        type,
+        compression: 6,
+        width,
+        height,
+        size: compressed.length,
+        keyX,
+        keyY,
+        maxWidth,
+        maxHeight,
+        pixelData: compressed
+    };
+}
+
+// SHA256：浏览器优先用原生 WebCrypto；Node 测试回退动态 import node:crypto。
+async function sha256(bytes) {
+    if (typeof crypto !== "undefined" && crypto.subtle) {
+        return new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+    }
+    try {
+        const { createHash } = await import("node:crypto");
+        return new Uint8Array(createHash("sha256").update(bytes).digest());
+    } catch (err) {
+        throw new Error(`当前环境不支持 SHA256：${(err && err.message) || err}`);
+    }
+}
+
+// 重建 NPK（参考 ExtractorSharp NpkCoder.WriteNpk / CompileHash）：
+// 布局：头部 20 字节（魔数 + 条目数）+ 条目表（每条 264 字节：offset/size/加密名）
+// + SHA256 校验（32 字节，对头部取前 length/17*17 字节计算）+ 数据区。
+// 条目数据偏移从 headerLen + 32 开始（对齐 ExtractorSharp `52 + count*264`）。
+// entries: [{ name, data }]，data 为完整 IMG 字节。
+export async function encodeNpk(entries) {
+    const count = entries.length;
+    const headerLen = 20 + count * 264;
+    const dataStart = headerLen + 32;
+    const magic = "NeoplePack_Bill";
+    const out = new Uint8Array(dataStart + entries.reduce((a, e) => a + e.data.length, 0));
+
+    // 头部 + 条目表
+    for (let i = 0; i < 16; i++) out[i] = i < magic.length ? magic.charCodeAt(i) : 0;
+    const view = new DataView(out.buffer);
+    view.setUint32(16, count, true);
+    let offset = dataStart;
+    for (let i = 0; i < count; i++) {
+        const row = 20 + i * 264;
+        view.setUint32(row, offset, true);
+        view.setUint32(row + 4, entries[i].data.length, true);
+        out.set(encryptName(entries[i].name), row + 8);
+        out.set(entries[i].data, offset);
+        offset += entries[i].data.length;
+    }
+
+    // SHA256 校验（对齐 ExtractorSharp CompileHash：C# 整数除法 data.Length/17*17）
+    const hash = await sha256(out.subarray(0, Math.floor(headerLen / 17) * 17));
+    out.set(hash, headerLen);
+    return out;
 }
