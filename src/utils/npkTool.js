@@ -486,6 +486,245 @@ export function readImgFull(buffer, entry) {
     return { frames };
 }
 
+// ---------------------------------------------------------------------------
+// 音频 / 视频条目（不转码预览，docs/npk-format.md §6）
+//
+// SoundPacks 等音频/视频包与 ImagePacks2 使用同一归档格式，差异仅在条目数据区：
+// 数据区为原始媒体字节（.ogg 切片以 OggS 魔数开始；.avi 可能为 Neople 加密视频）。
+// 预览策略为不转码解析：切片字节直接交给浏览器原生 audio/video 元素播放。
+// ---------------------------------------------------------------------------
+
+// 切取 NPK 条目原始字节（不解析内容）
+export function readEntryData(buffer, entry) {
+    const u8 = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+    if (entry.offset < 0 || entry.offset + entry.size > u8.length) throw new Error("条目数据越界");
+    return u8.subarray(entry.offset, entry.offset + entry.size);
+}
+
+// 按条目名后缀分类媒体条目：audio（.ogg）/ video（.avi）/ 非媒体 null
+export function detectMediaKind(name) {
+    const n = (name || "").toLowerCase();
+    if (n.endsWith(".ogg")) return "audio";
+    if (n.endsWith(".avi")) return "video";
+    return null;
+}
+
+// 检测 Neople 加密视频签名（16 字节 "Neople Video Fil"，docs/npk-format.md §6.2）
+export function isNeopleVideo(data) {
+    return data.length >= 0x20 && bytesToAscii(data, 0, 16) === "Neople Video Fil";
+}
+
+// Neople 加密视频无损解密：
+// 0x20 头部（签名 16B + 条目数/版本/原始大小/对齐大小各 4B LE），媒体数据从 0x20 起：
+// 前 1024 字节明文，其后 out[i] = data[i] ^ out[i - 1024]，输出截断至原始媒体大小。
+export function decryptNeopleVideo(data) {
+    if (!isNeopleVideo(data)) throw new Error("不是加密视频文件（缺少 Video Fil 签名）");
+    const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+    const originalSize = view.getUint32(0x18, true);
+    const alignedSize = view.getUint32(0x1c, true);
+    const media = data.subarray(0x20);
+    const out = new Uint8Array(media.length);
+    const headLen = Math.min(1024, media.length);
+    out.set(media.subarray(0, headLen));
+    for (let i = 1024; i < media.length; i++) out[i] = media[i] ^ out[i - 1024];
+    return { data: out.subarray(0, Math.min(originalSize, out.length)), originalSize, alignedSize };
+}
+
+// 解析 AVI 容器：提取视频 ES 流（movi 内 NNdc chunk）、音频 chunk（NNwb）与帧率
+// （avih dwMicroSecPerFrame）。data 为解密后（或未加密）的完整 AVI 字节，
+// 返回 { frames, fps, frameCount, width, height, audioChunks, audioByteRate, audioFormatTag }。
+export function extractAviVideoStream(data) {
+    const u8 = data instanceof Uint8Array ? data : new Uint8Array(data);
+    const view = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+    if (u8.length < 12 || bytesToAscii(u8, 0, 4) !== "RIFF" || bytesToAscii(u8, 8, 4) !== "AVI ") {
+        throw new Error("不是 AVI 容器（缺少 RIFF/AVI 头）");
+    }
+    let fps = 0;
+    let frames = null;
+    const audioChunks = [];
+    let audioByteRate = 0;
+    let audioFormatTag = 0;
+    let pos = 12;
+    while (pos + 8 <= u8.length && !frames) {
+        const id = bytesToAscii(u8, pos, 4);
+        const size = view.getUint32(pos + 4, true);
+        if (id === "LIST" && size >= 4) {
+            const type = bytesToAscii(u8, pos + 8, 4);
+            if (type === "movi") {
+                const collected = [];
+                let q = pos + 12;
+                const end = Math.min(pos + 8 + size, u8.length);
+                while (q + 8 <= end) {
+                    const cid = bytesToAscii(u8, q, 4);
+                    const csz = view.getUint32(q + 4, true);
+                    if (/^\d{2}dc$/.test(cid)) {
+                        collected.push(u8.subarray(q + 8, Math.min(q + 8 + csz, end)));
+                    } else if (/^\d{2}wb$/.test(cid)) {
+                        audioChunks.push(u8.subarray(q + 8, Math.min(q + 8 + csz, end)));
+                    }
+                    q += 8 + csz + (csz % 2);
+                }
+                frames = collected;
+                break;
+            }
+            if (type === "hdrl") {
+                let q = pos + 12;
+                const end = pos + 8 + size;
+                while (q + 8 <= end) {
+                    const cid = bytesToAscii(u8, q, 4);
+                    const csz = view.getUint32(q + 4, true);
+                    if (cid === "avih" && csz >= 8) {
+                        const usec = view.getUint32(q + 8, true);
+                        if (usec > 0) fps = 1e6 / usec;
+                    } else if (cid === "LIST" && csz >= 4 && bytesToAscii(u8, q + 8, 4) === "strl") {
+                        // 流头：strh 的 fccType 判定流类型，音频流取 strf（WAVEFORMATEX）字节率
+                        let sq = q + 12;
+                        const send = q + 8 + csz;
+                        let isAudio = false;
+                        while (sq + 8 <= send) {
+                            const sid = bytesToAscii(u8, sq, 4);
+                            const ssz = view.getUint32(sq + 4, true);
+                            if (sid === "strh" && ssz >= 8) {
+                                isAudio = bytesToAscii(u8, sq + 8, 4) === "auds";
+                            } else if (sid === "strf" && ssz >= 16 && isAudio) {
+                                // WAVEFORMATEX：wFormatTag(2) nChannels(2) nSamplesPerSec(4) nAvgBytesPerSec(4)
+                                audioFormatTag = view.getUint16(sq + 8, true);
+                                audioByteRate = view.getUint32(sq + 16, true);
+                            }
+                            sq += 8 + ssz + (ssz % 2);
+                        }
+                    }
+                    q += 8 + csz + (csz % 2);
+                }
+            }
+        }
+        pos += 8 + size + (size % 2);
+        if (size === 0) break;
+    }
+    if (!frames || !frames.length) throw new Error("AVI 中未找到视频帧数据");
+    if (!fps || !isFinite(fps)) fps = 30;
+    fps = Math.min(120, Math.max(10, fps));
+    // 序列头尺寸（00 00 01 B3 后 4 字节大端：宽 12bit + 高 12bit）
+    let width = 0;
+    let height = 0;
+    for (const frame of frames) {
+        if (!frame.length) continue;
+        for (let i = 0; i + 7 < Math.min(frame.length, 4096); i++) {
+            if (frame[i] === 0 && frame[i + 1] === 0 && frame[i + 2] === 1 && frame[i + 3] === 0xb3) {
+                const v = (frame[i + 4] << 24) | (frame[i + 5] << 16) | (frame[i + 6] << 8) | frame[i + 7];
+                width = (v >>> 20) & 0xfff;
+                height = (v >>> 8) & 0xfff;
+                break;
+            }
+        }
+        break;
+    }
+    return { frames, fps, frameCount: frames.length, width, height, audioChunks, audioByteRate, audioFormatTag };
+}
+
+// 检测 MPEG-1/2 视频 ES：头部 4KB 内出现序列头起始码 00 00 01 B3
+export function isMpegVideoEs(es) {
+    const n = Math.min(es.length - 3, 4096);
+    for (let i = 0; i < n; i++) {
+        if (es[i] === 0 && es[i + 1] === 0 && es[i + 2] === 1 && es[i + 3] === 0xb3) return true;
+    }
+    return false;
+}
+
+// MPEG-ES → MPEG-TS 封装（供 JSMpeg Demuxer.TS 消费，docs/npk-format.md §6.4）：
+// 视频每帧一个 PES（stream_id 0xE0，PTS 按 90kHz 时钟 × 帧号递增），188 字节 TS 包、
+// 视频 PID 0x100；音频 chunk（可选，stream_id 0xC0、PID 0x101）PTS 按累计字节 / 字节率
+// 递增；包不满 184 字节时用 adaptation field stuffing 补位（禁止直接垫 0xFF，
+// 否则填充字节会混入 ES 码流破坏解码）。0 字节占位帧不封装。
+export function muxMpegEsToTs(frames, fps, audioChunks = [], audioByteRate = 0) {
+    const rate = fps > 0 && isFinite(fps) ? fps : 30;
+    const CLOCK = 90000;
+    const PAYLOAD = 184;
+    const parts = [];
+    const counters = { video: 0, audio: 0 }; // 各流独立连续计数
+
+    // 单个 TS 包：payload 写入 PID pidLo 的包，PUSI 标记首包，包尾 AF 补位
+    function emitPacket(payload, pusi, pidLo, counterKey) {
+        const need = PAYLOAD - payload.length;
+        const packet = new Uint8Array(188);
+        packet[0] = 0x47;
+        packet[1] = (pusi ? 0x40 : 0x00) | ((pidLo >> 8) & 0x1f);
+        packet[2] = pidLo & 0xff;
+        packet[3] = (need === 0 ? 0x10 : 0x30) | counters[counterKey]; // AF 控制 + 连续计数
+        counters[counterKey] = (counters[counterKey] + 1) & 0x0f;
+        if (need === 0) {
+            packet.set(payload, 4);
+        } else {
+            packet[4] = need - 1; // adaptation_field_length
+            if (need >= 2) packet[5] = 0x00; // AF flags（length=0 时无内容字节）
+            for (let i = need >= 2 ? 6 : 5; i < 4 + need; i++) packet[i] = 0xff;
+            packet.set(payload, 4 + need);
+        }
+        parts.push(packet);
+    }
+
+    // PES 头 14 字节：000001 + stream_id + 长度 + '10'/仅 PTS + headerLen=5 + PTS
+    function buildPesHeader(streamId, payloadLen, pts) {
+        const pesLen = payloadLen + 8; // flags(1) + flags(1) + headerLen(1) + PTS(5)
+        const header = new Uint8Array(14);
+        header[0] = 0;
+        header[1] = 0;
+        header[2] = 1;
+        header[3] = streamId;
+        const lenField = pesLen > 0xffff ? 0 : pesLen; // 超长帧回退无界 PES（由下一 PUSI 收包）
+        header[4] = (lenField >> 8) & 0xff;
+        header[5] = lenField & 0xff;
+        header[6] = 0x80; // '10' 起始
+        header[7] = 0x80; // 仅 PTS
+        header[8] = 5; // header_data_length
+        header[9] = 0x20 | ((pts >>> 29) & 0x0e) | 0x01;
+        header[10] = (pts >>> 22) & 0xff;
+        header[11] = (((pts >>> 15) & 0x7f) << 1) | 0x01;
+        header[12] = (pts >>> 7) & 0xff;
+        header[13] = ((pts & 0x7f) << 1) | 0x01;
+        return header;
+    }
+
+    for (let fi = 0; fi < frames.length; fi++) {
+        const frame = frames[fi];
+        if (!frame.length) continue; // 0 字节占位帧（drop frame）不生成 PES，PTS 按原帧号保持时间轴
+        const pts = Math.round((fi * CLOCK) / rate);
+        const header = buildPesHeader(0xe0, frame.length, pts); // stream_id 视频流 1
+
+        const pes = new Uint8Array(14 + frame.length);
+        pes.set(header, 0);
+        pes.set(frame, 14);
+
+        let off = 0;
+        while (off < pes.length) {
+            const take = Math.min(PAYLOAD, pes.length - off);
+            emitPacket(pes.subarray(off, off + take), off === 0, 0x100, "video");
+            off += take;
+        }
+    }
+
+    // 音频流（MPEG 层 II/III）：PTS = 90kHz × 累计字节 / 平均字节率
+    if (audioChunks.length && audioByteRate > 0) {
+        let cumBytes = 0;
+        for (const chunk of audioChunks) {
+            if (!chunk.length) continue;
+            const pts = Math.round((CLOCK * cumBytes) / audioByteRate);
+            const header = buildPesHeader(0xc0, chunk.length, pts); // stream_id 音频流 1
+            const pes = new Uint8Array(14 + chunk.length);
+            pes.set(header, 0);
+            pes.set(chunk, 14);
+            let off = 0;
+            while (off < pes.length) {
+                const take = Math.min(PAYLOAD, pes.length - off);
+                emitPacket(pes.subarray(off, off + take), off === 0, 0x101, "audio");
+                off += take;
+            }
+            cumBytes += chunk.length;
+        }
+    }
+    return concatBytes(parts);
+}
+
 // RGBA（4 字节/像素）→ ARGB1555 / ARGB4444 / ARGB8888 像素编码
 // 编码规则与现有 decodePixels 相反（见 docs/npk-format.md 2.5）
 export function encodePixels(rgba, width, height, type) {

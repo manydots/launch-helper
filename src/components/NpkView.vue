@@ -3,7 +3,24 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { alertModal, confirmModal } from "@/hooks/useModal";
 import { ElInput, ElInputNumber, ElSelect, ElOption, ElSwitch, ElTree } from "element-plus";
-import { NPK_FORMATS, parseNpk, readImgEntry, readImgFull, decodeFrameToPng, encodeFrameFromRgba, encodeImg, encodeNpk, encodeBmp } from "@/utils/npkTool.js";
+import {
+    NPK_FORMATS,
+    parseNpk,
+    readImgEntry,
+    readImgFull,
+    decodeFrameToPng,
+    encodeFrameFromRgba,
+    encodeImg,
+    encodeNpk,
+    encodeBmp,
+    readEntryData,
+    isNeopleVideo,
+    decryptNeopleVideo,
+    detectMediaKind,
+    extractAviVideoStream,
+    isMpegVideoEs,
+    muxMpegEsToTs
+} from "@/utils/npkTool.js";
 
 const FORMAT_KEY = "launch-helper:npk-format";
 const PLAY_KEY = "launch-helper:npk-play-interval";
@@ -43,6 +60,26 @@ const exportFormat = ref("png"); // 导出格式：png / bmp / jpeg / webp
 const imgInputEl = ref(null); // 替换当前帧用的文件 input
 const importInputEl = ref(null); // 导入 IMG 用的文件 input
 const importTargetEl = ref(null); // 导入 IMG 的目标条目（点击导入时设置）
+const fileInputEl = ref(null); // 常驻文件选择 input（根级，顶栏「打开」与 picker 均触发）
+
+// ---- 媒体预览状态（.ogg / .avi，不转码直接播放，docs/npk-format.md §6） ----
+const mediaInfo = ref(null); // 当前选中媒体条目 { kind: 'audio'|'video', name, size, encrypted }
+const mediaUrl = ref(null); // 媒体 Blob URL
+const mediaError = ref(""); // 媒体切片 / 解密 / 播放失败提示
+const mediaPlayerEl = ref(null); // 条目媒体播放元素（自动播放用）
+const standaloneMedia = ref(null); // 独立媒体文件（非 NPK）{ url, kind, name, size, encrypted, decryptedBytes }
+const standaloneError = ref(""); // 独立媒体播放失败提示
+const standalonePlayerEl = ref(null); // 独立媒体播放元素（自动播放用）
+const mediaCanvasEl = ref(null); // MPEG 软解渲染画布（NPK 内条目）
+const standaloneCanvasEl = ref(null); // MPEG 软解渲染画布（独立文件）
+const jsmpegPlaying = ref(false); // 软解播放状态（控制条显示）
+const jsmpegEnded = ref(false); // 软解播放已结束（播放按钮变重播）
+const mediaProgress = ref(0); // 播放进度 0-100
+const mediaTimeLabel = ref("00:00 / 00:00"); // 时间显示 当前 / 总时长
+const seeking = ref(false); // 进度条拖动中（暂停定时器刷新）
+let jsmpegPlayer = null; // JSMpeg Player 实例（非响应式）
+let jsmpegModulePromise = null; // 软解库懒加载缓存
+let mediaTimeTimer = null; // 播放进度刷新定时器
 
 // 帧替换格式下拉选项（保持原有格式）
 const REPLACE_FORMATS = [
@@ -107,7 +144,7 @@ const yTicks = computed(() => {
 const searchQuery = ref("");
 const treeRef = ref(null);
 
-// 构建树节点：每个 .img 条目附带其帧子节点（kind: img / frame / dir）
+// 构建树节点：.img 条目附带其帧子节点，.ogg/.avi 条目为媒体叶子节点（kind: img / frame / media / dir）
 let nodeIdSeq = 0;
 function buildTree(entries, buffer) {
     const root = [];
@@ -120,6 +157,7 @@ function buildTree(entries, buffer) {
             const part = parts[i];
             path = path ? path + "/" + part : part;
             const isImg = i === parts.length - 1 && part.toLowerCase().endsWith(".img");
+            const mediaKind = i === parts.length - 1 ? detectMediaKind(part) : null;
             if (isImg) {
                 const frameNodes = [];
                 try {
@@ -140,6 +178,9 @@ function buildTree(entries, buffer) {
                 }
                 // img 节点默认收起（帧详情不展开）
                 cur.push({ id: ++nodeIdSeq, label: part, path, kind: "img", entry, children: frameNodes, defaultExpanded: false });
+            } else if (mediaKind) {
+                // 音频/视频条目：媒体叶子节点（点击进入不转码预览）
+                cur.push({ id: ++nodeIdSeq, label: part, path, kind: "media", entry, mediaKind });
             } else {
                 let node = map[path];
                 if (!node) {
@@ -160,9 +201,9 @@ function filterTree(nodes, q) {
     for (const n of nodes) {
         if (n.kind === "frame") {
             if (!q || (n.entry && n.entry.name.toLowerCase().includes(q))) out.push(n);
-        } else if (n.kind === "img") {
+        } else if (n.kind === "img" || n.kind === "media") {
             if (!q || n.entry.name.toLowerCase().includes(q)) {
-                out.push({ ...n, children: q ? filterTree(n.children, q) : n.children });
+                out.push(n.kind === "img" ? { ...n, children: q ? filterTree(n.children, q) : n.children } : n);
             }
         } else {
             const filtered = filterTree(n.children, q);
@@ -202,12 +243,12 @@ const defaultExpandedKeys = computed(() => {
     return keys;
 });
 
-// 当前可见 .img 条目数量
+// 当前可见可预览条目数量（IMG + 媒体叶子）
 const leafCount = computed(() => {
     let n = 0;
     const walk = nodes => {
         for (const node of nodes) {
-            if (node.kind === "img") n++;
+            if (node.kind === "img" || node.kind === "media") n++;
             else if (node.children) walk(node.children);
         }
     };
@@ -216,7 +257,8 @@ const leafCount = computed(() => {
 });
 
 function onTreeNodeClick(data) {
-    if (data.kind === "frame" && data.entry) selectEntry(data.entry, data.frame);
+    if (data.kind === "media" && data.entry) selectMediaEntry(data.entry);
+    else if (data.kind === "frame" && data.entry) selectEntry(data.entry, data.frame);
     else if (data.kind === "img" && data.entry) selectEntry(data.entry, 0);
 }
 
@@ -267,18 +309,320 @@ async function handleFileSelect(event) {
     const file = event.target.files[0];
     if (!file) return;
     event.target.value = "";
-    await loadNpk(file);
+    const lower = file.name.toLowerCase();
+    if (lower.endsWith(".avi") || lower.endsWith(".ogg")) {
+        await loadMediaFile(file);
+    } else {
+        await loadNpk(file);
+    }
+}
+
+// 释放媒体资源（软解实例 + Blob URL + 进度刷新）
+function revokeMediaUrl() {
+    stopMediaTimer();
+    if (scrubTimer) {
+        clearTimeout(scrubTimer);
+        scrubTimer = null;
+    }
+    seeking.value = false;
+    if (jsmpegPlayer) {
+        try {
+            jsmpegPlayer.destroy();
+        } catch (e) {
+            // 实例已失效时忽略
+        }
+        jsmpegPlayer = null;
+    }
+    jsmpegPlaying.value = false;
+    jsmpegEnded.value = false;
+    seeking.value = false;
+    mediaProgress.value = 0;
+    mediaTimeLabel.value = "00:00 / 00:00";
+    mediaLastCur = -1;
+    mediaStallCount = 0;
+    if (mediaUrl.value) {
+        URL.revokeObjectURL(mediaUrl.value);
+        mediaUrl.value = null;
+    }
+    if (standaloneMedia.value) {
+        URL.revokeObjectURL(standaloneMedia.value.url);
+        standaloneMedia.value = null;
+    }
+}
+
+// 当前 MPEG 媒体总时长（秒；frameCount / fps）
+function currentMediaDuration() {
+    const m = mediaInfo.value && mediaInfo.value.codec === "mpeg" ? mediaInfo.value : standaloneMedia.value && standaloneMedia.value.codec === "mpeg" ? standaloneMedia.value : null;
+    return m && m.fps && m.frameCount ? m.frameCount / m.fps : 0;
+}
+
+function fmtTime(sec) {
+    const s = Math.max(0, Math.floor(sec));
+    return String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0");
+}
+
+// 播放进度定时刷新（当前时间 / 进度百分比）
+let mediaLastCur = -1;
+let mediaStallCount = 0;
+function startMediaTimer() {
+    stopMediaTimer();
+    mediaLastCur = -1;
+    mediaStallCount = 0;
+    mediaTimeTimer = setInterval(() => {
+        // 结束态锁定满格：不再以冻结的 currentTime 覆盖进度（末帧时间 < 总时长）
+        if (seeking.value || !jsmpegPlayer || jsmpegEnded.value) return;
+        const dur = currentMediaDuration();
+        if (dur <= 0) return;
+        const cur = Math.min(jsmpegPlayer.currentTime || 0, dur);
+        // 播放中进度连续 1 秒无推进 → 解码数据耗尽，兜底判定播放结束
+        // （主判定为 JSMpeg onEnded 回调，此兜底覆盖其异常未触发的场景）
+        if (jsmpegPlaying.value && cur > 0 && Math.abs(cur - mediaLastCur) < 0.01) {
+            if (++mediaStallCount >= 4) {
+                markMediaEnded();
+                return;
+            }
+        } else {
+            mediaStallCount = 0;
+        }
+        mediaLastCur = cur;
+        mediaProgress.value = (cur / dur) * 100;
+        mediaTimeLabel.value = fmtTime(cur) + " / " + fmtTime(dur);
+    }, 250);
+}
+
+// 统一的播放结束处理：进度满格、按钮切重播
+function markMediaEnded() {
+    jsmpegPlaying.value = false;
+    jsmpegEnded.value = true;
+    mediaStallCount = 0;
+    const dur = currentMediaDuration();
+    mediaProgress.value = 100;
+    mediaTimeLabel.value = fmtTime(dur) + " / " + fmtTime(dur);
+}
+
+function stopMediaTimer() {
+    if (mediaTimeTimer) {
+        clearInterval(mediaTimeTimer);
+        mediaTimeTimer = null;
+    }
+}
+
+// 尝试自动播放（autoplay 属性 + 显式 play 兜底；被浏览器自动播放策略拒绝时静默，保留手动播放）
+function tryAutoplay(elGetter) {
+    nextTick(() => {
+        const el = elGetter();
+        if (el && el.play) el.play().catch(() => {});
+    });
+}
+
+// 媒体处理统一入口：识别类型 → 加密 AVI 解密 → MPEG 编码走 TS 封装（JSMpeg 软解），
+// 其余按原始字节交给原生 <video>/<audio>（docs/npk-format.md §6.3 / §6.4）。
+function prepareMedia(entryName, bytes) {
+    const kind = detectMediaKind(entryName) || (isNeopleVideo(bytes) ? "video" : null);
+    if (!kind) throw new Error("不支持的媒体类型");
+    let data = bytes;
+    let encrypted = false;
+    if (kind === "video" && isNeopleVideo(bytes)) {
+        data = decryptNeopleVideo(bytes).data;
+        encrypted = true;
+    }
+    if (kind === "video") {
+        try {
+            const stream = extractAviVideoStream(data); // 非 AVI 容器抛错 → 回退原生路径
+            if (stream.frames.length && isMpegVideoEs(stream.frames[0])) {
+                // MPEG 层 II/III 音频随 TS 封装交由软解播放；其它音频格式（如 PCM）不支持
+                const audioOk = stream.audioChunks.length > 0 && stream.audioByteRate > 0 && (stream.audioFormatTag === 0x50 || stream.audioFormatTag === 0x55);
+                const ts = muxMpegEsToTs(stream.frames, stream.fps, audioOk ? stream.audioChunks : [], audioOk ? stream.audioByteRate : 0);
+                const url = URL.createObjectURL(new Blob([ts], { type: "video/mp2t" }));
+                return { url, kind, encrypted, codec: "mpeg", width: stream.width, height: stream.height, fps: stream.fps, frameCount: stream.frameCount, hasAudio: audioOk };
+            }
+        } catch (e) {
+            // 非 AVI 容器 / 解封装失败：回退原生播放路径
+        }
+    }
+    const url = URL.createObjectURL(new Blob([data], { type: kind === "audio" ? "audio/ogg" : "video/x-msvideo" }));
+    return { url, kind, encrypted, codec: "native" };
+}
+
+// 懒加载软解播放器库（src/vendor/jsmpeg.min.js 为 IIFE，以 ?raw 注入后执行取全局）
+async function loadJsmpeg() {
+    if (!jsmpegModulePromise) {
+        jsmpegModulePromise = (async () => {
+            const mod = await import("@/vendor/jsmpeg.min.js?raw");
+            return new Function(mod.default + "\n;return JSMpeg;").call(window);
+        })();
+    }
+    return jsmpegModulePromise;
+}
+
+// 启动 MPEG 软解播放（canvas 渲染；等待画布渲染就绪，自动播放，结束停在最后一帧）
+async function startJsmpeg(url, canvasGetter, errorSink) {
+    try {
+        const JSMpeg = await loadJsmpeg();
+        // 画布可能晚于本调用渲染（加载遮罩 / 分支切换），轮询等待就绪（最多约 5 秒）
+        let canvas = null;
+        for (let i = 0; i < 50 && !canvas; i++) {
+            await nextTick();
+            canvas = canvasGetter();
+            if (!canvas) await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        if (!canvas) {
+            errorSink.value = "播放画布未就绪。";
+            return;
+        }
+        jsmpegPlayer = new JSMpeg.Player(url, {
+            canvas,
+            audio: true,
+            loop: false,
+            autoplay: true,
+            progressive: false,
+            // 播放结尾回调（onCompleted 仅为 Source 的数据加载完成回调，Player 不消费）
+            onEnded: () => {
+                markMediaEnded();
+            }
+        });
+        jsmpegPlaying.value = true;
+        jsmpegEnded.value = false;
+        mediaTimeLabel.value = "00:00 / " + fmtTime(currentMediaDuration());
+        startMediaTimer();
+    } catch (err) {
+        errorSink.value = (err && err.message) || "软解播放器加载失败。";
+    }
+}
+
+// 软解播放 / 暂停切换（结束后点击为重播）
+function toggleJsmpeg() {
+    if (!jsmpegPlayer) return;
+    if (jsmpegPlaying.value) {
+        jsmpegPlayer.pause();
+        jsmpegPlaying.value = false;
+        return;
+    }
+    if (jsmpegEnded.value) {
+        jsmpegEnded.value = false;
+        jsmpegPlayer.seek(0);
+    }
+    mediaStallCount = 0;
+    mediaLastCur = -1;
+    jsmpegPlayer.play();
+    jsmpegPlaying.value = true;
+}
+
+// 进度条拖动中：节流实时 seek，画面跟随拖动位置（scrubbing）
+let scrubTimer = null;
+let scrubTarget = 0;
+function onSeekInput(event) {
+    seeking.value = true;
+    const dur = currentMediaDuration();
+    if (dur <= 0) return;
+    const target = (Number(event.target.value) / 1000) * dur;
+    mediaProgress.value = (target / dur) * 100;
+    mediaTimeLabel.value = fmtTime(target) + " / " + fmtTime(dur);
+    if (!jsmpegPlayer) return;
+    scrubTarget = target;
+    if (!scrubTimer) {
+        // 100ms 合并一次定位，避免拖动事件高频触发 seek 卡顿
+        scrubTimer = setTimeout(() => {
+            scrubTimer = null;
+            if (!jsmpegPlayer || !seeking.value) return;
+            try {
+                jsmpegPlayer.seek(scrubTarget);
+                // 暂停态下 seek 仅定位解码位置，需手动推进一帧让画面刷新
+                if (!jsmpegPlaying.value && jsmpegPlayer.video && jsmpegPlayer.video.decode) {
+                    jsmpegPlayer.video.decode();
+                }
+            } catch (e) {
+                // seek 失败（定位点解码异常）保留当前画面
+            }
+        }, 100);
+    }
+}
+
+// 进度条拖动结束：按比例定位播放位置
+function seekMedia(event) {
+    if (!jsmpegPlayer) return;
+    seeking.value = false;
+    if (scrubTimer) {
+        clearTimeout(scrubTimer);
+        scrubTimer = null;
+    }
+    const dur = currentMediaDuration();
+    if (dur <= 0) return;
+    const target = (Number(event.target.value) / 1000) * dur;
+    try {
+        jsmpegPlayer.seek(target);
+    } catch (e) {
+        // seek 失败保留当前画面
+    }
+    if (jsmpegEnded.value) {
+        jsmpegEnded.value = false;
+    }
+    mediaStallCount = 0;
+    mediaLastCur = -1;
+    if (!jsmpegPlaying.value) {
+        jsmpegPlayer.play();
+        jsmpegPlaying.value = true;
+    }
+    mediaProgress.value = (target / dur) * 100;
+    mediaTimeLabel.value = fmtTime(target) + " / " + fmtTime(dur);
+}
+
+// 加载独立媒体文件（.ogg 音频 / .avi 视频，无需 NPK 归档）
+async function loadMediaFile(file) {
+    stopPlay();
+    loading.value = true;
+    loadingMessage.value = "读取媒体文件中...";
+    error.value = "";
+    standaloneError.value = "";
+    revokeMediaUrl();
+    selected.value = null;
+    mediaInfo.value = null;
+    archive.value = null;
+    rawBuffer.value = null;
+    fileName.value = "";
+    resetEditState();
+    try {
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        const media = prepareMedia(file.name, bytes);
+        // 加密 AVI 保留解密后字节，供「导出解密后的 AVI」直接下载
+        standaloneMedia.value = {
+            url: media.url,
+            kind: media.kind,
+            name: file.name,
+            size: bytes.length,
+            encrypted: media.encrypted,
+            decryptedBytes: media.encrypted ? decryptNeopleVideo(bytes).data : null,
+            codec: media.codec,
+            width: media.width,
+            height: media.height,
+            fps: media.fps,
+            frameCount: media.frameCount
+        };
+        fileName.value = file.name;
+        // 播放画布依赖界面渲染（v-if 含 !loading），先解除加载遮罩再启动播放
+        loading.value = false;
+        if (media.codec === "mpeg") await startJsmpeg(media.url, () => standaloneCanvasEl.value, standaloneError);
+        else tryAutoplay(() => standalonePlayerEl.value);
+    } catch (err) {
+        error.value = (err && err.message) || "媒体文件加载失败。";
+    } finally {
+        loading.value = false;
+    }
 }
 
 async function loadNpk(file) {
     loading.value = true;
     loadingMessage.value = "读取文件中...";
     error.value = "";
+    revokeMediaUrl();
+    mediaError.value = "";
+    standaloneMedia.value = null;
     selected.value = null;
     imgInfo.value = null;
     framePng.value = null;
     frameError.value = "";
     frameSize.value = null;
+    mediaInfo.value = null;
     resetEditState();
     try {
         const buffer = await file.arrayBuffer();
@@ -325,6 +669,9 @@ async function onFormatChange() {
     framePng.value = null;
     frameError.value = "";
     frameSize.value = null;
+    revokeMediaUrl();
+    mediaError.value = "";
+    mediaInfo.value = null;
     resetEditState();
     try {
         const parsed = parseNpk(new Uint8Array(rawBuffer.value), formatId.value);
@@ -545,10 +892,14 @@ async function exportFrameAs(format) {
     }
 }
 
-// 导出整个 IMG（当前条目 .img 字节）
+// 导出整个 IMG（当前条目 .img 字节）；媒体条目统一走媒体导出（加密视频导出解密后数据）
 function exportCurrentImg() {
     if (!selected.value) {
         alertModal({ title: "无法导出", message: "请先选择一个 IMG。" });
+        return;
+    }
+    if (mediaInfo.value) {
+        exportMediaData();
         return;
     }
     const u8 = new Uint8Array(rawBuffer.value);
@@ -562,8 +913,66 @@ function exportCurrentImg() {
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 5000);
-    alertModal({ title: "导出完成", message: "已导出 IMG。" });
+    alertModal({ title: "导出完成", message: "已导出条目原始数据。" });
     exportMenu.value = false;
+}
+
+// 通用下载（媒体导出用）
+function downloadBytes(bytes, filename, mime = "application/octet-stream") {
+    const blob = new Blob([bytes], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+
+// 导出当前媒体条目：.ogg 原始字节；加密 .avi 导出解密后的 AVI
+function exportMediaData() {
+    if (!mediaInfo.value || !selected.value) return;
+    try {
+        const entry = selected.value;
+        let bytes = readEntryData(new Uint8Array(rawBuffer.value), entry);
+        if (mediaInfo.value.encrypted) bytes = decryptNeopleVideo(bytes).data;
+        const name = entry.name.split("/").pop() || "media";
+        downloadBytes(bytes, name);
+        const hint = mediaInfo.value.codec === "mpeg" ? "该视频为 MPEG 编码（MP2 音频），Windows 自带播放器可能无声，建议用 VLC / PotPlayer 播放。" : "";
+        alertModal({ title: "导出完成", message: `已导出 ${name}${mediaInfo.value.encrypted ? "（已解密）" : ""}。${hint}` });
+    } catch (err) {
+        alertModal({ title: "导出失败", message: (err && err.message) || "导出媒体失败。" });
+    }
+}
+
+// 导出独立加密 AVI 的解密结果
+function exportStandaloneVideo() {
+    const m = standaloneMedia.value;
+    if (!m) return;
+    try {
+        downloadBytes(m.decryptedBytes, m.name.replace(/\.avi$/i, "") + "_decoded.avi", "video/x-msvideo");
+        const hint = m.codec === "mpeg" ? "该视频为 MPEG 编码（MP2 音频），Windows 自带播放器可能无声，建议用 VLC / PotPlayer 播放。" : "";
+        alertModal({ title: "导出完成", message: `已导出解密后的 AVI 文件。${hint}` });
+    } catch (err) {
+        alertModal({ title: "导出失败", message: (err && err.message) || "导出失败。" });
+    }
+}
+
+// 媒体播放失败提示（浏览器不支持容器 / 编码时不阻塞浏览）
+function onMediaError() {
+    if (mediaInfo.value) {
+        mediaError.value = mediaInfo.value.kind === "video" ? "浏览器无法直接播放该视频（AVI 容器或编码可能不受支持），可导出后用本地播放器查看。" : "浏览器无法播放该音频，可导出后用本地播放器查看。";
+    } else if (standaloneMedia.value) {
+        standaloneError.value = standaloneMedia.value.kind === "video" ? "浏览器无法直接播放该视频（AVI 容器或编码可能不受支持），可导出解密后的 AVI 用本地播放器查看。" : "浏览器无法播放该音频。";
+    }
+}
+
+// 字节大小格式化
+function fmtSize(n) {
+    if (n >= 1024 * 1024) return (n / 1024 / 1024).toFixed(2) + " MB";
+    if (n >= 1024) return (n / 1024).toFixed(1) + " KB";
+    return n + " B";
 }
 
 // 导入 .img 文件替换指定条目
@@ -630,9 +1039,45 @@ function pickImportTarget(entry) {
     if (importInputEl.value) importInputEl.value.click();
 }
 
+// 选择媒体条目（.ogg / .avi）：切原始字节 → 加密 AVI 解密 →（MPEG 编码走软解）→ Blob URL 播放
+async function selectMediaEntry(entry) {
+    stopPlay();
+    selected.value = entry;
+    imgInfo.value = null;
+    framePng.value = null;
+    frameError.value = "";
+    frameSize.value = null;
+    revokeMediaUrl();
+    mediaError.value = "";
+    try {
+        const bytes = readEntryData(new Uint8Array(rawBuffer.value), entry);
+        const media = prepareMedia(entry.name, bytes);
+        mediaUrl.value = media.url;
+        mediaInfo.value = {
+            kind: media.kind,
+            name: entry.name,
+            size: entry.size,
+            encrypted: media.encrypted,
+            codec: media.codec,
+            width: media.width,
+            height: media.height,
+            fps: media.fps,
+            frameCount: media.frameCount
+        };
+        if (media.codec === "mpeg") await startJsmpeg(media.url, () => mediaCanvasEl.value, mediaError);
+        else tryAutoplay(() => mediaPlayerEl.value);
+    } catch (err) {
+        mediaInfo.value = null;
+        mediaError.value = (err && err.message) || "媒体条目读取失败。";
+    }
+}
+
 async function selectEntry(entry, frameIdx = 0) {
     stopPlay();
     selected.value = entry;
+    revokeMediaUrl();
+    mediaError.value = "";
+    mediaInfo.value = null;
     frameIndex.value = 0;
     framePng.value = null;
     frameError.value = "";
@@ -810,6 +1255,7 @@ function expandSelected() {
 
 onBeforeUnmount(() => {
     stopPlay();
+    revokeMediaUrl();
     if (canvasResizeObserver) {
         canvasResizeObserver.disconnect();
         canvasResizeObserver = null;
@@ -832,6 +1278,11 @@ onBeforeUnmount(() => {
                 </svg>
                 <span class="npk-title-text">NPK 预览</span>
             </span>
+            <button class="npk-icon-btn" title="打开 NPK / AVI / OGG 文件" @click="fileInputEl && fileInputEl.click()">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                </svg>
+            </button>
             <el-select v-if="NPK_FORMATS.length > 1" v-model="formatId" size="small" class="npk-format-select" popper-class="ep-popper-dark" title="加解密算法" @update:model-value="onFormatChange">
                 <el-option v-for="f in NPK_FORMATS" :key="f.id" :label="f.label" :value="f.id" />
             </el-select>
@@ -907,7 +1358,7 @@ onBeforeUnmount(() => {
                         <div v-if="importMenu" class="npk-menu">
                             <div class="npk-menu-title">导入 IMG 替换当前条目</div>
                             <div class="npk-menu-hint">{{ selected ? selected.name : "请先在左侧选择一个 IMG 条目" }}</div>
-                            <button class="btn btn-primary npk-menu-btn" :disabled="!selected" @click="pickImportTarget(selected)">选择 .img 文件…</button>
+                            <button class="btn btn-primary npk-menu-btn" :disabled="!selected || !imgInfo" @click="pickImportTarget(selected)">选择 .img 文件…</button>
                             <input ref="importInputEl" type="file" accept=".img,image/*" style="display: none" @change="e => importImgFile(e.target.files[0])" />
                         </div>
                     </span>
@@ -956,12 +1407,12 @@ onBeforeUnmount(() => {
                 </span>
             </template>
 
-            <span v-if="archive" class="npk-file-name">{{ fileName }}</span>
-            <span v-if="archive" class="npk-stats">{{ archive.count.toLocaleString() }} 个 IMG</span>
+            <span v-if="archive || standaloneMedia" class="npk-file-name">{{ fileName }}</span>
+            <span v-if="archive" class="npk-stats">{{ archive.count.toLocaleString() }} 个条目</span>
         </div>
 
         <!-- File picker -->
-        <div v-if="!archive && !loading" class="npk-picker">
+        <div v-if="!archive && !standaloneMedia && !loading" class="npk-picker">
             <div class="npk-picker-card">
                 <div class="npk-picker-icon">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
@@ -971,19 +1422,67 @@ onBeforeUnmount(() => {
                     </svg>
                 </div>
                 <h2>NPK 素材预览</h2>
-                <p>解析 ImagePacks2 的 NPK，解密 IMG帧 并预览</p>
+                <p>解析 NPK 归档预览 IMG 帧；支持 SoundPacks 音频包（.ogg）与加密视频（.avi）直接预览</p>
                 <p v-if="NPK_FORMATS.length > 1">加解密算法按格式下拉选择（{{ currentFormatLabel }}）</p>
-                <button class="btn btn-primary" @click="$refs.fileInputEl && $refs.fileInputEl.click()">
+                <button class="btn btn-primary" @click="fileInputEl && fileInputEl.click()">
                     <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
                         <polyline points="17 8 12 3 7 8" />
                         <line x1="12" y1="3" x2="12" y2="15" />
                     </svg>
-                    选择 NPK 文件
+                    选择 NPK / AVI / OGG 文件
                 </button>
-                <input ref="fileInputEl" type="file" accept=".npk" style="display: none" @change="handleFileSelect" />
                 <p v-if="error" class="npk-error">{{ error }}</p>
-                <p class="npk-picker-hint">所有解析与帧解码在浏览器完成</p>
+                <p class="npk-picker-hint">所有解析与媒体播放均在浏览器完成（媒体不转码）</p>
+            </div>
+        </div>
+        <!-- 常驻文件选择器：顶栏「打开」与 picker 均可触发，切换文件无需返回主页 -->
+        <input ref="fileInputEl" type="file" accept=".npk,.avi,.ogg" style="display: none" @change="handleFileSelect" />
+
+        <!-- Standalone media player（独立 .avi / .ogg 文件） -->
+        <div v-if="standaloneMedia && !loading" class="npk-media-standalone">
+            <div class="npk-media-card">
+                <div class="npk-media-head">
+                    <span class="npk-media-title">{{ standaloneMedia.name }}</span>
+                    <button v-if="standaloneMedia.encrypted" class="npk-icon-btn" title="导出解密后的 AVI" @click="exportStandaloneVideo">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                            <polyline points="7 10 12 15 17 10" />
+                            <line x1="12" y1="15" x2="12" y2="3" />
+                        </svg>
+                    </button>
+                </div>
+                <div class="npk-media-meta">
+                    {{
+                        standaloneMedia.kind === "audio"
+                            ? "OGG 音频"
+                            : standaloneMedia.codec === "mpeg"
+                              ? `MPEG 视频 · ${standaloneMedia.width}×${standaloneMedia.height}`
+                              : standaloneMedia.encrypted
+                                ? "加密视频（已解密预览）"
+                                : "AVI 视频"
+                    }}
+                    · {{ fmtSize(standaloneMedia.size) }}
+                </div>
+                <div v-if="standaloneMedia.codec === 'mpeg'" class="npk-media-mpeg">
+                    <canvas ref="standaloneCanvasEl" class="npk-media-canvas"></canvas>
+                    <div class="npk-media-controls">
+                        <button class="npk-media-toggle" :title="jsmpegPlaying ? '暂停' : jsmpegEnded ? '重播' : '播放'" @click="toggleJsmpeg">
+                            <svg v-if="jsmpegPlaying" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+                                <rect x="6" y="5" width="4" height="14" rx="1" />
+                                <rect x="14" y="5" width="4" height="14" rx="1" />
+                            </svg>
+                            <svg v-else viewBox="0 0 24 24" fill="currentColor" stroke="none">
+                                <polygon points="6 4 20 12 6 20 6 4" />
+                            </svg>
+                        </button>
+                        <input class="npk-media-seek" type="range" min="0" max="1000" :value="Math.round(mediaProgress * 10)" @input="onSeekInput" @change="seekMedia" />
+                        <span class="npk-media-info">{{ mediaTimeLabel }}</span>
+                    </div>
+                </div>
+                <video v-else-if="standaloneMedia.kind === 'video'" ref="standalonePlayerEl" class="npk-media-player" controls autoplay :src="standaloneMedia.url" @error="onMediaError"></video>
+                <audio v-else ref="standalonePlayerEl" class="npk-media-player" controls autoplay :src="standaloneMedia.url" @error="onMediaError"></audio>
+                <p v-if="standaloneError" class="npk-media-error">{{ standaloneError }}</p>
             </div>
         </div>
 
@@ -1001,7 +1500,7 @@ onBeforeUnmount(() => {
         <div v-if="archive && !loading" class="npk-body">
             <div class="npk-side">
                 <div class="npk-searchbar">
-                    <el-input v-model="searchQuery" placeholder="搜索 IMG 路径..." clearable size="small" class="npk-search-input">
+                    <el-input v-model="searchQuery" placeholder="搜索条目路径..." clearable size="small" class="npk-search-input">
                         <template #prefix>
                             <svg class="npk-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <circle cx="11" cy="11" r="8" />
@@ -1048,6 +1547,31 @@ onBeforeUnmount(() => {
                                     <circle cx="8.5" cy="8.5" r="1.5" />
                                     <polyline points="21 15 16 10 5 21" />
                                 </svg>
+                                <svg
+                                    v-else-if="data.kind === 'media' && data.mediaKind === 'audio'"
+                                    class="npk-node-icon media"
+                                    viewBox="0 0 24 24"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    stroke-width="1.8"
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round">
+                                    <path d="M9 18V5l12-2v13" />
+                                    <circle cx="6" cy="18" r="3" />
+                                    <circle cx="18" cy="16" r="3" />
+                                </svg>
+                                <svg
+                                    v-else-if="data.kind === 'media'"
+                                    class="npk-node-icon media"
+                                    viewBox="0 0 24 24"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    stroke-width="1.8"
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round">
+                                    <polygon points="23 7 16 12 23 17 23 7" />
+                                    <rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
+                                </svg>
                                 <svg v-else class="npk-node-icon frame" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
                                     <rect x="4" y="4" width="16" height="16" rx="2" ry="2" />
                                     <rect x="7" y="7" width="14" height="14" rx="1.5" ry="1.5" opacity="0.55" />
@@ -1056,11 +1580,12 @@ onBeforeUnmount(() => {
                             </span>
                         </template>
                     </el-tree>
-                    <div v-if="!leafCount" class="npk-empty">无匹配 IMG</div>
+                    <div v-if="!leafCount" class="npk-empty">无匹配条目</div>
                 </div>
             </div>
             <div class="npk-preview">
-                <template v-if="selected">
+                <!-- IMG 帧预览 -->
+                <template v-if="selected && !mediaInfo && !mediaError">
                     <div class="npk-preview-head">
                         <span class="npk-preview-name" :title="selected.name">{{ selected.name }}</span>
                         <span class="npk-preview-meta" v-if="imgInfo">
@@ -1111,8 +1636,48 @@ onBeforeUnmount(() => {
                         </div>
                     </div>
                 </template>
+                <!-- 媒体条目预览（.ogg / .avi，不转码直接播放） -->
+                <template v-else-if="selected">
+                    <div class="npk-preview-head">
+                        <span class="npk-preview-name" :title="selected.name">{{ selected.name }}</span>
+                        <span class="npk-preview-meta" v-if="mediaInfo">
+                            {{
+                                mediaInfo.kind === "audio"
+                                    ? "OGG 音频"
+                                    : mediaInfo.codec === "mpeg"
+                                      ? `MPEG 视频 · ${mediaInfo.width}×${mediaInfo.height}`
+                                      : mediaInfo.encrypted
+                                        ? "加密视频（已解密）"
+                                        : "AVI 视频"
+                            }}
+                            · {{ fmtSize(mediaInfo.size) }}
+                        </span>
+                        <button v-if="mediaInfo" class="npk-media-export-btn" title="导出媒体数据（加密 AVI 导出解密后文件）" @click="exportMediaData">导出</button>
+                    </div>
+                    <div v-if="mediaError" class="npk-preview-error">{{ mediaError }}</div>
+                    <div v-else class="npk-media-stage">
+                        <div v-if="mediaInfo && mediaInfo.codec === 'mpeg'" class="npk-media-mpeg">
+                            <canvas ref="mediaCanvasEl" class="npk-media-canvas"></canvas>
+                            <div class="npk-media-controls">
+                                <button class="npk-media-toggle" :title="jsmpegPlaying ? '暂停' : jsmpegEnded ? '重播' : '播放'" @click="toggleJsmpeg">
+                                    <svg v-if="jsmpegPlaying" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+                                        <rect x="6" y="5" width="4" height="14" rx="1" />
+                                        <rect x="14" y="5" width="4" height="14" rx="1" />
+                                    </svg>
+                                    <svg v-else viewBox="0 0 24 24" fill="currentColor" stroke="none">
+                                        <polygon points="6 4 20 12 6 20 6 4" />
+                                    </svg>
+                                </button>
+                                <input class="npk-media-seek" type="range" min="0" max="1000" :value="Math.round(mediaProgress * 10)" @input="onSeekInput" @change="seekMedia" />
+                                <span class="npk-media-info">{{ mediaTimeLabel }}</span>
+                            </div>
+                        </div>
+                        <video v-else-if="mediaInfo && mediaInfo.kind === 'video'" ref="mediaPlayerEl" class="npk-media-player" controls autoplay :src="mediaUrl" @error="onMediaError"></video>
+                        <audio v-else-if="mediaInfo" ref="mediaPlayerEl" class="npk-media-player" controls autoplay :src="mediaUrl" @error="onMediaError"></audio>
+                    </div>
+                </template>
                 <div v-else class="npk-preview-empty">
-                    <p>从左侧选择一个 IMG 预览帧</p>
+                    <p>从左侧选择一个 IMG 或媒体条目预览</p>
                 </div>
             </div>
         </div>
@@ -1428,6 +1993,9 @@ onBeforeUnmount(() => {
 .npk-node-icon.frame {
     color: #8fa6ff;
 }
+.npk-node-icon.media {
+    color: #4fd1a5;
+}
 .npk-node-label {
     overflow: hidden;
     text-overflow: ellipsis;
@@ -1667,6 +2235,160 @@ onBeforeUnmount(() => {
     padding: 24px;
     color: var(--text-muted);
     font-size: 0.85rem;
+}
+
+/* ---- 媒体预览（.ogg / .avi，不转码直接播放） ---- */
+.npk-media-stage {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    min-height: 0;
+    background-color: #0d1220;
+}
+.npk-media-player {
+    max-width: min(920px, 100%);
+    max-height: 100%;
+    border-radius: 8px;
+    background: #000;
+    outline: none;
+}
+audio.npk-media-player {
+    width: min(560px, 100%);
+    max-height: none;
+    background: transparent;
+}
+.npk-media-export-btn {
+    flex-shrink: 0;
+    height: 26px;
+    padding: 0 10px;
+    border: 1px solid var(--surface-border);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    cursor: pointer;
+    transition: all 0.15s;
+    white-space: nowrap;
+}
+.npk-media-export-btn:hover {
+    color: var(--text);
+    background: rgba(255, 255, 255, 0.06);
+}
+
+/* ---- 独立媒体文件播放视图 ---- */
+.npk-media-standalone {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 32px;
+    min-height: 0;
+}
+.npk-media-card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    width: min(880px, 100%);
+    padding: 32px;
+    background: var(--bg-2);
+    border: 1px solid var(--surface-border);
+    border-radius: 14px;
+}
+.npk-media-head {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+.npk-media-title {
+    flex: 1;
+    min-width: 0;
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.npk-media-meta {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+}
+.npk-media-card .npk-media-player {
+    width: 100%;
+}
+.npk-media-error {
+    margin: 0;
+    color: var(--error);
+    font-size: 0.82rem;
+    text-align: center;
+    line-height: 1.5;
+}
+
+/* ---- MPEG 软解播放（canvas 渲染 + video 风格控制栏） ---- */
+.npk-media-mpeg {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+}
+.npk-media-canvas {
+    max-width: 100%;
+    max-height: min(56vh, 500px);
+    border-radius: 8px;
+    background: #000;
+}
+.npk-media-controls {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    max-width: 720px;
+    padding: 6px 12px;
+    background: var(--bg-2);
+    border: 1px solid var(--surface-border);
+    border-radius: 8px;
+}
+.npk-media-toggle {
+    width: 34px;
+    height: 28px;
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text);
+    cursor: pointer;
+    transition: all 0.15s;
+}
+.npk-media-toggle:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--accent);
+}
+.npk-media-toggle svg {
+    width: 16px;
+    height: 16px;
+}
+.npk-media-seek {
+    flex: 1;
+    height: 4px;
+    margin: 0;
+    accent-color: var(--accent);
+    cursor: pointer;
+}
+.npk-media-info {
+    flex-shrink: 0;
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    white-space: nowrap;
 }
 
 /* ---- 编辑工具栏 ---- */
