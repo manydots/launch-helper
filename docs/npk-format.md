@@ -6,7 +6,14 @@
 
 音频 / 视频类文件走**不转码预览**通道（§6）：NPK 归档（如 SoundPacks 音频包）内的 `.ogg` 条目、`.avi` 条目，以及独立的专有加密 `.avi` 视频文件（见 §6.2），均按**原始字节直接切片**交给浏览器 `<audio>` / `<video>` 播放，不做任何像素 / 容器转码（加密 AVI 仅做无损解密还原）。
 
-实现为纯前端解析（`src/utils/npkTool.js`），零第三方依赖：zlib 解压使用浏览器原生 `DecompressionStream("deflate")`，PNG 编码手写（IHDR / IDAT / IEND + CRC32），BMP 编码手写，SHA256 用 WebCrypto（Node 回退 `node:crypto`）。
+实现为纯前端解析（`src/utils/npkTool.js`）：zlib 解压使用浏览器原生 `DecompressionStream("deflate")`，PNG 编码手写（IHDR / IDAT / IEND + CRC32），BMP 编码手写，核心解析 / 编码路径零第三方依赖。
+
+SHA256 校验采用两级运行环境策略：
+
+1. **存在原生 WebCrypto**（浏览器安全上下文 HTTPS / localhost，以及 Node 18+ 全局 `crypto.subtle`）：优先 `crypto.subtle.digest`；本地脚本测试（Node）即走此分支，测试脚本以 `node:crypto` 的 `createHash("sha256")` 生成参考值并断言两者一致。
+2. **无 `crypto.subtle`**（浏览器非安全上下文：HTTP + IP 直访，如局域网访问、http 网关部署）：动态加载纯 JS 实现 `crypto-es`（独立按需 chunk）兜底；首次调用经 IIFE 闭包懒加载并缓存实现函数，后续调用直接复用，加载失败不缓存、下次可重试。
+
+策略调整动机与选型：原实现为「WebCrypto 优先 + Node 回退 `node:crypto`」，回退分支在浏览器端被 Vite 外部化为空模块而实际不可用——非安全上下文下保存 NPK 报「当前环境不支持 SHA256」，且构建期产生 `node:crypto` externalized 警告；调整后 `npkTool.js` 不再引用 `node:crypto`（仅测试脚本作参考值使用），警告根除。兜底库选型比较：`crypto-browserify`（gzip 约 157KB、12 个直接依赖）及 `vite-plugin-node-polyfills`（其 crypto polyfill 底层即前者，并全局注入 Buffer / process shim）体积与影响面过大，不采用；`crypto-es` 零依赖、纯 ESM、按需加载仅数 KB，为选定方案。
 
 **加解密算法保持不变**：条目名解密/加密沿用原有 XOR 算法；保存时重建 NPK 头部、条目表与 SHA256 校验（参考权威工具 ExtractorSharp 的 `NpkCoder.WriteNpk / CompileHash` 布局）。
 
@@ -178,6 +185,7 @@ AVI 软解链路断言（V 组之后执行，docs/npk-format.md §6.4）：
 | IMG 重建 | `encodeImg` 产出带 IMG 魔数的合法 IMG |
 | NPK 重建 | `encodeNpk` 产出带归档魔数的合法 NPK |
 | SHA256 校验 | 重建 NPK 的校验字段与 `node:crypto` 参考值一致（`Math.floor(headerLen/17)*17` 对齐 C# 整数除法） |
+| SHA256 兜底 | 遮蔽 `globalThis.crypto` 模拟非安全上下文后重新 `encodeNpk`，经 `crypto-es` 兜底的校验字段仍与 `node:crypto` 参考值一致（覆盖 §1 两级策略的第 2 级） |
 | 重新解析 | 重建 NPK 条目数 / 条目名（XOR 加密未变）/ IMG 帧数均与原文件一致，帧 0 可解码为 PNG |
 
 ## 5. 边界情况
@@ -192,7 +200,7 @@ AVI 软解链路断言（V 组之后执行，docs/npk-format.md §6.4）：
 | 导入非 IMG 文件 | 校验 IMG 魔数，不合法则弹窗提示 |
 | 导入 IMG 版本非 v2 | `readImgFull` 抛错，弹窗提示不支持的版本 |
 | 保存时加密算法 | 条目名保留原有 XOR 加密（`encryptName` 与 `decryptName` 对称）；SHA256 校验对齐 ExtractorSharp `CompileHash` 语义 |
-| 超大归档 | 条目表一次性解析（每条目 264 字节），PNG 按需解码单帧；编辑时整体重建 NPK 内存（`encodeNpk` 异步 + `WebCrypto SHA256`） |
+| 超大归档 | 条目表一次性解析（每条目 264 字节），PNG 按需解码单帧；编辑时整体重建 NPK 内存（`encodeNpk` 异步 + SHA256 两级策略，见 §1） |
 | NPK 内 `.ogg` / `.avi` 条目 | 不参与 IMG 帧解析与编辑，树列表显示为媒体叶子节点，点击走 §6.3 不转码预览 |
 | 自动播放进行中重载 NPK / 切换加解密格式 | 先停止帧播放定时器再置空 IMG 信息；播放回调对 IMG 信息缺失自守卫（缺失即停），杜绝定时器残留访问空引用（修复 NpkView `imgInfo` 空引用崩溃） |
 | 浏览器无法播放媒体 | `<audio>` / `<video>` 触发 `error` 事件时预览区显示提示（容器 / 编码不受支持），提供导出字节供本地播放器查看 |

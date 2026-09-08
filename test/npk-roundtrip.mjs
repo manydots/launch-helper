@@ -137,6 +137,23 @@ let rebuiltFrames = null;
         const gotHash = npkBytes.subarray(headerLen, headerLen + 32);
         check("T5b SHA256 校验字段 == node:crypto", Buffer.compare(Buffer.from(gotHash), refHash) === 0);
 
+        // ---------- 4b. SHA256 兜底路径（模拟浏览器非安全上下文） ----------
+        // 临时遮蔽 globalThis.crypto 模拟无 crypto.subtle 环境（HTTP + IP 直访），
+        // 断言 encodeNpk 经兜底实现（crypto-es）产出的校验字段仍与 node:crypto 参考值一致。
+        // 注意：crypto 在部分 Node 版本为原型继承属性（非自有，取不到描述符），
+        // 因此用自有 undefined 属性遮蔽、结束后删除遮蔽恢复原型可见；若原有自有
+        // 属性则先留存描述符并原样恢复。
+        const cryptoDesc = Object.getOwnPropertyDescriptor(globalThis, "crypto");
+        try {
+            Object.defineProperty(globalThis, "crypto", { value: undefined, configurable: true });
+            const npkFallback = await encodeNpk(entries);
+            const gotFallback = npkFallback.subarray(headerLen, headerLen + 32);
+            check("T5c SHA256 兜底(crypto-es) == node:crypto", Buffer.compare(Buffer.from(gotFallback), refHash) === 0);
+        } finally {
+            delete globalThis.crypto;
+            if (cryptoDesc) Object.defineProperty(globalThis, "crypto", cryptoDesc);
+        }
+
         // ---------- 5. 重新解析重建 NPK 并对比 ----------
         const reparsed = parseNpk(npkBytes, jp.id);
         check("T6 重建 NPK 可重新解析", reparsed.count === npk.entries.length, `count=${reparsed.count}`);

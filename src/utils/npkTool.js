@@ -841,14 +841,46 @@ export async function encodeFrameFromRgba(rgba, width, height, type, keyX, keyY,
     };
 }
 
-// SHA256：浏览器优先用原生 WebCrypto；Node 测试回退动态 import node:crypto。
+// crypto-es WordArray → 字节（大端 32bit words，按 sigBytes 截取）。
+function wordArrayToBytes(wordArray) {
+    const { words, sigBytes } = wordArray;
+    const out = new Uint8Array(sigBytes);
+    for (let i = 0; i < sigBytes; i++) {
+        out[i] = (words[i >>> 2] >>> (24 - (i % 4) * 8)) & 0xff;
+    }
+    return out;
+}
+
+// SHA256 兜底实现：IIFE 闭包懒加载 crypto-es 并缓存绑定后的哈希函数，
+// 避免每次调用重复走动态 import；加载失败不缓存，下次调用可重试。
+const loadSha256Fallback = (() => {
+    let implPromise = null;
+    return () => {
+        if (!implPromise) {
+            implPromise = import("crypto-es")
+                .then(
+                    ({ SHA256, WordArray }) =>
+                        bytes =>
+                            wordArrayToBytes(SHA256(WordArray.create(bytes)))
+                )
+                .catch(err => {
+                    implPromise = null;
+                    throw err;
+                });
+        }
+        return implPromise;
+    };
+})();
+
+// SHA256：优先原生 WebCrypto（浏览器安全上下文与 Node 18+ 全局均可用）；
+// 无 crypto.subtle（如 HTTP 非安全上下文）时走 crypto-es 纯 JS 兜底。
 async function sha256(bytes) {
     if (typeof crypto !== "undefined" && crypto.subtle) {
         return new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
     }
     try {
-        const { createHash } = await import("node:crypto");
-        return new Uint8Array(createHash("sha256").update(bytes).digest());
+        const fallback = await loadSha256Fallback();
+        return fallback(bytes);
     } catch (err) {
         throw new Error(`当前环境不支持 SHA256：${(err && err.message) || err}`);
     }
