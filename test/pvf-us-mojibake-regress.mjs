@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { PvfArchive } from "../src/utils/pvfTool.js";
 import { decodeUtf16LE, decodeKoreanMojibakeUtf16 } from "../src/utils/encoding.js";
 
-const buf = readFileSync(process.argv[2] || "C:/Users/Administrator/Desktop/PVF/90US/Script.pvf");
+const buf = readFileSync(process.argv[2] || "PVF/90US/Script.pvf");
 const archive = new PvfArchive(buf);
 await archive.parse();
 console.log("format:", archive.headerFormatLabel, "| strEncoding:", archive.strEncoding);

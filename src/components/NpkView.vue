@@ -444,11 +444,11 @@ function prepareMedia(entryName, bytes) {
     return { url, kind, encrypted, codec: "native" };
 }
 
-// 懒加载软解播放器库（src/vendor/jsmpeg.min.js 为 IIFE，以 ?raw 注入后执行取全局）
+// 懒加载软解播放器库（src/utils/jsmpeg.min.js 为 IIFE，以 ?raw 注入后执行取全局）
 async function loadJsmpeg() {
     if (!jsmpegModulePromise) {
         jsmpegModulePromise = (async () => {
-            const mod = await import("@/vendor/jsmpeg.min.js?raw");
+            const mod = await import("@/utils/jsmpeg.min.js?raw");
             return new Function(mod.default + "\n;return JSMpeg;").call(window);
         })();
     }
@@ -611,6 +611,7 @@ async function loadMediaFile(file) {
 }
 
 async function loadNpk(file) {
+    stopPlay();
     loading.value = true;
     loadingMessage.value = "读取文件中...";
     error.value = "";
@@ -661,6 +662,7 @@ async function onFormatChange() {
         const ok = await confirmModal({ title: "丢弃修改", message: "当前存在未保存的修改，切换加解密将丢弃这些修改。确定继续？" });
         if (!ok) return;
     }
+    stopPlay();
     loading.value = true;
     loadingMessage.value = `正在解析 NPK（${formatId.value.toUpperCase()} 加解密）...`;
     error.value = "";
@@ -1162,6 +1164,11 @@ function startPlay() {
     if (playMode.value === "once" && selected.value && playedOnce.has(selected.value.offset)) return;
     if (playMode.value === "once" && frameIndex.value >= imgInfo.value.frames.length - 1) return;
     playTimer = setInterval(() => {
+        // 兜底守卫：IMG 信息已置空（重载 / 切换格式）时停表，避免空引用崩溃
+        if (!imgInfo.value) {
+            stopPlay();
+            return;
+        }
         const total = imgInfo.value.frames.length;
         let next = frameIndex.value + 1;
         if (playMode.value === "once") {

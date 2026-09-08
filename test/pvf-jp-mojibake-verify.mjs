@@ -3,7 +3,10 @@ import { PvfArchive } from "../src/utils/pvfTool.js";
 import { decodeUtf16LE, decodeKoreanMojibakeUtf16, recoverKoreanFromGbkText } from "../src/utils/encoding.js";
 import { encodeGBK, gbkCode } from "../src/utils/gbkEncoder.js";
 
-const buf = readFileSync(process.argv[2] || "C:/Users/Administrator/Desktop/PVF/86JP/Script.pvf");
+// 输出落盘相对本脚本目录解析（AGENTS.md「测试脚本路径脱敏（门控）」，禁止绝对路径）
+const scriptDir = new URL(".", import.meta.url);
+
+const buf = readFileSync(process.argv[2] || "PVF/86JP/Script.pvf");
 const archive = new PvfArchive(buf);
 await archive.parse();
 console.log("format:", archive.headerFormatLabel, "| strEncoding:", archive.strEncoding);
@@ -94,7 +97,7 @@ while (wp2 + 1 < strW.length) {
     }
     wp2 = end + 2;
 }
-writeFileSync("E:/github/launch-helper/test/strw-odd.txt", odd.map(o => `${JSON.stringify(o.raw)} -> ${JSON.stringify(o.fixed)}`).join("\n"), "utf8");
+writeFileSync(new URL("strw-odd.txt", scriptDir), odd.map(o => `${JSON.stringify(o.raw)} -> ${JSON.stringify(o.fixed)}`).join("\n"), "utf8");
 const pct = odd.filter(o => /%/.test(o.fixed));
 const nl = odd.filter(o => /\n/.test(o.fixed));
 console.log(`\n误伤面: 恢复含 %/数字/换行 ${odd.length} 条（% ${pct.length} / 换行 ${nl.length}），见 test/strw-odd.txt`);
@@ -109,7 +112,7 @@ for (const name of ["skillname3.lst", "itemname.lst"]) {
     for (const line of text.split("\n")) {
         if (/[\u4E00-\u9FFF\uF900-\uFAFF]/.test(line)) out.push(line);
     }
-    writeFileSync(`E:/github/launch-helper/test/lst-hanja-rows-${name.replace(".lst", "")}.txt`, out.join("\n"), "utf8");
+    writeFileSync(new URL(`lst-hanja-rows-${name.replace(".lst", "")}.txt`, scriptDir), out.join("\n"), "utf8");
     console.log(`\n==== ${name}: 谚文汉字标注行 ${out.length - 2} 条（见 test/lst-hanja-rows-${name.replace(".lst", "")}.txt）====`);
     for (const probe of ["체이서 : 화", "십문자도 - 자", "(구)강룡완", "(구)건스모크"]) {
         const hit = out.filter(l => l.includes(probe));

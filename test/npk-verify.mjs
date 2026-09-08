@@ -4,8 +4,8 @@
  * 运行方式：node test/npk-verify.mjs <NPK路径> [加密AVI路径] [带音频加密AVI路径]
  * 默认目标：本机回归用日服 NPK 文件（见 docs/npk-format.md §4）；
  * 路径定位失败时按 AGENTS.md「工作流前置」询问用户实际位置。
- * 第 2 参数可选：独立 Neople 加密 AVI 文件（docs/npk-format.md §6.2 断言，样例 PVF/test/creator.avi）。
- * 第 3 参数可选：带音频的 Neople 加密 AVI（W6 组音频完整性断言，样例 PVF/test/ATFighterGrappler.avi）。
+ * 第 2 参数可选：独立加密 AVI 文件（docs/npk-format.md §6.2 断言，样例 PVF/test/creator.avi）。
+ * 第 3 参数可选：带音频的加密 AVI（W6 组音频完整性断言，样例 PVF/test/ATFighterGrappler.avi）。
  *
  * 直接加载 src/utils/npkTool.js（零依赖，Node 18+ 原生 DecompressionStream），
  * 断言 NPK 魔数 / 条目数 / 名称解密 / IMG 帧头 / zlib 解压长度 / PNG 编码合法性；
@@ -238,7 +238,7 @@ if (imgEntry) {
         skip("M 组媒体条目断言（NPK 无 .ogg/.avi 条目）");
     }
 
-    // ---------- 9. 独立 Neople 加密 AVI 断言（docs/npk-format.md §6.2） ----------
+    // ---------- 9. 独立加密 AVI 断言（docs/npk-format.md §6.2） ----------
     if (aviPath) {
         const aviRaw = readFileSync(aviPath);
         check("V1 isNeopleVideo 签名检测", isNeopleVideo(aviRaw) === true);
@@ -315,12 +315,12 @@ if (imgEntry) {
                 }
                 check("W3c 全部包 sync 0x47", allSync);
 
-                // mux/demux 回环：JSMpeg Demuxer.TS（Node 侧加载 vendor 脚本）反解，payload 应逐字节还原 ES
+                // mux/demux 回环：JSMpeg Demuxer.TS（Node 侧加载软解库脚本）反解，payload 应逐字节还原 ES
                 try {
                     globalThis.window = globalThis;
                     // JSMpeg IIFE 末尾按 document.readyState 触发 DOM 初始化，Node 侧提供最小 stub
                     globalThis.document = { readyState: "loading", addEventListener: () => {} };
-                    const vendorCode = readFileSync(new URL("../src/vendor/jsmpeg.min.js", import.meta.url), "utf8");
+                    const vendorCode = readFileSync(new URL("../src/utils/jsmpeg.min.js", import.meta.url), "utf8");
                     const JSMpeg = new Function(vendorCode + "\n;return JSMpeg;").call(globalThis);
                     const demuxer = new JSMpeg.Demuxer.TS({});
                     const sink = { pts: [], buffers: [] };
@@ -380,7 +380,7 @@ if (imgEntry) {
                     const ts2 = muxMpegEsToTs(stream2.frames, stream2.fps, stream2.audioChunks, stream2.audioByteRate);
                     globalThis.window = globalThis;
                     globalThis.document = globalThis.document || { readyState: "loading", addEventListener: () => {} };
-                    const vendorCode2 = readFileSync(new URL("../src/vendor/jsmpeg.min.js", import.meta.url), "utf8");
+                    const vendorCode2 = readFileSync(new URL("../src/utils/jsmpeg.min.js", import.meta.url), "utf8");
                     const JSMpeg2 = new Function(vendorCode2 + "\n;return JSMpeg;").call(globalThis);
                     const demuxer2 = new JSMpeg2.Demuxer.TS({});
                     const vsink = { pts: [], buffers: [] };

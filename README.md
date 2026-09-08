@@ -33,6 +33,8 @@
 - 自动解码为 PNG（ARGB1555 / ARGB4444 / ARGB8888，zlib 解压），显示帧尺寸与像素格式
 - 自动播放支持"无限重复"/"播放一次"模式，帧切换间隔可配置（20-2000ms，持久化）
 - **编辑能力**（参考 ExtractorSharp 操作逻辑）：替换当前帧为本地图片（可选保持原格式 / ARGB1555 / ARGB4444 / ARGB8888）、导入 `.img` 替换条目、导出当前帧（PNG / JPEG / WebP / BMP 多格式）或整个 IMG、保存修改后的 NPK（下载）
+- 音频 / 视频条目预览：SoundPacks 类归档内的 `.ogg` 音频与 `.avi` 视频条目按原始字节不转码直接播放；专有加密 `.avi` 无损解密后播放，MPEG 编码 AVI 经 TS 封装由 JSMpeg 软解（含 MP2 音频出声）
+- 文件选择器同时接受 `.npk / .avi / .ogg`，独立媒体文件选择即播；媒体条目提供导出（加密 AVI 导出解密后的完整 AVI）
 - 加解密算法顶栏下拉选择（当前为 JP，XOR 名称解密），切换后自动重新解析；编辑/保存**沿用原有加密算法不变**
 
 ### 注册账号
@@ -84,6 +86,7 @@
 2. 左侧树形列表浏览：文件夹默认展开，IMG 文件默认收起，搜索框按路径过滤
 3. 展开 IMG 节点查看帧列表，点击帧节点右侧预览该帧；帧尺寸与像素格式显示在顶部，自动播放可配置间隔与模式
 4. 顶栏编辑工具：选中帧后「替换」选择本地图片重写该帧（可指定 ARGB 格式）；「导入」用 `.img` 文件替换整个条目；「导出」当前帧为多格式贴图或导出整个 IMG；「保存」下载修改后的 NPK（修改条目数在顶栏以角标提示）
+5. 音频 / 视频：树列表中 `.ogg` / `.avi` 条目显示为媒体节点，点击即播（加密 AVI 自动解密，自动播放）；文件选择器也可直接选择独立 `.avi` / `.ogg` 文件播放MPEG 编码 AVI 走软解播放并提供播放/暂停与可拖动进度条，「导出」可导出解密后的 AVI（MP2 音频建议 VLC / PotPlayer 播放）
 
 ## 环境变量
 
@@ -191,11 +194,12 @@ Response { success, code, message, body, sequence }
 
 纯前端解析客户端 `ImagePacks2` 的 NPK 归档（`src/utils/npkTool.js`，移植自权威 GM 工具 ImagePack 模块，零第三方依赖；编辑/保存参考权威工具 ExtractorSharp 的 `NpkCoder` 逻辑）：
 
-- **加解密注册表**：`NPK_FORMATS` 以 `{ id, label, magic, parse }` 组织，当前实现 JP（魔数 `NeoplePack_Bill`、条目名 256 字节 XOR——前缀 `puchikon@neople dungeon and fighter ` + 循环填充 `DNF`）；扩展其它客户端类型时在注册表追加即可，界面顶栏下拉自动跟随
+- **加解密注册表**：`NPK_FORMATS` 以 `{ id, label, magic, parse }` 组织，当前实现 JP（16 字节归档魔数、条目名 256 字节 XOR——固定 ASCII 前缀 + 循环填充，字面值以 `src/utils/npkTool.js` 为准）；扩展其它客户端类型时在注册表追加即可，界面顶栏下拉自动跟随
 - **IMG 帧解码**：version 2，像素格式 ARGB1555 / ARGB4444 / ARGB8888，zlib 压缩（浏览器原生 `DecompressionStream`）；链接帧（0x11）静态预览跳过，带偏移画布的帧按 alpha 混合 Blit
 - **PNG / BMP 编码**：手写 IHDR / IDAT / IEND + CRC32 与 32-bit BGRA BMP，解码帧直接输出供 `<img>` 预览与导出
-- **帧替换 / 导入**：`encodePixels` 将 RGBA 按目标格式（1555 / 4444 / 8888）重新编码，`encodeFrameFromRgba` + `encodeImg` 重建 IMG v2；导入 `.img` 时校验 `Neople Img File` 魔数并规范化重建帧
+- **帧替换 / 导入**：`encodePixels` 将 RGBA 按目标格式（1555 / 4444 / 8888）重新编码，`encodeFrameFromRgba` + `encodeImg` 重建 IMG v2；导入 `.img` 时校验 IMG 魔数并规范化重建帧
 - **NPK 保存**：`encodeNpk` 重建整体 NPK——头部 + 条目表（条目名沿用原 XOR 加密，算法不变）+ SHA256 校验（WebCrypto；Node 测试回退 `node:crypto`，对齐 ExtractorSharp `CompileHash` 的 `length/17*17` 语义）；每次编辑后内存缓冲整体重建并刷新预览，保存直接导出下载
+- **音频 / 视频条目预览**：`detectMediaKind` 按后缀分类 `.ogg` / `.avi` 条目，`readEntryData` 原始字节切片直包 Blob 交给原生 `<audio>` / `<video>` 播放（不转码，无额外加密层）；专有加密 AVI 经内置解密函数无损解密（前 1024 字节明文 + 自引用 XOR，输出恰为原始 AVI 字节）；MPEG 编码 AVI 浏览器原生不可解码，走 `extractAviVideoStream` 提取视频 ES 流与音频 chunk、`isMpegVideoEs` 序列头判定、`muxMpegEsToTs` 封装 MPEG-TS，由 `src/utils/jsmpeg.min.js`（JSMpeg，MIT，单文件 IIFE，`?raw` 懒加载）软解渲染并配播放/暂停与拖动进度条，MP2 音频随视频封装出声；非 MPEG 编码回退原生 `<video>` 路径。媒体条目不参与 IMG 编辑，格式细节见 `docs/npk-format.md` §6
 
 ## 项目结构
 
@@ -208,7 +212,7 @@ src/
 │   ├── GameLauncher.vue          # 启动器主界面（登录注册改密、协议启动、状态探测）
 │   ├── PvfEditor.vue             # PVF 编辑器（解析、编辑、重打包，TW 渲染、虚拟滚动）
 │   ├── ItemCodeView.vue          # 物品编码查看页（双清单、多维筛选、虚拟滚动）
-│   ├── NpkViewer.vue             # NPK 素材预览与编辑页（IMG 树形列表、帧解码预览、自动播放、替换/导入/导出/保存）
+│   ├── NpkView.vue               # NPK 素材预览与编辑页（IMG 树形列表、帧解码预览、自动播放、替换/导入/导出/保存、媒体条目与独立音视频播放）
 │   ├── SendItemView.vue          # 物品发放页（查角色、发邮件、改角色、清邮箱）
 │   ├── MaterialTextField.vue     # Material 风格输入框
 │   └── ModalHost.vue             # 全局弹窗挂载点
@@ -228,7 +232,8 @@ src/
     ├── encoding.js               # 文本编解码（UTF-8 / GBK / Big5 / EUC-KR）
     ├── gbkEncoder.js             # GBK 编码映射生成
     ├── big5Encoder.js            # Big5 文本编码（TW 解码支持）
-    ├── npkTool.js                # NPK 归档解析与重建（加解密注册表、IMG 帧解码、PNG/BMP 编码、IMG/NPK 重建）
+    ├── jsmpeg.min.js             # JSMpeg 软解播放库（MIT，单文件 IIFE，MPEG-1/2 解码 + WebGL 渲染）
+    ├── npkTool.js                # NPK 归档解析与重建（加解密注册表、IMG 帧解码、PNG/BMP 编码、IMG/NPK 重建、媒体条目检测、加密 AVI 解密、AVI 解析与 TS 封装）
     └── registry.js               # 注册表与 PowerShell 命令生成
 vite-plugin-gateway-bridge.js     # dev server WS↔TCP 桥接插件
 ```

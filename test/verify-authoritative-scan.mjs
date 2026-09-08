@@ -4,7 +4,7 @@ import { pvfDecryptTw, TW_DECRYPT_KEY } from "../src/utils/pvfCodec.js";
 import hljs from "highlight.js/lib/core";
 import { registerPvfLanguage } from "../src/utils/pvfHighlight.js";
 
-const PVF_PATH = process.argv[2] || "C:/Users/Administrator/Desktop/PVF/70TW/Script.pvf";
+const PVF_PATH = process.argv[2] || "PVF/70TW/Script.pvf";
 
 // ================= 净化损坏 strlst 特征断言（§8.7；仅留存样本 + 登记 checksum，不读取归档） =================
 // 样本一次性提取（AGENTS.md「样本一次性提取（门控）」）：test/70TW/event/event.kor.str

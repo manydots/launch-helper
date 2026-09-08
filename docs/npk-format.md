@@ -4,7 +4,7 @@
 
 本模块在 launch-helper 中提供 **NPK**（客户端 `ImagePacks2`）归档的**预览与编辑**能力：选择单个 `.NPK` 文件，解密条目名并解码 IMG 帧，以 PNG 预览；支持 IMG 帧替换、导入/导出、保存（下载修改后的 NPK）。适配 JP（日服）与 TW（台服）NPK 格式。
 
-音频 / 视频类文件走**不转码预览**通道（§6）：NPK 归档（如 SoundPacks 音频包）内的 `.ogg` 条目、`.avi` 条目，以及独立的 Neople 加密 `.avi` 视频文件，均按**原始字节直接切片**交给浏览器 `<audio>` / `<video>` 播放，不做任何像素 / 容器转码（加密 AVI 仅做无损解密还原）。
+音频 / 视频类文件走**不转码预览**通道（§6）：NPK 归档（如 SoundPacks 音频包）内的 `.ogg` 条目、`.avi` 条目，以及独立的专有加密 `.avi` 视频文件（见 §6.2），均按**原始字节直接切片**交给浏览器 `<audio>` / `<video>` 播放，不做任何像素 / 容器转码（加密 AVI 仅做无损解密还原）。
 
 实现为纯前端解析（`src/utils/npkTool.js`），零第三方依赖：zlib 解压使用浏览器原生 `DecompressionStream("deflate")`，PNG 编码手写（IHDR / IDAT / IEND + CRC32），BMP 编码手写，SHA256 用 WebCrypto（Node 回退 `node:crypto`）。
 
@@ -16,7 +16,7 @@
 
 | 偏移 | 长度 | 字段 | 说明 |
 |---|---|---|---|
-| 0 | 16 | 魔数 | `NeoplePack_Bill`（ASCII，含尾部 `\0`） |
+| 0 | 16 | 魔数 | 归档魔数（16 字节 ASCII，含尾部 `\0`；字面值以源码为准） |
 | 16 | 4 | uint32 LE | 条目数 `count` |
 | 20 | count × 264 | 条目表 | 见 2.2 |
 
@@ -28,16 +28,18 @@
 | 4 | 4 | uint32 LE | 数据长度 `size` |
 | 8 | 256 | 加密名 | 见 2.3 |
 
-条目数据区为 IMG 文件（魔数 `Neople Img File`）。越界（`offset + size > 文件长度`）或重名条目忽略。
+条目数据区为 IMG 文件（IMG 魔数，字面值以源码为准）。越界（`offset + size > 文件长度`）或重名条目忽略。
 
 ### 2.3 条目名加密（XOR）
 
 256 字节名称按字节异或，Key 构造：
 
 ```text
-"puchikon@neople dungeon and fighter "（ASCII，39 字节）
-+ 循环填充 "DNF"（ASCII）至满 256 字节
+固定 ASCII 前缀（39 字节）
++ 循环填充 3 字节 ASCII 填充串至满 256 字节
 ```
+
+前缀与填充串的字面值以 `src/utils/npkTool.js` 的密钥构造实现为准。
 
 解密后取首个 `\0` 之前的 ASCII 文本，`\` 统一转 `/`，截断到 `.img`（含扩展名）或首个非法字符（非字母数字 / `/` / `_` / `-` / `.`）。
 
@@ -47,7 +49,7 @@ IMG 文件头：
 
 | 偏移 | 长度 | 字段 | 说明 |
 |---|---|---|---|
-| 0 | 16 | 魔数 | `Neople Img File` |
+| 0 | 16 | 魔数 | IMG 魔数（16 字节 ASCII；字面值以源码为准） |
 | 16 | 4 | uint32 LE | 索引区长度 `indexLength` |
 | 20 | 4 | uint32 LE | 保留（0） |
 | 24 | 4 | uint32 LE | version（须为 2） |
@@ -83,8 +85,8 @@ S4A21GmTool 对非 0 统一走 zlib 尝试解压、失败回退原始字节；�
 
 ## 3. 实现
 
-- `src/utils/npkTool.js`：NPK 解析 / IMG 帧解析 / 帧解码 / PNG / BMP 编码 / IMG 与 NPK 重建。
-  - `NPK_FORMATS`：加解密算法注册表，每项 `{ id, label, magic, parse }`；当前所有 NPK 使用同一套加解密格式（`NeoplePack_Bill` 魔数 + XOR 名称加密）。
+- `src/utils/npkTool.js`：NPK 解析 / IMG 帧解析 / 帧解码 / PNG / BMP 编码 / IMG 与 NPK 重建（API 清单按功能描述，导出函数名以源码为准）。
+  - `NPK_FORMATS`：加解密算法注册表，每项 `{ id, label, magic, parse }`；当前所有 NPK 使用同一套加解密格式（统一归档魔数 + XOR 名称加密）。
   - `parseNpk(buffer, format)` → `{ entries: [{ name, offset, size }], count }`
   - `readImgEntry(buffer, entry)` → `{ frames: [...] }`（静态预览用正常帧）
   - `readImgFull(buffer, entry)` → `{ frames: [...] }`（含链接帧 + pixelOffset，编辑用）
@@ -96,15 +98,18 @@ S4A21GmTool 对非 0 统一走 zlib 尝试解压、失败回退原始字节；�
   - `encodeImg(frames)` → `Promise<Uint8Array>`（重建 IMG v2）
   - `encodeNpk(entries)` → `Promise<Uint8Array>`（重建 NPK：头部 + 条目名加密 + SHA256 校验，布局对齐 ExtractorSharp）
   - `readEntryData(buffer, entry)` → `Uint8Array`（切取 NPK 条目原始字节，不解析内容）
-  - `isNeopleVideo(data)` → `boolean`（检测 `Neople Video Fil` 加密视频签名，见 §6.2）
-  - `decryptNeopleVideo(data)` → `{ data, originalSize, alignedSize }`（Neople 加密视频无损解密，见 §6.2）
+  - 加密视频签名检测（16 字节 ASCII 签名，见 §6.2）→ `boolean`
+  - 加密视频无损解密（见 §6.2）→ `{ data, originalSize, alignedSize }`
   - `detectMediaKind(name)` → `"audio" | "video" | null`（按条目名后缀 `.ogg` / `.avi` 分类媒体条目）
+  - `extractAviVideoStream(data)` → `{ frames, fps, frameCount, width, height, audioChunks, audioByteRate, audioFormatTag }`（解析 AVI 容器：movi 内 `\d{2}dc` 视频 ES 帧 + `\d{2}wb` 音频 chunk，帧率取 `avih dwMicroSecPerFrame`（钳制 10–120），尺寸取 MPEG 序列头；见 §6.4）
+  - `isMpegVideoEs(es)` → `boolean`（ES 头部 4KB 内出现 MPEG 序列起始码 `00 00 01 B3` 判定为 MPEG-1/2 视频；见 §6.4）
+  - `muxMpegEsToTs(frames, fps, audioChunks, audioByteRate)` → `Uint8Array`（MPEG-ES 封装为 MPEG-TS 供 JSMpeg 软解：视频 PES stream_id 0xE0 / PID 0x100，音频可选 0xC0 / 0x101，188 字节包 + adaptation field 补位，0 字节占位帧跳过；见 §6.4）
 - `src/components/NpkView.vue`：选择 `.NPK` → IMG 树列表 → 点击 IMG 静态预览首帧，点击帧节点切换到指定帧，自动播放可在顶栏配置间隔与模式（无限重复 / 播放一次）。
   - **媒体条目预览**（§6.3）：树列表中 `.ogg` / `.avi` 条目显示为媒体叶子节点，点击后在预览区以原生 `<audio>` / `<video>` 控件播放原始字节（加密 AVI 先解密）；提供「导出」导出原始字节（加密 AVI 导出解密后数据）。
-  - **独立媒体文件**：文件选择器接受 `.npk / .avi / .ogg`；选择独立 `.avi`（含 Neople 加密）或 `.ogg` 文件时直接进入媒体播放视图，无需 NPK 归档。
+  - **独立媒体文件**：文件选择器接受 `.npk / .avi / .ogg`；选择独立 `.avi`（含加密视频签名）或 `.ogg` 文件时直接进入媒体播放视图，无需 NPK 归档。
 - **编辑能力**（顶栏按钮，参考 ExtractorSharp 操作逻辑）：
   - **替换**：替换当前帧为本地图片（自动缩放至帧尺寸，可选保持原格式 / ARGB1555 / ARGB4444 / ARGB8888）。
-  - **导入**：导入 `.img` 文件替换当前条目（校验 `Neople Img File` 魔数，规范化重建帧）。
+  - **导入**：导入 `.img` 文件替换当前条目（校验 IMG 魔数，规范化重建帧）。
   - **导出**：导出当前帧为 PNG / JPEG / WebP / BMP（多格式贴图），或导出整个 IMG `.img` 字节。
   - **保存**：下载修改后的 NPK（每次编辑后内存缓冲整体重建，加解密算法保持不变）。
   - 修改后显示「N 处修改」角标；所有成功/失败提示使用项目标准弹窗（`useModal`）。
@@ -113,11 +118,11 @@ S4A21GmTool 对非 0 统一走 zlib 尝试解压、失败回退原始字节；�
 
 ## 4. 测试脚本
 
-`test/npk-verify.mjs`（运行方式：`node test/npk-verify.mjs <NPK路径> [加密AVI路径] [带音频加密AVI路径]`，默认目标见文件头注释；第 2 参数为独立 Neople 加密 AVI（`PVF/test/creator.avi`），第 3 参数为带音频加密 AVI（`PVF/test/ATFighterGrappler.avi`），均为可选）。NPK 断言：
+`test/npk-verify.mjs`（运行方式：`node test/npk-verify.mjs <NPK路径> [加密AVI路径] [带音频加密AVI路径]`，默认目标见文件头注释；第 2 参数为独立加密 AVI（`PVF/test/creator.avi`），第 3 参数为带音频加密 AVI（`PVF/test/ATFighterGrappler.avi`），均为可选）。NPK 断言：
 
 | 检查项 | 断言 |
 |---|---|
-| NPK 魔数 | `NeoplePack_Bill` |
+| NPK 魔数 | 16 字节归档魔数（字面值以源码为准） |
 | 条目数 | 与头字段一致，> 0 |
 | 名称解密 | 对照 Key XOR 算法逐条解密，格式正确 |
 | IMG 帧头 | version == 2、帧索引可解析（NPK 无 `.img` 条目时跳过该组断言） |
@@ -131,14 +136,14 @@ S4A21GmTool 对非 0 统一走 zlib 尝试解压、失败回退原始字节；�
 | M1 媒体条目分类 | `detectMediaKind` 对 `.ogg` 条目返回 `audio`，`.avi` 条目返回 `video` |
 | M2 条目切片 | `readEntryData` 切片长度 == 条目 `size` |
 | M3 OGG 数据头 | `.ogg` 条目原始字节以 `OggS` 魔数开始（数据区未加密，见 §6.1） |
-| M4 AVI 解密（条目内） | `.avi` 条目若带 `Neople Video Fil` 签名，解密后以 `RIFF` + `AVI ` 开始且长度 == originalSize |
+| M4 AVI 解密（条目内） | `.avi` 条目若带加密视频签名，解密后以 `RIFF` + `AVI ` 开始且长度 == originalSize |
 
 独立加密 AVI 断言（传入第 2 参数时执行）：
 
 | 检查项 | 断言 |
 |---|---|
-| V1 签名检测 | `isNeopleVideo` 返回 true |
-| V2 解密大小 | `decryptNeopleVideo` 输出长度 == 头部 `originalSize` 字段 |
+| V1 签名检测 | 加密视频签名检测函数返回 true |
+| V2 解密大小 | 解密函数输出长度 == 头部 `originalSize` 字段 |
 | V3 容器头 | 解密输出以 `RIFF` + `AVI ` 开始 |
 | V4 头部一致性 | 头部 `count == 1`、`alignedSize + 0x20 == 文件总长` |
 | V5 解密全量自洽 | 按加密端公式（密文[i] = 明文[i] ^ 明文[i-1024]）将解密输出重加密，与原始密文媒体区**逐字节一致**（覆盖含音频区在内的全部输出，证明确为无损还原） |
@@ -170,8 +175,8 @@ AVI 软解链路断言（V 组之后执行，docs/npk-format.md §6.4）：
 |---|---|
 | 原始解析 | `parseNpk` 成功，找到可编辑 IMG |
 | 帧重编码 | 逐帧 `encodeFrameFromRgba` 尺寸/压缩合法 |
-| IMG 重建 | `encodeImg` 产出魔数 `Neople Img File` 的合法 IMG |
-| NPK 重建 | `encodeNpk` 产出魔数 `NeoplePack_Bill` 的合法 NPK |
+| IMG 重建 | `encodeImg` 产出带 IMG 魔数的合法 IMG |
+| NPK 重建 | `encodeNpk` 产出带归档魔数的合法 NPK |
 | SHA256 校验 | 重建 NPK 的校验字段与 `node:crypto` 参考值一致（`Math.floor(headerLen/17)*17` 对齐 C# 整数除法） |
 | 重新解析 | 重建 NPK 条目数 / 条目名（XOR 加密未变）/ IMG 帧数均与原文件一致，帧 0 可解码为 PNG |
 
@@ -184,31 +189,32 @@ AVI 软解链路断言（V 组之后执行，docs/npk-format.md §6.4）：
 | 不支持像素格式 / 压缩 | 解码抛错，界面提示 |
 | 链接帧 | 静态预览跳过（不展开），帧计数不含链接帧；替换/编辑时保留链接帧结构 |
 | 替换帧时导入图尺寸不同 | 自动缩放至帧尺寸（保持画布语义） |
-| 导入非 IMG 文件 | 校验魔数 `Neople Img File`，不合法则弹窗提示 |
+| 导入非 IMG 文件 | 校验 IMG 魔数，不合法则弹窗提示 |
 | 导入 IMG 版本非 v2 | `readImgFull` 抛错，弹窗提示不支持的版本 |
 | 保存时加密算法 | 条目名保留原有 XOR 加密（`encryptName` 与 `decryptName` 对称）；SHA256 校验对齐 ExtractorSharp `CompileHash` 语义 |
 | 超大归档 | 条目表一次性解析（每条目 264 字节），PNG 按需解码单帧；编辑时整体重建 NPK 内存（`encodeNpk` 异步 + `WebCrypto SHA256`） |
 | NPK 内 `.ogg` / `.avi` 条目 | 不参与 IMG 帧解析与编辑，树列表显示为媒体叶子节点，点击走 §6.3 不转码预览 |
+| 自动播放进行中重载 NPK / 切换加解密格式 | 先停止帧播放定时器再置空 IMG 信息；播放回调对 IMG 信息缺失自守卫（缺失即停），杜绝定时器残留访问空引用（修复 NpkView `imgInfo` 空引用崩溃） |
 | 浏览器无法播放媒体 | `<audio>` / `<video>` 触发 `error` 事件时预览区显示提示（容器 / 编码不受支持），提供导出字节供本地播放器查看 |
 
 ## 6. 音频 / 视频条目预览（SoundPacks / OGG / AVI）
 
 ### 6.1 NPK 内音频 / 视频条目（SoundPacks 等）
 
-SoundPacks 类 NPK（音频包）与 ImagePacks2 使用**同一归档格式**：`NeoplePack_Bill` 魔数 + 264 字节条目表 + 条目名标准 XOR 加密（§2.3）。差异仅在条目数据区：
+SoundPacks 类 NPK（音频包）与 ImagePacks2 使用**同一归档格式**：归档魔数 + 264 字节条目表 + 条目名标准 XOR 加密（§2.3）。差异仅在条目数据区：
 
-- 条目名后缀为 `.ogg`（音频）或 `.avi`（视频），条目数据区为**原始媒体字节，无额外加密层**——按条目 `offset / size` 直接切片即为完整媒体文件（`.ogg` 条目切片以 `OggS` 魔数开始，`.avi` 条目切片可能为 §6.2 的 Neople 加密视频）。
+- 条目名后缀为 `.ogg`（音频）或 `.avi`（视频），条目数据区为**原始媒体字节，无额外加密层**——按条目 `offset / size` 直接切片即为完整媒体文件（`.ogg` 条目切片以 `OggS` 魔数开始，`.avi` 条目切片可能为 §6.2 的签名加密视频）。
 - 实测样例：`PVF/test/sounds_char_creator.npk`（70 个 `sounds/char/creator/*.ogg` 条目，全部切片即 `OggS`）。
 
 预览策略为**不转码解析**：切片字节直接包成 `audio/ogg` / `video/x-msvideo` Blob 交给浏览器原生 `<audio>` / `<video>` 控件播放；不在解析层做音频元信息（时长 / 采样率）或视频帧的解码。
 
-### 6.2 加密视频容器格式（签名 `Neople Video Fil`）
+### 6.2 加密视频容器格式（专有 16 字节 ASCII 签名）
 
 独立 `.avi` 文件（NPK 内 `.avi` 条目同样可能采用）常为专有加密容器，头部 32 字节：
 
 | 偏移 | 长度 | 字段 | 说明 |
 |---|---|---|---|
-| 0x00 | 16 | 签名 | `Neople Video Fil`（ASCII，16 字节无 `\0`） |
+| 0x00 | 16 | 签名 | 16 字节 ASCII（无 `\0`）；字面值以源码为准 |
 | 0x10 | 4 | uint32 LE | 条目数（实测固定 1） |
 | 0x14 | 4 | uint32 LE | 版本号（实测固定 1） |
 | 0x18 | 4 | uint32 LE | 原始媒体大小 `originalSize` |
@@ -227,7 +233,7 @@ out[i] = media[i] XOR out[i - 1024]     （i >= 1024）
 实测样例：`PVF/test/creator.avi`（签名 / count=1 / version=1 / originalSize=1176024 / alignedSize=1176576，文件总长 1176608 = 0x20 + alignedSize，解密后以 `RIFF····AVI ` 开始）。
 带音频实测样例：`PVF/test/ATFighterGrappler.avi`（656 帧、约 29.97fps、838 个 MP2 音频 chunk，wFormatTag `0x50`、平均字节率 16000）：解密输出按加密端公式（密文[i] = 明文[i] ^ 明文[i-1024]）重加密后与原始密文媒体区**全量逐字节一致**——算法的正确性覆盖含音频区在内的全部输出（`test/npk-verify.mjs` V5 / W6d 断言）。
 
-预览时先以 `isNeopleVideo` 检测签名，命中则解密后播放，否则按原始字节直接播放。
+预览时先做加密视频签名检测，命中则解密后播放，否则按原始字节直接播放。
 
 ### 6.3 NpkView 预览行为
 
@@ -244,7 +250,7 @@ out[i] = media[i] XOR out[i - 1024]     （i >= 1024）
 
 - 浏览器 `<video>` 原生不支持 AVI 容器（Chromium / Firefox）。
 - 实测样例 `PVF/test/creator.avi` 的视频 ES 流以 `00 00 01 B3`（MPEG 序列头）开始，且无序列扩展头（`00 00 01 B5`），为 **MPEG-1 视频**（800×600、约 29.97fps、92 帧、单视频流 handler `MPG1`）。主流浏览器 `<video>` 均不支持 MPEG-1/2 解码，即使重封装为 MP4 也不可播放。
-- 因此 MPEG 编码的 AVI 走**软解播放**：`src/vendor/jsmpeg.min.js`（JSMpeg，MIT 协议，单文件零依赖，MPEG-1/2 软件解码 + WebGL 渲染）负责解码渲染。集成链路：
+- 因此 MPEG 编码的 AVI 走**软解播放**：`src/utils/jsmpeg.min.js`（JSMpeg，MIT 协议，单文件零依赖，MPEG-1/2 软件解码 + WebGL 渲染）负责解码渲染。集成链路：
 
 ```text
 AVI 条目字节 →（加密则 §6.2 解密）→ extractAviVideoStream（movi 提取 00dc ES 流 + avih 帧率）

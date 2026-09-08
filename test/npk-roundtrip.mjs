@@ -37,7 +37,7 @@ function ascii(u8, start, len) {
     for (let i = start; i < start + len; i++) s += String.fromCharCode(u8[i]);
     return s;
 }
-const defaultNpk = "/Users/genergy/Desktop/frida/NPK/sprite_common_etc.NPK";
+const defaultNpk = "PVF/test/sprite_common_etc.NPK";
 const npkPath = process.argv[2] || defaultNpk;
 
 if (!existsSync(npkPath)) {
