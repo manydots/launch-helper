@@ -18,6 +18,7 @@ export default defineConfig(({ mode }) => {
     return {
         base: process.env.GITHUB_ACTIONS ? "/launch-helper/" : "/",
         define: {
+            __VUE_PROD_DEVTOOLS__: false, // true 启用生产环境 Devtools 支持
             __BUILD_TIME__: JSON.stringify(new Date().toISOString())
         },
         server: {
