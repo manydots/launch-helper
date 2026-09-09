@@ -8,7 +8,11 @@ const ENCODING_ALIASES = {
     "utf-8": "utf-8",
     gbk: "gbk",
     gb2312: "gbk",
-    big5: "big5"
+    big5: "big5",
+    // 韩文 EUC-KR / CP949（.nut 等韩文源明文脚本按原始编码直解，docs/pvf-tw-nut-script.md §3.1）
+    "euc-kr": "euc-kr",
+    euckr: "euc-kr",
+    cp949: "euc-kr"
 };
 
 const DEFAULT_ENCODING = "utf8";

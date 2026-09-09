@@ -53,3 +53,53 @@ export function registerPvfLanguage(hljs) {
         };
     });
 }
+
+// ============================================================
+//  Squirrel Language Definition for highlight.js（.nut 明文脚本）
+//  Handles: line/block comments, quoted strings, keywords,
+//  numbers (decimal/hex/float), function titles.
+//  见 docs/pvf-tw-nut-script.md §3.3。
+// ============================================================
+
+export function registerNutLanguage(hljs) {
+    if (hljs.getLanguage("squirrel")) return;
+
+    const NUT_KEYWORDS =
+        "as break case catch class clone const continue default delete do else extends " +
+        "for foreach function if in instanceof local resume return static switch this " +
+        "throw try typeof while yield constructor destructor base";
+
+    hljs.registerLanguage("squirrel", function (hljs) {
+        return {
+            name: "Squirrel",
+            disableAutodetect: true,
+            keywords: {
+                keyword: NUT_KEYWORDS,
+                literal: "null true false"
+            },
+            contains: [
+                hljs.C_LINE_COMMENT_MODE,
+                hljs.C_BLOCK_COMMENT_MODE,
+                // @"..." verbatim 字符串（无转义）
+                {
+                    className: "string",
+                    begin: '@"',
+                    end: '"',
+                    relevance: 0
+                },
+                hljs.QUOTE_STRING_MODE,
+                hljs.APOS_STRING_MODE,
+                hljs.C_NUMBER_MODE,
+                // Squirrel new-slot 操作符 <-（枚举赋值高频），弱化为灰色以突出名字与值
+                {
+                    className: "operator",
+                    match: /<-/
+                },
+                {
+                    className: "title",
+                    match: /(?<=\bfunction\s+)[A-Za-z_]\w*/
+                }
+            ]
+        };
+    });
+}

@@ -3,12 +3,14 @@ import hljs from "highlight.js/lib/core";
 import xmlLang from "highlight.js/lib/languages/xml";
 import { PvfArchive, PvfFormat, formatBytes, buildFileTree, sanitizeFilename } from "@/utils/pvfTool";
 import { TwPvfArchive } from "@/utils/pvfToolTw";
-import { registerPvfLanguage } from "@/utils/pvfHighlight";
+import { registerPvfLanguage, registerNutLanguage } from "@/utils/pvfHighlight";
 import { getTagInfo, parseTagName, renderTagTooltip, PVF_BLOCK_TAGS } from "@/utils/pvfTags";
+import { ensureCodeRefLoaded, renderCodeRefTipHtml } from "@/utils/pvfCodeRef";
 import { validatePvfText } from "@/utils/pvfValidator";
 import { alertModal, confirmModal } from "@/hooks/useModal";
 
 registerPvfLanguage(hljs);
+registerNutLanguage(hljs);
 hljs.registerLanguage("xml", xmlLang);
 
 // 超过此大小的文件不再进入可编辑编辑器（textarea/高亮/校验都是 O(行数) 且非虚拟化，
@@ -150,6 +152,8 @@ export default {
         highlightMode() {
             const f = this.currentFile;
             if (!f) return "pvf";
+            // .nut 明文 Squirrel 脚本按代码风格高亮（TW 层 dataType 恒为 1，判定须置于 dataType 之前）
+            if (f.name && /\.nut$/i.test(f.name)) return "nut";
             if (f.dataType === 1) return "pvf";
             // .xui 为 XML 文本，按 XML 高亮
             if (f.name && /\.xui$/i.test(f.name)) return "xml";
@@ -357,6 +361,8 @@ export default {
         window.addEventListener("keydown", this.onWindowKeydown);
         window.addEventListener("resize", this.onWindowResize);
         window.addEventListener("click", this.hideContextMenu);
+        // 代码引用规则装配（?raw 动态导入，Node 端由测试脚本显式注入）；加载完成前悬浮暂无该区块，无害
+        ensureCodeRefLoaded();
     },
     beforeUnmount() {
         window.removeEventListener("keydown", this.onWindowKeydown);
@@ -464,6 +470,8 @@ export default {
         // ---- PVF text formatting (indent for nested block tags) ----
         applyFormatting(text) {
             if (!text || !this.currentFile || this.currentFile.dataType !== 1) return text;
+            // .nut 明文 Squirrel 脚本自带缩进，跳过 PVF token 文本重排
+            if (/\.nut$/i.test(this.currentFile.name || "")) return text;
             return this.formatPvfText(text);
         },
         formatPvfText(text) {
@@ -1295,6 +1303,13 @@ export default {
                 } catch (e) {
                     html = this.annotateRefs(this.grayLstNames(this.annotateTagSpans(this.escapeHtml(text)), text));
                 }
+            } else if (mode === "nut") {
+                // .nut Squirrel 代码高亮：不叠加 PVF 标签注解（无 [tag] / lst 名称语义）
+                try {
+                    html = hljs.highlight(text, { language: "squirrel" }).value;
+                } catch (e) {
+                    html = this.escapeHtml(text);
+                }
             } else if (mode === "xml") {
                 try {
                     const result = hljs.highlight(text, { language: "xml" });
@@ -1327,6 +1342,7 @@ export default {
             const mode = this.highlightMode;
             try {
                 if (mode === "pvf") return this.annotateRefs(this.grayLstNames(this.annotateTagSpans(hljs.highlight(text, { language: "pvf" }).value), text));
+                if (mode === "nut") return hljs.highlight(text, { language: "squirrel" }).value;
                 if (mode === "xml") return this.annotateTagSpans(hljs.highlight(text, { language: "xml" }).value);
             } catch (e) {
                 /* fall through to escaped text */
@@ -1721,7 +1737,10 @@ export default {
             }
             const mm = /^\s*(\[\/?[^\]\[`{}]+\])\s*$/.exec(lines[row]);
             if (mm) {
-                const html = renderTagTooltip(mm[1]);
+                let html = renderTagTooltip(mm[1]);
+                // 代码引用规则（docs/pvf-tag-code-ref-rules.md）：按当前文件 × 标签匹配，追加到既有浮窗末尾
+                const refHtml = renderCodeRefTipHtml(this.currentFile && this.currentFile.name, mm[1]);
+                if (refHtml) html += refHtml;
                 if (html) {
                     this.tooltip.show = true;
                     this.tooltip.html = html;
@@ -1752,10 +1771,12 @@ export default {
             return this._editorMetrics;
         },
         positionTooltip(e) {
-            const w = 360;
+            const w = 380;
             const x = e.clientX + 14;
             this.tooltip.x = x + w > window.innerWidth ? Math.max(8, e.clientX - w - 14) : x;
-            this.tooltip.y = e.clientY + 14;
+            // 浮窗限高 min(70vh, 520px)，贴近视口底部时上移避免溢出
+            const maxH = Math.min(window.innerHeight * 0.7, 520);
+            this.tooltip.y = e.clientY + 14 + maxH > window.innerHeight ? Math.max(8, window.innerHeight - maxH - 8) : e.clientY + 14;
         },
         // ---- 语法格式检查（防抖）----
         scheduleValidation() {
@@ -3222,6 +3243,10 @@ export default {
 .pvf-largefile-preview :deep(.hljs-title) {
     color: #9cdcfe;
 }
+.pvf-code-highlight :deep(.hljs-operator),
+.pvf-largefile-preview :deep(.hljs-operator) {
+    color: #9a9a9a;
+}
 .pvf-code-highlight :deep(.hljs-pvf-name),
 .pvf-largefile-preview :deep(.hljs-pvf-name) {
     color: #9a9a9a;
@@ -3490,133 +3515,6 @@ export default {
     opacity: 0.6;
 }
 
-/* ---- 标签浮窗 ---- */
-.pvf-tooltip {
-    position: fixed;
-    z-index: 2200;
-    max-width: 360px;
-    min-width: 180px;
-    padding: 10px 12px;
-    background: var(--bg-2);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
-    font-family:
-        system-ui,
-        -apple-system,
-        sans-serif;
-    font-size: 0.74rem;
-    line-height: 1.55;
-    color: var(--text);
-    pointer-events: none;
-    user-select: none;
-}
-.pvf-tip-name {
-    font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
-    font-size: 0.82rem;
-    font-weight: 600;
-    color: var(--pvf-tag-color);
-    margin-bottom: 2px;
-}
-.pvf-tip-cat {
-    display: inline-block;
-    font-size: 0.62rem;
-    padding: 1px 6px;
-    border-radius: 3px;
-    background: rgba(91, 140, 255, 0.14);
-    color: var(--accent);
-    margin-bottom: 6px;
-}
-.pvf-tip-block {
-    display: inline-block;
-    font-size: 0.62rem;
-    padding: 1px 6px;
-    border-radius: 3px;
-    background: rgba(255, 91, 110, 0.14);
-    color: var(--error);
-    margin-bottom: 6px;
-    margin-left: 4px;
-}
-.pvf-tip-desc {
-    color: var(--text);
-    margin-bottom: 8px;
-}
-.pvf-tip-section {
-    font-size: 0.64rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--text-muted);
-    margin: 6px 0 4px;
-}
-.pvf-tip-param {
-    display: grid;
-    grid-template-columns: auto auto auto 1fr;
-    gap: 6px;
-    align-items: center;
-    margin-bottom: 3px;
-    font-size: 0.7rem;
-}
-.pvf-tip-pname {
-    font-family: "SF Mono", monospace;
-    color: #9cdcfe;
-    font-weight: 500;
-}
-.pvf-tip-ptype {
-    font-family: "SF Mono", monospace;
-    font-size: 0.62rem;
-    padding: 1px 5px;
-    border-radius: 3px;
-    background: rgba(255, 255, 255, 0.06);
-    color: var(--text-muted);
-}
-.pvf-tip-req {
-    font-size: 0.6rem;
-    padding: 1px 5px;
-    border-radius: 3px;
-    background: rgba(255, 91, 110, 0.14);
-    color: var(--error);
-}
-.pvf-tip-opt {
-    font-size: 0.6rem;
-    padding: 1px 5px;
-    border-radius: 3px;
-    background: rgba(255, 255, 255, 0.06);
-    color: var(--text-muted);
-}
-.pvf-tip-pdesc {
-    color: var(--text-muted);
-}
-.pvf-tip-example {
-    display: block;
-    font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
-    font-size: 0.7rem;
-    background: rgba(255, 255, 255, 0.05);
-    padding: 4px 7px;
-    border-radius: 4px;
-    color: #ce9178;
-    word-break: break-all;
-}
-.pvf-tip-remark {
-    margin-top: 6px;
-    font-size: 0.66rem;
-    color: var(--text-muted);
-    font-style: italic;
-}
-.pvf-fold-preview {
-    margin: 6px 0 0;
-    padding: 8px 10px;
-    background: rgba(255, 255, 255, 0.05);
-    border-radius: 6px;
-    font-family: "SF Mono", "Cascadia Code", "JetBrains Mono", Consolas, monospace;
-    font-size: 0.7rem;
-    line-height: 1.5;
-    color: var(--text);
-    white-space: pre-wrap;
-    word-break: break-all;
-    max-height: 400px;
-    overflow-y: auto;
-}
 .tip-enter-active,
 .tip-leave-active {
     transition: opacity 0.12s ease;
@@ -3741,5 +3639,218 @@ export default {
 .pvf-err-msg {
     color: var(--text-muted);
     word-break: break-all;
+}
+</style>
+
+<style>
+/* 标签浮窗样式：浮窗内容为 v-html 注入（无 scoped data 属性），
+   必须使用非 scoped 样式；类名 pvf-tooltip / pvf-tip-* 全局唯一。 */
+/* ---- 标签浮窗 ---- */
+.pvf-tooltip {
+    position: fixed;
+    z-index: 2200;
+    max-width: 380px;
+    min-width: 180px;
+    max-height: min(70vh, 520px);
+    overflow: hidden;
+    padding: 10px 12px;
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+    font-family:
+        system-ui,
+        -apple-system,
+        sans-serif;
+    font-size: 0.74rem;
+    line-height: 1.55;
+    color: var(--text);
+    pointer-events: none;
+    user-select: none;
+}
+/* 标题区：标签名 + 分类徽标 + 块标签徽标 同行基线对齐 */
+.pvf-tip-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 6px;
+    margin-bottom: 6px;
+}
+.pvf-tip-name {
+    font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--pvf-tag-color);
+}
+.pvf-tip-cat {
+    display: inline-block;
+    font-size: 0.62rem;
+    padding: 1px 6px;
+    border-radius: 3px;
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--text-muted);
+}
+/* 分类徽标按类别着色（深色主题语法色系；底色取同色低透明度） */
+.pvf-tip-cat.cat-appearance {
+    background: rgba(78, 201, 176, 0.14);
+    color: #4ec9b0;
+}
+.pvf-tip-cat.cat-attribute {
+    background: rgba(86, 156, 214, 0.14);
+    color: #569cd6;
+}
+.pvf-tip-cat.cat-battle {
+    background: rgba(244, 135, 113, 0.14);
+    color: #f48771;
+}
+.pvf-tip-cat.cat-skill {
+    background: rgba(197, 134, 192, 0.14);
+    color: #c586c0;
+}
+.pvf-tip-cat.cat-item {
+    background: rgba(220, 220, 170, 0.14);
+    color: #dcdcaa;
+}
+.pvf-tip-cat.cat-control {
+    background: rgba(215, 186, 125, 0.14);
+    color: #d7ba7d;
+}
+.pvf-tip-cat.cat-system {
+    background: rgba(156, 220, 254, 0.14);
+    color: #9cdcfe;
+}
+.pvf-tip-cat.cat-community {
+    background: rgba(106, 153, 85, 0.16);
+    color: #6a9955;
+}
+.pvf-tip-block {
+    display: inline-block;
+    font-size: 0.62rem;
+    padding: 1px 6px;
+    border-radius: 3px;
+    background: rgba(255, 91, 110, 0.14);
+    color: var(--error);
+}
+.pvf-tip-desc {
+    color: var(--text);
+    margin-bottom: 2px;
+}
+/* 社区说明：注释绿（与人工项目说明的文本色区分） */
+.pvf-tip-desc-c {
+    color: #6a9955;
+}
+/* 区块小标题：上侧细分割线分隔信息层级 */
+.pvf-tip-section {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.64rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    border-top: 1px solid var(--border);
+    margin: 8px 0 4px;
+    padding-top: 7px;
+}
+.pvf-tip-param {
+    display: grid;
+    grid-template-columns: auto auto auto 1fr;
+    gap: 6px;
+    align-items: center;
+    margin-bottom: 3px;
+    font-size: 0.7rem;
+}
+.pvf-tip-pname {
+    font-family: "SF Mono", monospace;
+    color: #9cdcfe;
+    font-weight: 500;
+}
+.pvf-tip-ptype {
+    font-family: "SF Mono", monospace;
+    font-size: 0.62rem;
+    padding: 1px 5px;
+    border-radius: 3px;
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--text-muted);
+}
+.pvf-tip-req {
+    font-size: 0.6rem;
+    padding: 1px 5px;
+    border-radius: 3px;
+    background: rgba(255, 91, 110, 0.14);
+    color: var(--error);
+}
+.pvf-tip-opt {
+    font-size: 0.6rem;
+    padding: 1px 5px;
+    border-radius: 3px;
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--text-muted);
+}
+.pvf-tip-pdesc {
+    color: var(--text-muted);
+}
+.pvf-tip-example {
+    display: block;
+    font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
+    font-size: 0.7rem;
+    background: rgba(255, 255, 255, 0.05);
+    padding: 4px 7px;
+    border-radius: 4px;
+    color: #ce9178;
+    word-break: break-all;
+}
+/* 社区注释行：注释绿逐条展示（区别于人工备注的斜体弱化） */
+.pvf-tip-cmt {
+    font-size: 0.68rem;
+    color: #6a9955;
+    margin: 2px 0;
+    padding-left: 10px;
+    text-indent: -10px;
+}
+.pvf-tip-cmt::before {
+    content: "·";
+    margin-right: 6px;
+    color: rgba(106, 153, 85, 0.7);
+}
+/* 人工备注：斜体弱化 */
+.pvf-tip-remark {
+    margin-top: 6px;
+    font-size: 0.66rem;
+    color: var(--text-muted);
+    font-style: italic;
+}
+/* 代码引用区块：左侧细竖条与标签说明部分分区 */
+.pvf-tip-refs {
+    margin-top: 4px;
+    padding-left: 8px;
+    border-left: 2px solid rgba(91, 140, 255, 0.35);
+}
+.pvf-tip-cond {
+    font-size: 0.62rem;
+    color: var(--text-muted);
+    margin: 0 0 3px;
+    padding-left: 12px;
+}
+.pvf-tip-more {
+    font-size: 0.62rem;
+    color: var(--text-muted);
+    font-style: italic;
+    margin-top: 4px;
+}
+.pvf-fold-preview {
+    margin: 6px 0 0;
+    padding: 8px 10px;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 6px;
+    font-family: "SF Mono", "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+    font-size: 0.7rem;
+    line-height: 1.5;
+    color: var(--text);
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 400px;
+    overflow-y: auto;
 }
 </style>

@@ -6,6 +6,7 @@
 
 import { decodeText, encodeText } from "./encoding.js";
 import { readInt32LE, readUInt32LE, writeInt32LE, pvfDecryptTw, pvfEncryptTw, TW_DECRYPT_KEY, twCreateBuffKey, twFileNameHash, PvfFormat } from "./pvfCodec.js";
+import { encodeEUCKR } from "./euckrEncoder.js";
 import { extractTagFromText, extractNameFromText, extractIntFieldFromText, extractStringFieldFromText, PvfScriptIndenter } from "./pvfTool.js";
 
 function float32ToString(bits) {
@@ -658,6 +659,30 @@ export class TwPvfArchive {
         return this._normalizeLines(parts.join(""));
     }
 
+    // .nut 明文 Squirrel 脚本解码（按原始字节解析、不做替换净化，docs/pvf-tw-nut-script.md §3.1）：
+    // 1) 纯 UTF-8 文件（严格解码成功且不含 U+FFFD，如第三方繁体水印注释）按 UTF-8 直解；
+    // 2) 含替换符时按替换符密度判定编码语义：CP949 试解码占比低（净化混合流的孤立字节固有
+    //    替换，实测样本 ≈0.4%，阈值 5%）→ 按原始编码 CP949（euc-kr）直解——残留 EUC-KR 对
+    //    自然显示原谚文/KS 汉字（타/캔/처…），净化损坏字节自然显示「占쏙옙」；占比高（UTF-8
+    //    语义文件，如旧版保存或外部编辑产生的「UTF-8 + 零星替换符」字节，实测 ~50%）→ 保持
+    //    UTF-8 直解原样呈现，避免把 UTF-8 字节当 CP949 二次误解为乱码；
+    // 3) 严格解码失败防御回落 CP949 直解。解码器固有替换之外不叠加任何恢复 / 净化处理。
+    _twDecodeNutText(data) {
+        let utf8;
+        try {
+            utf8 = new TextDecoder("utf-8", { fatal: true }).decode(data);
+            if (!utf8.includes("\uFFFD")) return this._normalizeLines(utf8);
+        } catch (e) {
+            utf8 = null;
+        }
+        const kr = decodeText(data, "euc-kr");
+        if (utf8 != null) {
+            const fffd = (kr.match(/\uFFFD/g) || []).length;
+            if (fffd / kr.length >= 0.05) return this._normalizeLines(utf8);
+        }
+        return this._normalizeLines(kr);
+    }
+
     // TW 非脚本文件文本尝试：可打印率过低视为二进制
     _twDecodeBinaryText(data) {
         // 明文 ani / 其它 pvfUtility 导出文本（#PVF_File 或 [FRAME 开头）按注释显示
@@ -980,6 +1005,7 @@ export class TwPvfArchive {
         if (data.length >= 2 && data[0] === 0xb0 && data[1] === 0xd0) {
             return /\.lst$/i.test(file.name) ? this.decodeTwLst(data) : this.decodeTwToken(data);
         }
+        if (file && dataTypeIsNut(file)) return this._twDecodeNutText(data);
         return this._twDecodeBinaryText(data);
     }
 
@@ -1388,6 +1414,16 @@ export class TwPvfArchive {
         if (/^#PVF_File/.test(String(text || ""))) {
             return encodeText(text, this.twEncoding);
         }
+        // .nut 明文 Squirrel 脚本：不 token 化，按显示文本的编码语义对称回写
+        // （docs/pvf-tw-nut-script.md §3.2）：净化混合流（CP949 直解语义，含 U+FFFD 或谚文
+        // 音节）经 CP949 反查编码逐字节还原原字节语义（「占쏙옙」循环 ↔ EF BF BD 循环、
+        // 残留对 타 ↔ C5 B8；不可逆替换符显式降级 ?，沿用 encodeGBK 惯例）——外部 CP949
+        // 工具与本仓读回显示一致；纯 UTF-8 文本（繁体水印 / 纯 ASCII）按 UTF-8 原样回写。
+        if (dataTypeIsNut(file)) {
+            const normalized = String(text || "");
+            if (/[\uFFFD\uAC00-\uD7A3]/.test(normalized)) return encodeEUCKR(normalized);
+            return encodeText(normalized, "utf-8");
+        }
         if (dataTypeIsLst(file)) return this.encodeTwLst(text);
         return this.encodeTwToken(text);
     }
@@ -1732,6 +1768,11 @@ export class TwPvfArchive {
 // .lst 判定的 dataType 独立辅助（TW 全部为 dataType 1，靠扩展名判定）
 function dataTypeIsLst(file) {
     return !!(file && file.name && /\.lst$/i.test(file.name));
+}
+
+// .nut 明文 Squirrel 脚本判定（同上，TW 全部为 dataType 1，靠扩展名判定）
+function dataTypeIsNut(file) {
+    return !!(file && file.name && /\.nut$/i.test(file.name));
 }
 
 // 剥离 .lst 展示时追加的行尾 [name] 名称（对齐 pvfTool 的 stripLstNameAnnotations 语义）

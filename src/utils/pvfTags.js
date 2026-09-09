@@ -10,8 +10,13 @@
 //       - example:     使用示例
 //       - category:    分类（用于按类展示）
 //       - remark:      补充说明（可选）
-//    3. 不在此表中的标签会回落到 PVF_TAG_FALLBACK（默认提示）
+//    3. 社区注释数据（pvfTagComments.js，条目同格式）作为合并表基座，
+//       人工定义优先覆盖；两份数据合并为 PVF_TAG_ENTRIES，解析仅一条路径：
+//       精确命中合并表 → 词边界模糊匹配 → PVF_TAG_FALLBACK（默认提示）
+//       （来源与匹配规则见 docs/pvf-tag-community-comments.md）
 // ============================================================
+
+import { PVF_TAG_COMMENTS } from "./pvfTagComments.js";
 
 // 标签分类说明（便于后续按类筛选/着色）
 export const PVF_TAG_CATEGORIES = {
@@ -22,6 +27,7 @@ export const PVF_TAG_CATEGORIES = {
     item: "道具 / 物品",
     control: "流程 / 条件控制",
     system: "系统 / 元信息",
+    community: "社区注释",
     other: "其它"
 };
 
@@ -808,187 +814,49 @@ export function isBlockTag(tagName) {
     return PVF_BLOCK_TAGS.has(parseTagName(tagName).toLowerCase());
 }
 
-// 标签定义表 —— 后续在此扩展
+// 标签定义表 —— 后续在此扩展（条目单行紧凑展示，prettier-ignore 豁免格式化）
+// prettier-ignore
 export const PVF_TAGS = {
     // ---- 外观 / 资源引用 ----
-    avatar: {
-        category: "appearance",
-        description: "角色头像 / 立绘资源引用",
-        params: [{ name: "sprite", type: "string", desc: "img 资源路径或索引", required: true }],
-        example: "[avatar]`character/001.img`",
-        remark: "通常在 .lst 列表中与 ID 配对出现"
-    },
-    illustration: {
-        category: "appearance",
-        description: "插画资源引用",
-        params: [{ name: "sprite", type: "string", desc: "插画资源路径", required: true }],
-        example: "[illustration]`ui/illust/01.img`"
-    },
-    sound: {
-        category: "appearance",
-        description: "音效资源引用",
-        params: [{ name: "path", type: "string", desc: "sound 资源路径", required: true }],
-        example: "[sound]`sound/effect/attack.wav`"
-    },
+    avatar: { category: "appearance", description: "角色头像 / 立绘资源引用", params: [{ name: "sprite", type: "string", desc: "img 资源路径或索引", required: true }], example: "[avatar]`character/001.img`", remark: "通常在 .lst 列表中与 ID 配对出现" },
+    illustration: { category: "appearance", description: "插画资源引用", params: [{ name: "sprite", type: "string", desc: "插画资源路径", required: true }], example: "[illustration]`ui/illust/01.img`" },
+    sound: { category: "appearance", description: "音效资源引用", params: [{ name: "path", type: "string", desc: "sound 资源路径", required: true }], example: "[sound]`sound/effect/attack.wav`" },
 
     // ---- 基础属性 ----
-    level: {
-        category: "attribute",
-        description: "等级数值",
-        params: [{ name: "value", type: "int", desc: "等级（≥1）", required: true }],
-        example: "[level] 10"
-    },
-    hp: {
-        category: "attribute",
-        description: "生命值上限",
-        params: [{ name: "value", type: "int", desc: "HP 数值", required: true }],
-        example: "[hp] 9999"
-    },
-    mp: {
-        category: "attribute",
-        description: "魔法值上限",
-        params: [{ name: "value", type: "int", desc: "MP 数值", required: true }],
-        example: "[mp] 500"
-    },
-    strength: {
-        category: "attribute",
-        description: "力量属性",
-        params: [{ name: "value", type: "int", desc: "力量数值", required: true }],
-        example: "[strength] 100"
-    },
-    intelligence: {
-        category: "attribute",
-        description: "智力属性",
-        params: [{ name: "value", type: "int", desc: "智力数值", required: true }],
-        example: "[intelligence] 100"
-    },
+    level: { category: "attribute", description: "等级数值", params: [{ name: "value", type: "int", desc: "等级（≥1）", required: true }], example: "[level] 10" },
+    hp: { category: "attribute", description: "生命值上限", params: [{ name: "value", type: "int", desc: "HP 数值", required: true }], example: "[hp] 9999" },
+    mp: { category: "attribute", description: "魔法值上限", params: [{ name: "value", type: "int", desc: "MP 数值", required: true }], example: "[mp] 500" },
+    strength: { category: "attribute", description: "力量属性", params: [{ name: "value", type: "int", desc: "力量数值", required: true }], example: "[strength] 100" },
+    intelligence: { category: "attribute", description: "智力属性", params: [{ name: "value", type: "int", desc: "智力数值", required: true }], example: "[intelligence] 100" },
 
     // ---- 战斗 / 伤害 ----
-    "physical attack": {
-        category: "battle",
-        description: "物理攻击力",
-        params: [{ name: "value", type: "int|float", desc: "物攻数值", required: true }],
-        example: "[physical attack] 1200"
-    },
-    "magical attack": {
-        category: "battle",
-        description: "魔法攻击力",
-        params: [{ name: "value", type: "int|float", desc: "魔攻数值", required: true }],
-        example: "[magical attack] 980"
-    },
-    "physical defense": {
-        category: "battle",
-        description: "物理防御力",
-        params: [{ name: "value", type: "int|float", desc: "物防数值", required: true }],
-        example: "[physical defense] 600"
-    },
-    "magical defense": {
-        category: "battle",
-        description: "魔法防御力",
-        params: [{ name: "value", type: "int|float", desc: "魔防数值", required: true }],
-        example: "[magical defense] 600"
-    },
-    cooldown: {
-        category: "battle",
-        description: "冷却时间（毫秒）",
-        params: [{ name: "ms", type: "int", desc: "冷却毫秒数", required: true }],
-        example: "[cooldown] 5000"
-    },
-    duration: {
-        category: "battle",
-        description: "持续时间（秒）",
-        params: [{ name: "sec", type: "int|float", desc: "持续秒数", required: true }],
-        example: "[duration] 3.5"
-    },
-    probability: {
-        category: "battle",
-        description: "触发概率（百分比）",
-        params: [{ name: "percent", type: "float", desc: "0~100 之间的概率值", required: true }],
-        example: "[probability] 25.0"
-    },
+    "physical attack": { category: "battle", description: "物理攻击力", params: [{ name: "value", type: "int|float", desc: "物攻数值", required: true }], example: "[physical attack] 1200" },
+    "magical attack": { category: "battle", description: "魔法攻击力", params: [{ name: "value", type: "int|float", desc: "魔攻数值", required: true }], example: "[magical attack] 980" },
+    "physical defense": { category: "battle", description: "物理防御力", params: [{ name: "value", type: "int|float", desc: "物防数值", required: true }], example: "[physical defense] 600" },
+    "magical defense": { category: "battle", description: "魔法防御力", params: [{ name: "value", type: "int|float", desc: "魔防数值", required: true }], example: "[magical defense] 600" },
+    cooldown: { category: "battle", description: "冷却时间（毫秒）", params: [{ name: "ms", type: "int", desc: "冷却毫秒数", required: true }], example: "[cooldown] 5000" },
+    duration: { category: "battle", description: "持续时间（秒）", params: [{ name: "sec", type: "int|float", desc: "持续秒数", required: true }], example: "[duration] 3.5" },
+    probability: { category: "battle", description: "触发概率（百分比）", params: [{ name: "percent", type: "float", desc: "0~100 之间的概率值", required: true }], example: "[probability] 25.0" },
 
     // ---- 技能 / 状态 ----
-    skill: {
-        category: "skill",
-        description: "技能标识",
-        params: [{ name: "id", type: "int|string", desc: "技能 ID 或名称", required: true }],
-        example: "[skill] 15001"
-    },
-    state: {
-        category: "skill",
-        description: "状态效果标识",
-        params: [{ name: "id", type: "int|string", desc: "状态 ID 或名称", required: true }],
-        example: "[state] `poison`"
-    },
-    buff: {
-        category: "skill",
-        description: "增益效果",
-        params: [
-            { name: "type", type: "string", desc: "buff 类型", required: true },
-            { name: "value", type: "int", desc: "数值" }
-        ],
-        example: "[buff] `atk_up` 200"
-    },
+    skill: { category: "skill", description: "技能标识", params: [{ name: "id", type: "int|string", desc: "技能 ID 或名称", required: true }], example: "[skill] 15001" },
+    state: { category: "skill", description: "状态效果标识", params: [{ name: "id", type: "int|string", desc: "状态 ID 或名称", required: true }], example: "[state] `poison`" },
+    buff: { category: "skill", description: "增益效果", params: [{ name: "type", type: "string", desc: "buff 类型", required: true }, { name: "value", type: "int", desc: "数值" }], example: "[buff] `atk_up` 200" },
 
     // ---- 道具 / 物品 ----
-    item: {
-        category: "item",
-        description: "道具引用",
-        params: [{ name: "id", type: "int", desc: "道具 ID", required: true }],
-        example: "[item] 100032"
-    },
-    stack: {
-        category: "item",
-        description: "堆叠数量",
-        params: [{ name: "count", type: "int", desc: "堆叠上限", required: true }],
-        example: "[stack] 99"
-    },
-    price: {
-        category: "item",
-        description: "售价（金币）",
-        params: [{ name: "value", type: "int", desc: "金币数量", required: true }],
-        example: "[price] 5000"
-    },
+    item: { category: "item", description: "道具引用", params: [{ name: "id", type: "int", desc: "道具 ID", required: true }], example: "[item] 100032" },
+    stack: { category: "item", description: "堆叠数量", params: [{ name: "count", type: "int", desc: "堆叠上限", required: true }], example: "[stack] 99" },
+    price: { category: "item", description: "售价（金币）", params: [{ name: "value", type: "int", desc: "金币数量", required: true }], example: "[price] 5000" },
 
     // ---- 流程 / 条件控制 ----
-    condition: {
-        category: "control",
-        description: "条件判断块",
-        params: [{ name: "expr", type: "string", desc: "条件表达式", required: true }],
-        example: "[condition] `level >= 10`"
-    },
-    if: {
-        category: "control",
-        description: "如果分支",
-        params: [{ name: "expr", type: "string", desc: "条件表达式", required: true }],
-        example: "[if] `hp > 0`"
-    },
-    else: {
-        category: "control",
-        description: "否则分支",
-        params: [],
-        example: "[else]"
-    },
+    condition: { category: "control", description: "条件判断块", params: [{ name: "expr", type: "string", desc: "条件表达式", required: true }], example: "[condition] `level >= 10`" },
+    if: { category: "control", description: "如果分支", params: [{ name: "expr", type: "string", desc: "条件表达式", required: true }], example: "[if] `hp > 0`" },
+    else: { category: "control", description: "否则分支", params: [], example: "[else]" },
 
     // ---- 系统 / 元信息 ----
-    version: {
-        category: "system",
-        description: "版本号",
-        params: [{ name: "ver", type: "int|string", desc: "版本", required: true }],
-        example: "[version] 1003"
-    },
-    name: {
-        category: "system",
-        description: "名称字符串引用",
-        params: [{ name: "key", type: "string", desc: "字符串表 key", required: true }],
-        example: "[name] `str/class/fighter`"
-    },
-    comment: {
-        category: "system",
-        description: "注释说明（仅文本用途）",
-        params: [{ name: "text", type: "string", desc: "注释内容", required: true }],
-        example: "[comment] `此处为暴击分支`"
-    }
+    version: { category: "system", description: "版本号", params: [{ name: "ver", type: "int|string", desc: "版本", required: true }], example: "[version] 1003" },
+    name: { category: "system", description: "名称字符串引用", params: [{ name: "key", type: "string", desc: "字符串表 key", required: true }], example: "[name] `str/class/fighter`" },
+    comment: { category: "system", description: "注释说明（仅文本用途）", params: [{ name: "text", type: "string", desc: "注释内容", required: true }], example: "[comment] `此处为暴击分支`" }
 };
 
 // 未知标签的默认回落说明
@@ -998,7 +866,7 @@ export const PVF_TAG_FALLBACK = {
     category: "other"
 };
 
-// ---- 解析 [xxx] 标签名（去除方括号、闭合斜杠与首尾空白）----
+// ---- 解析 [xxx] 标签名（去除方括号、闭合斜杠与首尾空白，折叠连续空白）----
 export function parseTagName(token) {
     if (!token) return "";
     let t = String(token).trim();
@@ -1006,22 +874,40 @@ export function parseTagName(token) {
     if (t.endsWith("]")) t = t.slice(0, -1);
     // 闭合标签 [/xxx] -> xxx，便于浮窗/块标签判断复用同一份定义
     if (t.startsWith("/")) t = t.slice(1);
-    return t.trim();
+    return t.trim().replace(/\s+/g, " ");
+}
+
+// ---- 合并标签定义表（导出）：社区注释条目为基座，人工 PVF_TAGS 优先覆盖 ----
+// 人工条目命中社区同名标签时附加 community 字段（社区注释文本数组）并存展示。
+export const PVF_TAG_ENTRIES = (() => {
+    const entries = { ...PVF_TAG_COMMENTS };
+    for (const [key, def] of Object.entries(PVF_TAGS)) {
+        const c = PVF_TAG_COMMENTS[key];
+        entries[key] = c ? { ...def, community: [c.description, ...(c.remark ? [c.remark] : [])] } : def;
+    }
+    return entries;
+})();
+
+// needle 是否作为 hay 中以空白为界的独立词出现（词边界判断，替代子串双向包含）
+function isWordInside(needle, hay) {
+    return hay === needle || hay.startsWith(needle + " ") || hay.endsWith(" " + needle) || hay.includes(" " + needle + " ");
 }
 
 // ---- 获取标签说明信息（大小写不敏感，支持带/不带方括号）----
+// 解析仅一条路径：精确命中合并表 → 词边界模糊匹配（返回键定义，block 按键判断）→ 默认回落
 export function getTagInfo(tagName) {
     if (!tagName) return null;
     const name = parseTagName(tagName).toLowerCase();
     if (!name) return null;
     const block = PVF_BLOCK_TAGS.has(name);
-    if (PVF_TAGS[name]) {
-        return { name, block, ...PVF_TAGS[name] };
+    if (PVF_TAG_ENTRIES[name]) {
+        return { name, block, ...PVF_TAG_ENTRIES[name] };
     }
-    // 子串模糊匹配（便于检索复合标签）
-    for (const key of Object.keys(PVF_TAGS)) {
-        if (key.includes(name) || name.includes(key)) {
-            return { name: key, block: PVF_BLOCK_TAGS.has(key), ...PVF_TAGS[key] };
+    // 词边界模糊匹配（便于检索复合标签；避免子串误命中，见 docs/pvf-tag-community-comments.md §2.1）
+    for (const key of Object.keys(PVF_TAG_ENTRIES)) {
+        if (key === name) continue;
+        if (isWordInside(key, name) || isWordInside(name, key)) {
+            return { name: key, block: PVF_BLOCK_TAGS.has(key), ...PVF_TAG_ENTRIES[key] };
         }
     }
     return { name, block, ...PVF_TAG_FALLBACK };
@@ -1033,10 +919,22 @@ export function renderTagTooltip(tagName) {
     if (!info) return "";
     const lines = [];
     const categoryLabel = PVF_TAG_CATEGORIES[info.category] || info.category || "";
-    lines.push(`<div class="pvf-tip-name">[${info.name}]</div>`);
-    if (categoryLabel) lines.push(`<div class="pvf-tip-cat">${categoryLabel}</div>`);
-    if (info.block) lines.push(`<div class="pvf-tip-block">块标签 · 必须以 [/${info.name}] 闭合</div>`);
-    lines.push(`<div class="pvf-tip-desc">${escapeHtml(info.description || "")}</div>`);
+    const isCommunity = info.category === "community";
+    // 标题区：标签名 + 分类徽标（按类别着色）+ 块标签徽标 同行
+    const head = [`<span class="pvf-tip-name">[${info.name}]</span>`];
+    if (categoryLabel) head.push(`<span class="pvf-tip-cat cat-${info.category}">${escapeHtml(categoryLabel)}</span>`);
+    if (info.block) head.push(`<span class="pvf-tip-block">块标签 · 需闭合</span>`);
+    lines.push(`<div class="pvf-tip-head">${head.join("")}</div>`);
+    // 说明文本着色区分来源：人工项目说明用正常文本色；社区说明用注释绿（desc-c）
+    const descCls = isCommunity ? "pvf-tip-desc pvf-tip-desc-c" : "pvf-tip-desc";
+    if (info.description) lines.push(`<div class="${descCls}">${escapeHtml(info.description)}</div>`);
+    // 社区注释区块（人工条目并存的注释文本；纯社区条目的注释即描述，不重复渲染）
+    if (Array.isArray(info.community) && info.community.length > 0) {
+        lines.push(`<div class="pvf-tip-section">社区注释</div>`);
+        for (const c of info.community) {
+            lines.push(`<div class="pvf-tip-cmt">${escapeHtml(c)}</div>`);
+        }
+    }
     if (Array.isArray(info.params) && info.params.length > 0) {
         lines.push(`<div class="pvf-tip-section">参数</div>`);
         for (const p of info.params) {
@@ -1056,7 +954,9 @@ export function renderTagTooltip(tagName) {
         lines.push(`<code class="pvf-tip-example">${escapeHtml(info.example)}</code>`);
     }
     if (info.remark) {
-        lines.push(`<div class="pvf-tip-remark">${escapeHtml(info.remark)}</div>`);
+        // 社区条目的 remark 是其余注释文本（正常行样式）；人工条目的 remark 为补充备注（斜体弱化）
+        const cls = isCommunity ? "pvf-tip-cmt" : "pvf-tip-remark";
+        lines.push(`<div class="${cls}">${escapeHtml(info.remark)}</div>`);
     }
     return lines.join("");
 }

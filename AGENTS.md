@@ -12,8 +12,11 @@
 | 固定回归基线（§2 清单） | 全量回归验证输入 |
 | 用户提供的实导出样例 | 仅作**对照参考**；经用户**权威确认**的样例为权威依据，与文档冲突时以权威确认为准 |
 | `docs/pvfine-external-reference.md`（外部参考规则） | 外部参考项目 pvfine（`https://github.com/dof-dev/pvfine`，Go）的归档模型 / 头部解密 / GRPI 分块 / 脚本反编译格式化与层级缩进规则总结；仅作**对照参考**，权威性低于上表来源，upstream 演进不自动生效 |
+| `docs/pvf-tag-community-comments.md` §5（外部参考规则） | 外部参考项目 Agent-Workbench（`https://github.com/Qswhisper/PVF-Ai-Agent-Workbench`，Node 知识工作台）的社区标签注释、registry 提示构建流程与已知 lst 拼写候选登记；仅作**对照参考**，权威性低于上表来源，upstream 演进不自动生效 |
 
 已登记外部开源仓库：pvfine（规则总结与对照差异见 `docs/pvfine-external-reference.md`；本机对照副本为同级仓库 `../pvfine`，按「文档路径脱敏（门控）」以相对形式书写）。其 §2 脚本反编译版式已按同文档 §4 落地为 PVF 编辑展示缩进（新增缩进版方法，**不改动既有解码方法**，验证脚本 `test/indent-verify.mjs`）。
+
+已登记外部开源仓库：Agent-Workbench（本机副本为同级仓库 `../Agent-Workbench`，其 `knowledge-pack/` 知识包以 CC0-1.0 公共领域许可发布，可自由复用）。其内置社区标签注释（344 条）已提取落地为本仓标签提示注释层（`src/utils/pvfTagComments.js`，验证脚本 `test/tag-comment-verify.mjs`）；其 registry 提示构建流程所解析的配置结构与本仓代码引用规则数据源同源，已知拼写候选登记于 `docs/pvf-tag-community-comments.md` §5，数据一律原样保留、不做静默改写。
 
 - 文档与实现如有分歧，先做**字节级验证**（dump 原始字节逐字段核对）再定论，不得直接引用或复述第三方源码内容。
 
@@ -21,9 +24,10 @@
 
 - 核心解析层：`src/utils/pvfTool.js`（JP/JPL/JPAG/CN）、`src/utils/pvfToolTw.js`（繁体 TW 独立层）。PVF 编辑器脚本展示走缩进版解码：JP `decodeContentForEdit`/`decodeTokenIndented`、TW `decodeTwTokenIndented`（标签 / 值区层级缩进，共享 `PvfScriptIndenter`；**新增方法，既有解码方法输出不变**，版式与边界见 `docs/pvfine-external-reference.md` §4）。
 - NPK 归档预览与编辑：`docs/npk-format.md`（JP `ImagePacks2` NPK/IMG 格式与加解密算法注册表；解析与重建层 `src/utils/npkTool.js`，界面 `src/components/NpkView.vue`，验证脚本 `test/npk-verify.mjs` 与 `test/npk-roundtrip.mjs`；编辑/保存沿用原有加密算法不变；SHA256 两级策略：有 WebCrypto（含 Node 18+ 全局 `crypto.subtle`）走 `crypto.subtle`，否则动态加载 `crypto-es` 兜底，`npkTool.js` 不引用 `node:crypto`、测试脚本以 `node:crypto` 生成参考值；音频/视频条目（SoundPacks `.ogg`、`.avi`）与独立加密 AVI 走不转码预览，MPEG 编码 AVI 经 TS 封装由 `src/utils/jsmpeg.min.js`（JSMpeg，MIT，单文件 IIFE，`?raw` 动态加载）软解播放，格式与预览行为见其 §6）。
-- 二进制协议文档：`docs/pvf-tw-format.md`（TW）、`docs/pvf-jp-korean-mojibake.md` / `docs/pvf-us-korean-mojibake.md`（编码修复）、`docs/pvf-item-grant-parsing.md`（脚本语义）、`docs/pvfine-external-reference.md`（外部参考规则：pvfine 归档模型与脚本反编译格式化 / 层级缩进对照，仅作对照参考）。
+- 二进制协议文档：`docs/pvf-tw-format.md`（TW）、`docs/pvf-jp-korean-mojibake.md` / `docs/pvf-us-korean-mojibake.md`（编码修复）、`docs/pvf-item-grant-parsing.md`（脚本语义）、`docs/pvf-tw-nut-script.md`（TW 明文 Squirrel 脚本 `.nut`：打包前 UTF-8 净化损坏定性、UTF-8 优先解码与原样回写、Squirrel 代码高亮，验证脚本 `test/tw-nut-verify.mjs`）、`docs/pvfine-external-reference.md`（外部参考规则：pvfine 归档模型与脚本反编译格式化 / 层级缩进对照，仅作对照参考）。
 - 网关管理协议对接：`docs/gateway-update-role.md`（CMD_UPDATE_ROLE 角色数据修改：proto 同步来源、optional 置位语义、前端前置关系校验与验证脚本；86 版本等级门槛 15 级转职 / 50 级一觉 / 75 级二觉为展示层约定，含等级与觉醒双向约束；物品发放页 `SendItemView.vue` 采用 header / side / main 三区布局——顶部通栏菜单、左侧查询账号角色、右侧功能卡片）。协议真源为同级网关仓库 `proto/gateway.proto`，本仓 `src/utils/gateway.proto` 为运行时副本，两者改动须同步。
 - 职业枚举固化：`docs/pvf-job-grow-names.md`（86JPL `character.lst`/`.chr` 职业→转职→觉醒名单提取语义与快照登记；常量 `src/utils/jobGrowNames.js` 供展示层消费，5 转未定案分支不收录，`test/job-grow-enums.mjs` 为唯一验证脚本）。
+- 标签提示与代码引用：`src/utils/pvfTags.js`（标签定义表 / 块标签集，社区注释回落层见 `src/utils/pvfTagComments.js`）；代码引用规则（「文件 × 标签 × 参数列 → lst 表」悬浮提示）由 `src/utils/pvfCodeRef.js` 解析与匹配，数据源 `src/utils/ItemCodeHoverConfig.xml` 为外部配置原样归档（`.prettierignore` 豁免 `*.xml`，更新时整文件替换），编辑器 `PvfEditor.vue` 悬浮标签时追加「代码引用」区块；规则语义与验证见 `docs/pvf-tag-code-ref-rules.md`（脚本 `test/tag-code-ref-verify.mjs`）与 `docs/pvf-tag-community-comments.md`（脚本 `test/tag-comment-verify.mjs`）。
 - 前端性能设计：`docs/design-large-file-virtual-scroll.md`（大文件虚拟滚动方案）。
 
 ## 硬性规则
