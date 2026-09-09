@@ -49,6 +49,71 @@ function float32ToString(bits) {
     return String(f32);
 }
 
+// ---- PVF 脚本反编译缩进（版式规则见 docs/pvfine-external-reference.md §2.4/§2.5/§4） ----
+// 标签解析：[inner] 且 inner 非空为标签；'/' 前缀为闭合（'/' 单独不算）；其余（含裸串）返回 null。
+export function parseSectionTagText(text) {
+    if (typeof text !== "string" || text.length < 3 || text[0] !== "[" || text[text.length - 1] !== "]") return null;
+    const inner = text.slice(1, -1);
+    if (!inner) return null;
+    if (inner.charCodeAt(0) === 47) {
+        if (inner.length === 1) return null;
+        return { name: inner.slice(1), closing: true };
+    }
+    return { name: inner, closing: false };
+}
+
+// 缩进状态机（JP/TW 两层共用）：
+//   预扫描 preScanTag 收集「出现过闭合形式」的标签名，仅这些开标签入栈（无闭合配对不改变层级）；
+//   标签行缩进 = 输出时栈深（闭合先弹栈再输出、与开标签左对齐；开标签先输出后入栈）；
+//   弹栈为「最近同名」并截断其上层全部 frame；标签名匹配区分大小写；
+//   子标签出现结束外层 frame 的首值状态（裸串不结束）；
+//   值区缩进：文件首个输出 token 前 0；栈空 1；有栈时首值 = 栈深、后续值行 = 栈深+1。
+export class PvfScriptIndenter {
+    constructor() {
+        this._closers = new Set();
+        this._stack = [];
+        this._seenAny = false;
+    }
+    preScanTag(text) {
+        const t = parseSectionTagText(text);
+        if (t && t.closing) this._closers.add(t.name);
+    }
+    // 标签/裸 type3 行：返回该行缩进 Tab 数，并更新栈态
+    tagLine(text) {
+        this._seenAny = true;
+        const t = parseSectionTagText(text);
+        if (!t) return this._stack.length;
+        if (t.closing) {
+            let i = -1;
+            for (let k = this._stack.length - 1; k >= 0; k--) {
+                if (this._stack[k].name === t.name) {
+                    i = k;
+                    break;
+                }
+            }
+            if (i >= 0) this._stack.length = i; // 弹出该 frame 及其上层全部
+            return this._stack.length;
+        }
+        const depth = this._stack.length;
+        if (this._stack.length > 0) this._stack[this._stack.length - 1].first = false;
+        if (this._closers.has(t.name)) this._stack.push({ name: t.name, first: true });
+        return depth;
+    }
+    // 值区行首缩进（每个开行值 token 前读取一次）
+    valueIndent() {
+        const first = !this._seenAny;
+        this._seenAny = true;
+        if (first) return 0;
+        const d = this._stack.length;
+        if (d === 0) return 1;
+        return this._stack[this._stack.length - 1].first ? d : d + 1;
+    }
+    // 值 token 输出后调用（逐 token，翻转所在 frame 首值状态）
+    onValue() {
+        if (this._stack.length > 0) this._stack[this._stack.length - 1].first = false;
+    }
+}
+
 // ---- PvfArchive ----
 // 解析文件类型登记表（dataType -> 扩展名 -> 解析方法，方法名为 PvfArchive 上的成员）。
 // 当前已登记专用解析方法的文件类型：
@@ -596,6 +661,77 @@ class PvfArchive {
             }
         }
         return this._normalizeLines(parts.join(""));
+    }
+
+    // 文件类型: dataType=1 token 流缩进版展示解码（仅 PVF 编辑器经 decodeContentForEdit 使用）。
+    // decodeToken 保持无缩进原样，名称提取 / 元数据 / 导出 / 互逆回归等既有路径不受影响。
+    // 版式（docs/pvfine-external-reference.md §4）：标签行 = 输出时栈深（闭合与开标签左对齐），
+    // 值区首行 = 栈深（栈空 1、文件首 token 0）、后续值行 = 栈深+1；行内分隔维持现状；
+    // 缩进为展示层版式，编码器以 Tab 为 token 分隔符，再编码互逆不受影响。
+    decodeTokenIndented(data) {
+        const tokens = this._readTokens(data);
+        if (tokens.length === 0) return "";
+        const ind = new PvfScriptIndenter();
+        for (let k = 0; k < tokens.length; k++) {
+            if (tokens[k].type === 3) ind.preScanTag(this.resolveString(tokens[k].value));
+        }
+        const parts = [];
+        let i = 0;
+        while (i < tokens.length) {
+            const { type, value } = tokens[i];
+            switch (type) {
+                case 0:
+                case 2: {
+                    // 连续数字 token 合并到同一行展示；编码器按空白拆分，单行/多行写法等价。
+                    let row = this._fmtNum(type, value);
+                    let j;
+                    ({ row, j } = this._appendNumRun(tokens, i + 1, row));
+                    parts.push("\t".repeat(ind.valueIndent()) + row + "\n");
+                    for (let k = i; k < j; k++) ind.onValue();
+                    i = j;
+                    break;
+                }
+                case 3: {
+                    const tag = this.resolveString(value);
+                    parts.push("\n" + "\t".repeat(ind.tagLine(tag)) + tag + "\n");
+                    i++;
+                    break;
+                }
+                case 5:
+                    parts.push("\n" + "\t".repeat(ind.valueIndent()) + "{5=`" + this._escapeBacktick(this.resolveString(value)) + "`}\n");
+                    ind.onValue();
+                    i++;
+                    break;
+                case 6: {
+                    // 反引号字符串与其后连续数字合并到同一行（如 .lst 名称/索引、.aic 角色信息）。
+                    let row = this._fmtBacktickStr(value);
+                    let j;
+                    ({ row, j } = this._appendNumRun(tokens, i + 1, row));
+                    parts.push("\t".repeat(ind.valueIndent()) + row + "\n");
+                    for (let k = i; k < j; k++) ind.onValue();
+                    i = j;
+                    break;
+                }
+                case 7:
+                    parts.push("\n" + "\t".repeat(ind.valueIndent()) + "{7=`" + this._escapeBacktick(this.resolveString(value)) + "`}\n");
+                    ind.onValue();
+                    i++;
+                    break;
+                default:
+                    parts.push("?(" + type + "," + value + ")\n");
+                    i++;
+                    break;
+            }
+        }
+        return this._normalizeLines(parts.join(""));
+    }
+
+    // 编辑器展示入口：dataType=1 非 .lst 走缩进版解码，其余与 decodeContent 一致
+    // （.lst 编辑展示走 decodeLstWithNames 链，保持既有行结构）。
+    decodeContentForEdit(file, data) {
+        if (!data || data.length === 0) return "";
+        if (file.dataType === 1 && !this.isLstFile(file)) return this.decodeTokenIndented(data);
+        return this.decodeContent(file, data);
     }
 
     // 文件类型: *.lst（dataType=1）

@@ -745,7 +745,9 @@ export default {
                         }
                         return t;
                     }
-                    return this.archive.decodeContent(file, data);
+                    // 编辑展示走缩进版解码（docs/pvfine-external-reference.md §4）：dataType=1 token 流
+                    // 标签行与值区行首缩进；原 decodeContent 保持无缩进，名称/元数据/导出等路径不受影响
+                    return this.archive.decodeContentForEdit(file, data);
                 })();
                 if (text === null) return;
                 // 超大文件：跳过格式化/高亮/校验/全量 textarea 渲染，只读预览前 N 行；

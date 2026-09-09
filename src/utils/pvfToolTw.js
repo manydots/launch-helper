@@ -6,7 +6,7 @@
 
 import { decodeText, encodeText } from "./encoding.js";
 import { readInt32LE, readUInt32LE, writeInt32LE, pvfDecryptTw, pvfEncryptTw, TW_DECRYPT_KEY, twCreateBuffKey, twFileNameHash, PvfFormat } from "./pvfCodec.js";
-import { extractTagFromText, extractNameFromText, extractIntFieldFromText, extractStringFieldFromText } from "./pvfTool.js";
+import { extractTagFromText, extractNameFromText, extractIntFieldFromText, extractStringFieldFromText, PvfScriptIndenter } from "./pvfTool.js";
 
 function float32ToString(bits) {
     const dv = new DataView(new ArrayBuffer(4));
@@ -537,6 +537,100 @@ export class TwPvfArchive {
             }
         }
         return this._normalizeLines(parts.join(""));
+    }
+
+    // TW 脚本 token 流缩进版展示解码（仅 PVF 编辑器经 decodeContentForEdit 使用）。
+    // decodeTwToken 保持无缩进原样，既有路径不受影响。
+    // 版式（docs/pvfine-external-reference.md §4）：标签行 = 输出时栈深（闭合与开标签左对齐），
+    // 标签后首个值 token 行首 = 栈深（栈空 1、文件首 token 0），后续值 token 以 Tab 连接同行不缩进。
+    decodeTwTokenIndented(data) {
+        const tokens = readTokens(data.subarray(2));
+        if (tokens.length === 0) return "";
+        const secText = v => {
+            const s = this._twString(v);
+            return /^\[.*\]$/.test(s) ? s : "[" + s + "]";
+        };
+        const ind = new PvfScriptIndenter();
+        for (let k = 0; k < tokens.length; k++) {
+            if (tokens[k].type === 5) ind.preScanTag(secText(tokens[k].value));
+        }
+        let needValueIndent = true; // 标签换行后的首个值 token 行首
+        const valuePrefix = () => {
+            const p = needValueIndent ? "\t".repeat(ind.valueIndent()) : "";
+            needValueIndent = false;
+            ind.onValue();
+            return p;
+        };
+        const parts = [];
+        let i = 0;
+        while (i < tokens.length) {
+            const { type, value } = tokens[i];
+            switch (type) {
+                case 2:
+                    parts.push(valuePrefix() + String(value) + "\t");
+                    i++;
+                    break;
+                case 4:
+                    parts.push(valuePrefix() + float32ToString(value) + "\t");
+                    i++;
+                    break;
+                case 5: {
+                    // 字符串表中节名已含方括号（如 "[name]"），直接输出避免双重包裹
+                    const sec = secText(value);
+                    parts.push("\n" + "\t".repeat(ind.tagLine(sec)) + sec + "\n");
+                    needValueIndent = true;
+                    i++;
+                    break;
+                }
+                case 7:
+                    parts.push(valuePrefix() + "`" + this._twEscape(this._twString(value)) + "`\t");
+                    i++;
+                    break;
+                case 3:
+                    parts.push(valuePrefix() + "{3=" + value + "}\t");
+                    i++;
+                    break;
+                case 6:
+                    parts.push(valuePrefix() + "{6=`" + this._twEscape(this._twString(value)) + "`}\t");
+                    i++;
+                    break;
+                case 8:
+                    parts.push(valuePrefix() + "{8=`" + this._twEscape(this._twString(value)) + "`}\t");
+                    i++;
+                    break;
+                case 9:
+                    if (i + 1 < tokens.length && tokens[i + 1].type === 10) {
+                        const strId = value;
+                        const name = this._twString(tokens[i + 1].value);
+                        parts.push(valuePrefix() + "<" + strId + "::" + name + "`" + this._twEscape(this._twStrText(strId, name)) + "`>\t");
+                        i += 2;
+                    } else {
+                        parts.push(valuePrefix() + "{9=" + value + "}\t");
+                        i++;
+                    }
+                    break;
+                case 10:
+                    parts.push(valuePrefix() + "<::" + this._twString(value) + "``>\t");
+                    i++;
+                    break;
+                default:
+                    parts.push("?(" + type + "," + value + ")\n");
+                    needValueIndent = false;
+                    i++;
+                    break;
+            }
+        }
+        return this._normalizeLines(parts.join(""));
+    }
+
+    // 编辑器展示入口：0xD0B0 token 流（非 .lst）走缩进版解码，其余与 decodeContent 一致
+    // （.ani 权威固化格式、stringtable 视图、明文拦截路径均保持原样，见 docs/pvf-tw-format.md §9.2）。
+    decodeContentForEdit(file, data) {
+        if (!data || data.length === 0) return "";
+        if (file && data.length >= 2 && data[0] === 0xb0 && data[1] === 0xd0 && !/\.lst$/i.test(file.name || "")) {
+            return this.decodeTwTokenIndented(data);
+        }
+        return this.decodeContent(file, data);
     }
 
     // TW .lst 解码：`[2:id][7:路径索引]` 成对合并为「数字 `路径`」行

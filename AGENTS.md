@@ -13,13 +13,13 @@
 | 用户提供的实导出样例 | 仅作**对照参考**；经用户**权威确认**的样例为权威依据，与文档冲突时以权威确认为准 |
 | `docs/pvfine-external-reference.md`（外部参考规则） | 外部参考项目 pvfine（`https://github.com/dof-dev/pvfine`，Go）的归档模型 / 头部解密 / GRPI 分块 / 脚本反编译格式化与层级缩进规则总结；仅作**对照参考**，权威性低于上表来源，upstream 演进不自动生效 |
 
-已登记外部开源仓库：pvfine（规则总结与对照差异见 `docs/pvfine-external-reference.md`；本机对照副本为同级仓库 `../pvfine`，按「文档路径脱敏（门控）」以相对形式书写）。
+已登记外部开源仓库：pvfine（规则总结与对照差异见 `docs/pvfine-external-reference.md`；本机对照副本为同级仓库 `../pvfine`，按「文档路径脱敏（门控）」以相对形式书写）。其 §2 脚本反编译版式已按同文档 §4 落地为 PVF 编辑展示缩进（新增缩进版方法，**不改动既有解码方法**，验证脚本 `test/indent-verify.mjs`）。
 
 - 文档与实现如有分歧，先做**字节级验证**（dump 原始字节逐字段核对）再定论，不得直接引用或复述第三方源码内容。
 
 ## 项目概况
 
-- 核心解析层：`src/utils/pvfTool.js`（JP/JPL/JPAG/CN）、`src/utils/pvfToolTw.js`（繁体 TW 独立层）。
+- 核心解析层：`src/utils/pvfTool.js`（JP/JPL/JPAG/CN）、`src/utils/pvfToolTw.js`（繁体 TW 独立层）。PVF 编辑器脚本展示走缩进版解码：JP `decodeContentForEdit`/`decodeTokenIndented`、TW `decodeTwTokenIndented`（标签 / 值区层级缩进，共享 `PvfScriptIndenter`；**新增方法，既有解码方法输出不变**，版式与边界见 `docs/pvfine-external-reference.md` §4）。
 - NPK 归档预览与编辑：`docs/npk-format.md`（JP `ImagePacks2` NPK/IMG 格式与加解密算法注册表；解析与重建层 `src/utils/npkTool.js`，界面 `src/components/NpkView.vue`，验证脚本 `test/npk-verify.mjs` 与 `test/npk-roundtrip.mjs`；编辑/保存沿用原有加密算法不变；SHA256 两级策略：有 WebCrypto（含 Node 18+ 全局 `crypto.subtle`）走 `crypto.subtle`，否则动态加载 `crypto-es` 兜底，`npkTool.js` 不引用 `node:crypto`、测试脚本以 `node:crypto` 生成参考值；音频/视频条目（SoundPacks `.ogg`、`.avi`）与独立加密 AVI 走不转码预览，MPEG 编码 AVI 经 TS 封装由 `src/utils/jsmpeg.min.js`（JSMpeg，MIT，单文件 IIFE，`?raw` 动态加载）软解播放，格式与预览行为见其 §6）。
 - 二进制协议文档：`docs/pvf-tw-format.md`（TW）、`docs/pvf-jp-korean-mojibake.md` / `docs/pvf-us-korean-mojibake.md`（编码修复）、`docs/pvf-item-grant-parsing.md`（脚本语义）、`docs/pvfine-external-reference.md`（外部参考规则：pvfine 归档模型与脚本反编译格式化 / 层级缩进对照，仅作对照参考）。
 - 网关管理协议对接：`docs/gateway-update-role.md`（CMD_UPDATE_ROLE 角色数据修改：proto 同步来源、optional 置位语义、前端前置关系校验与验证脚本；86 版本等级门槛 15 级转职 / 50 级一觉 / 75 级二觉为展示层约定，含等级与觉醒双向约束；物品发放页 `SendItemView.vue` 采用 header / side / main 三区布局——顶部通栏菜单、左侧查询账号角色、右侧功能卡片）。协议真源为同级网关仓库 `proto/gateway.proto`，本仓 `src/utils/gateway.proto` 为运行时副本，两者改动须同步。
