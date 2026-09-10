@@ -6,17 +6,16 @@
 
 解析/编码语义的**最高优先级权威**为本仓库自身资料，不引用任何第三方源码（含路径与文件名）；除非有特别重大说明，开源仓库可以添加：
 
-| 权威来源 | 说明 |
-|---|---|
-| `docs/` 下格式文档（`pvf-tw-format.md` §9 等） | 已固化的格式规则与解码输出格式定义 |
-| 固定回归基线（§2 清单） | 全量回归验证输入 |
-| 用户提供的实导出样例 | 仅作**对照参考**；经用户**权威确认**的样例为权威依据，与文档冲突时以权威确认为准 |
-| `docs/pvfine-external-reference.md`（外部参考规则） | 外部参考项目 pvfine（`https://github.com/dof-dev/pvfine`，Go）的归档模型 / 头部解密 / GRPI 分块 / 脚本反编译格式化与层级缩进规则总结；仅作**对照参考**，权威性低于上表来源，upstream 演进不自动生效 |
-| `docs/pvf-tag-community-comments.md` §5（外部参考规则） | 外部参考项目 Agent-Workbench（`https://github.com/Qswhisper/PVF-Ai-Agent-Workbench`，Node 知识工作台）的社区标签注释、registry 提示构建流程与已知 lst 拼写候选登记；仅作**对照参考**，权威性低于上表来源，upstream 演进不自动生效 |
+- `docs/` 下格式文档（`pvf-tw-format.md` §9 等）：已固化的格式规则与解码输出格式定义。
+- 固定回归基线（§2 清单）：全量回归验证输入。
+- 用户提供的实导出样例：仅作**对照参考**；经用户**权威确认**的样例为权威依据，与文档冲突时以权威确认为准。
+- `docs/pvfine-external-reference.md`（外部参考规则）：外部参考项目 pvfine（`https://github.com/dof-dev/pvfine`，Go）的归档模型 / 头部解密 / GRPI 分块 / 脚本反编译格式化与层级缩进规则总结；仅作**对照参考**，权威性低于前列来源，upstream 演进不自动生效。
+- `docs/pvf-tag-community-comments.md` §5（外部参考规则）：外部参考项目 Agent-Workbench（`https://github.com/Qswhisper/PVF-Ai-Agent-Workbench`，Node 知识工作台）的社区标签注释、registry 提示构建流程、已知 lst 拼写候选与 PVF 解析 / 反编译排版对照结论（§5.1）登记；仅作**对照参考**，权威性低于前列来源，upstream 演进不自动生效。
+- `docs/pvf-tw-nut-script.md` §3.4（外部参考规则）：外部参考项目 vscode-squirrel（`https://bitbucket.org/marcinbar91/vscode-squirrel`，MIT）的 Squirrel 缩进格式化规则借鉴与缺陷修正要点（同作者 `vscode-squirrel_linter` 为语法 linter，无格式化内容）；仅作**对照参考**，权威性低于前列来源，upstream 演进不自动生效。
 
 已登记外部开源仓库：pvfine（规则总结与对照差异见 `docs/pvfine-external-reference.md`；本机对照副本为同级仓库 `../pvfine`，按「文档路径脱敏（门控）」以相对形式书写）。其 §2 脚本反编译版式已按同文档 §4 落地为 PVF 编辑展示缩进（新增缩进版方法，**不改动既有解码方法**，验证脚本 `test/indent-verify.mjs`）。
 
-已登记外部开源仓库：Agent-Workbench（本机副本为同级仓库 `../Agent-Workbench`，其 `knowledge-pack/` 知识包以 CC0-1.0 公共领域许可发布，可自由复用）。其内置社区标签注释（344 条）已提取落地为本仓标签提示注释层（`src/utils/pvfTagComments.js`，验证脚本 `test/tag-comment-verify.mjs`）；其 registry 提示构建流程所解析的配置结构与本仓代码引用规则数据源同源，已知拼写候选登记于 `docs/pvf-tag-community-comments.md` §5，数据一律原样保留、不做静默改写。
+已登记外部开源仓库：Agent-Workbench（本机副本为同级仓库 `../Agent-Workbench`，其 `knowledge-pack/` 知识包以 CC0-1.0 公共领域许可发布，可自由复用）。其内置社区标签注释（344 条）已提取落地为本仓标签提示注释层（`src/utils/pvfTagComments.js`，验证脚本 `test/tag-comment-verify.mjs`）；其 registry 提示构建流程所解析的配置结构与本仓代码引用规则数据源同源，已知拼写候选登记于 `docs/pvf-tag-community-comments.md` §5，数据一律原样保留、不做静默改写。其 PVF 只读后端中仓库内有源码的 TypeScript fallback（`tools/pvf-bridge/fallback/`）与本仓 TW 层的解析 / 反编译排版对照结论（2026-09，两侧为不同展示方言，维持本仓版式不改码；文件名解码编码不对称登记为存疑待验证项）见同文档 §5.1。
 
 - 文档与实现如有分歧，先做**字节级验证**（dump 原始字节逐字段核对）再定论，不得直接引用或复述第三方源码内容。
 
@@ -24,7 +23,7 @@
 
 - 核心解析层：`src/utils/pvfTool.js`（JP/JPL/JPAG/CN）、`src/utils/pvfToolTw.js`（繁体 TW 独立层）。PVF 编辑器脚本展示走缩进版解码：JP `decodeContentForEdit`/`decodeTokenIndented`、TW `decodeTwTokenIndented`（标签 / 值区层级缩进，共享 `PvfScriptIndenter`；**新增方法，既有解码方法输出不变**，版式与边界见 `docs/pvfine-external-reference.md` §4）。
 - NPK 归档预览与编辑：`docs/npk-format.md`（JP `ImagePacks2` NPK/IMG 格式与加解密算法注册表；解析与重建层 `src/utils/npkTool.js`，界面 `src/components/NpkView.vue`，验证脚本 `test/npk-verify.mjs` 与 `test/npk-roundtrip.mjs`；编辑/保存沿用原有加密算法不变；SHA256 两级策略：有 WebCrypto（含 Node 18+ 全局 `crypto.subtle`）走 `crypto.subtle`，否则动态加载 `crypto-es` 兜底，`npkTool.js` 不引用 `node:crypto`、测试脚本以 `node:crypto` 生成参考值；音频/视频条目（SoundPacks `.ogg`、`.avi`）与独立加密 AVI 走不转码预览，MPEG 编码 AVI 经 TS 封装由 `src/utils/jsmpeg.min.js`（JSMpeg，MIT，单文件 IIFE，`?raw` 动态加载）软解播放，格式与预览行为见其 §6）。
-- 二进制协议文档：`docs/pvf-tw-format.md`（TW）、`docs/pvf-jp-korean-mojibake.md` / `docs/pvf-us-korean-mojibake.md`（编码修复）、`docs/pvf-item-grant-parsing.md`（脚本语义）、`docs/pvf-tw-nut-script.md`（TW 明文 Squirrel 脚本 `.nut`：打包前 UTF-8 净化损坏定性、UTF-8 优先解码与原样回写、Squirrel 代码高亮，验证脚本 `test/tw-nut-verify.mjs`）、`docs/pvfine-external-reference.md`（外部参考规则：pvfine 归档模型与脚本反编译格式化 / 层级缩进对照，仅作对照参考）。
+- 二进制协议文档：`docs/pvf-tw-format.md`（TW）、`docs/pvf-jp-korean-mojibake.md` / `docs/pvf-us-korean-mojibake.md`（编码修复）、`docs/pvf-item-grant-parsing.md`（脚本语义）、`docs/pvf-tw-nut-script.md`（TW 明文 Squirrel 脚本 `.nut`：打包前 UTF-8 净化损坏定性、UTF-8 优先解码与原样回写、Squirrel 代码高亮、缩进格式化（工具栏「格式化」显式触发，见其 §3.4），验证脚本 `test/tw-nut-verify.mjs`）、`docs/pvfine-external-reference.md`（外部参考规则：pvfine 归档模型与脚本反编译格式化 / 层级缩进对照，仅作对照参考）。
 - 网关管理协议对接：`docs/gateway-update-role.md`（CMD_UPDATE_ROLE 角色数据修改：proto 同步来源、optional 置位语义、前端前置关系校验与验证脚本；86 版本等级门槛 15 级转职 / 50 级一觉 / 75 级二觉为展示层约定，含等级与觉醒双向约束；物品发放页 `SendItemView.vue` 采用 header / side / main 三区布局——顶部通栏菜单、左侧查询账号角色、右侧功能卡片）。协议真源为同级网关仓库 `proto/gateway.proto`，本仓 `src/utils/gateway.proto` 为运行时副本，两者改动须同步。
 - 职业枚举固化：`docs/pvf-job-grow-names.md`（86JPL `character.lst`/`.chr` 职业→转职→觉醒名单提取语义与快照登记；常量 `src/utils/jobGrowNames.js` 供展示层消费，5 转未定案分支不收录，`test/job-grow-enums.mjs` 为唯一验证脚本）。
 - 标签提示与代码引用：`src/utils/pvfTags.js`（标签定义表 / 块标签集，社区注释回落层见 `src/utils/pvfTagComments.js`）；代码引用规则（「文件 × 标签 × 参数列 → lst 表」悬浮提示）由 `src/utils/pvfCodeRef.js` 解析与匹配，数据源 `src/utils/ItemCodeHoverConfig.xml` 为外部配置原样归档（`.prettierignore` 豁免 `*.xml`，更新时整文件替换），编辑器 `PvfEditor.vue` 悬浮标签时追加「代码引用」区块；规则语义与验证见 `docs/pvf-tag-code-ref-rules.md`（脚本 `test/tag-code-ref-verify.mjs`）与 `docs/pvf-tag-community-comments.md`（脚本 `test/tag-comment-verify.mjs`）。
@@ -35,14 +34,17 @@
 ### 0. 基础协作约束
 
 **协作语言与元规则**
+
 - **思考过程必须使用中文**（内部推理、规划、总结均以中文进行）。
 - 修复过程中若发现新的重要规则（格式约束、边界行为、权威语义等），**必须同步更新到本文件**，保证规则可被后续会话复用。
 
 **工作流前置**
+
 - 开始任何任务前，**必须先阅读 `docs/` 下相关文档和 `src/utils/` 核心实现**，再动手修改或编写测试；不得在未了解既有文档/实现的情况下直接改码（改码的完整硬性顺序见 §4）。
 - 回归验证基线等本机路径文件（§2 清单中的 PVF 路径）找不到时，**必须先询问用户**确认实际位置，不得自行猜测或跳过验证。
 
 **合规约束**
+
 - **文档中不得出现现有网游或知名游戏（含其开发企业）的名称及其派生标识**（含文件名、目录名、文档正文；引用验证基线文件路径、历史对话记录时除外），一律以中性名称（如"台服文件"、"日服文件"）或本文档定义的技术称谓代替，避免侵权与敏感信息。**二进制格式魔数 / 签名 / 算法密钥常量等不可更改的技术标识**属格式事实，仅存在于源码与测试逻辑中；`docs/` 与本文件**不出现其字面内容**，以中性称谓（归档魔数 / IMG 魔数 / 加密视频签名等）描述并注明「字面值以源码为准」；文档引用源码 API 按功能描述，不写含企业名的标识符字面；**既有源码标识符**（函数 / 变量名等）**暂不强制改名**，新增标识符避免使用企业名；叙述性文本一律以中性表述代替，不在此列举示例。此约束适用于 `docs/` 下所有文档、AGENTS.md 自身、`test/` 下脚本（注释与输出文案），以及 **git 提交信息**（见「代码提交规范」）。
 - **文档路径脱敏（门控）**：`docs/` 下文档与本文件中登记的本机文件路径（回归验证基线、参考项目等）一律以**相对路径**书写（如 `PVF/86JPL/Script.pvf`、`JP/S4A21GmTool`），不得保存含盘符或用户主目录的绝对路径；相对路径在本机无法定位时，按「工作流前置」流程询问用户确认实际位置。
 - **测试脚本路径脱敏（门控）**：`test/` 下脚本不得出现含盘符或用户主目录的本机绝对路径（如 `C:/Users/Administrator/Desktop/...`、`/Users/<用户名>/...`）——默认目标、注释与输出落盘路径均在约束范围内；回归基线等本机文件一律以相对路径书写默认值（如 `PVF/86JP/Script.pvf`，基线根目录为运行时工作目录），实际位置不符时按「工作流前置」以命令行参数传入；输出落盘相对脚本自身目录解析（`import.meta.url`）。

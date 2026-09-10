@@ -4,6 +4,7 @@ import xmlLang from "highlight.js/lib/languages/xml";
 import { PvfArchive, PvfFormat, formatBytes, buildFileTree, sanitizeFilename } from "@/utils/pvfTool";
 import { TwPvfArchive } from "@/utils/pvfToolTw";
 import { registerPvfLanguage, registerNutLanguage } from "@/utils/pvfHighlight";
+import { formatNutText } from "@/utils/pvfNutFormat";
 import { getTagInfo, parseTagName, renderTagTooltip, PVF_BLOCK_TAGS } from "@/utils/pvfTags";
 import { ensureCodeRefLoaded, renderCodeRefTipHtml } from "@/utils/pvfCodeRef";
 import { validatePvfText } from "@/utils/pvfValidator";
@@ -470,9 +471,39 @@ export default {
         // ---- PVF text formatting (indent for nested block tags) ----
         applyFormatting(text) {
             if (!text || !this.currentFile || this.currentFile.dataType !== 1) return text;
-            // .nut 明文 Squirrel 脚本自带缩进，跳过 PVF token 文本重排
+            // .nut 明文 Squirrel 脚本自带缩进，加载不自动重排（显式触发见 formatNutClick）
             if (/\.nut$/i.test(this.currentFile.name || "")) return text;
             return this.formatPvfText(text);
+        },
+        // .nut Squirrel 缩进格式化（docs/pvf-tw-nut-script.md §3.4，仅显式触发）：
+        // 对当前编辑文本重排花括号层级缩进并进入脏态，经既有保存链写盘；
+        // 仅重排 ASCII 空白与行首缩进，字符串 / 注释内容逐字保留；光标按原行号恢复。
+        formatNutClick() {
+            if (!this.currentFile || !/\.nut$/i.test(this.currentFile.name || "")) return;
+            const el = this.$refs.editorEl;
+            const sel = el ? el.selectionStart : 0;
+            const linesBefore = this.editText.split("\n");
+            let line = 0;
+            let col = 0;
+            for (let i = 0, off = 0; i < linesBefore.length; i++) {
+                const len = linesBefore[i].length;
+                if (sel <= off + len) {
+                    line = i;
+                    col = sel - off;
+                    break;
+                }
+                off += len + 1;
+            }
+            const formatted = formatNutText(this.editText);
+            if (formatted === this.editText) return;
+            this.editText = formatted;
+            const formattedLines = formatted.split("\n");
+            if (line < formattedLines.length) {
+                const pos = formattedLines.slice(0, line).reduce((a, l) => a + l.length + 1, 0) + Math.min(col, formattedLines[line].length);
+                this.$nextTick(() => {
+                    if (this.$refs.editorEl) this.$refs.editorEl.setSelectionRange(pos, pos);
+                });
+            }
         },
         formatPvfText(text) {
             const indentUnit = "    ";
@@ -2152,6 +2183,9 @@ export default {
                                 <span class="pvf-editor-meta">{{ formatBytes(currentFile.dataSize) }}</span>
                                 <span v-if="textDirty || isCurrentModified" class="pvf-mod-badge dirty">已修改</span>
                                 <div class="pvf-editor-spacer"></div>
+                                <button v-if="highlightMode === 'nut'" class="pvf-largefile-btn" @click="formatNutClick" title="按 Squirrel 花括号层级重排缩进（显式触发，保存后才写入文件）">
+                                    格式化
+                                </button>
                             </div>
                             <div v-if="currentFile && isEditable" class="pvf-editor-area">
                                 <div class="pvf-code-editor">
@@ -3242,6 +3276,31 @@ export default {
 .pvf-code-highlight :deep(.hljs-title),
 .pvf-largefile-preview :deep(.hljs-title) {
     color: #9cdcfe;
+}
+/* ---- .nut Squirrel token 覆盖扩充（docs/pvf-tw-nut-script.md §3.3）---- */
+.pvf-code-highlight :deep(.hljs-constant),
+.pvf-largefile-preview :deep(.hljs-constant) {
+    color: #d7ba7d;
+}
+.pvf-code-highlight :deep(.hljs-title.function_),
+.pvf-largefile-preview :deep(.hljs-title.function_) {
+    color: #dcdcaa;
+}
+.pvf-code-highlight :deep(.hljs-title.class_),
+.pvf-largefile-preview :deep(.hljs-title.class_) {
+    color: #4ec9b0;
+}
+.pvf-code-highlight :deep(.hljs-property),
+.pvf-largefile-preview :deep(.hljs-property) {
+    color: #9cdcfe;
+}
+.pvf-code-highlight :deep(.hljs-variable),
+.pvf-largefile-preview :deep(.hljs-variable) {
+    color: #9cdcfe;
+}
+.pvf-code-highlight :deep(.hljs-literal),
+.pvf-largefile-preview :deep(.hljs-literal) {
+    color: #569cd6;
 }
 .pvf-code-highlight :deep(.hljs-operator),
 .pvf-largefile-preview :deep(.hljs-operator) {
