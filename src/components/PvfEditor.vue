@@ -4,7 +4,22 @@ import xmlLang from "highlight.js/lib/languages/xml";
 import { PvfArchive, PvfFormat, formatBytes, buildFileTree, sanitizeFilename } from "@/utils/pvfTool";
 import { TwPvfArchive } from "@/utils/pvfToolTw";
 import { registerPvfLanguage, registerNutLanguage } from "@/utils/pvfHighlight";
-import { formatNutText } from "@/utils/pvfNutFormat";
+import {
+    formatNutText,
+    findNutFoldRanges,
+    buildNutFoldLines,
+    buildNutGutterMarks,
+    toggleNutFoldRange,
+    detectNutIndentUnit,
+    computeNutBlockGuideLevels,
+    findNutActiveIndentGuide,
+    findNutWordOccurrences,
+    buildNutFoldEditableText,
+    mergeNutFoldEdit,
+    buildNutFoldMarkerAnchors,
+    captureNutScrollAnchor,
+    resolveNutScrollTop
+} from "@/utils/pvfNutFormat";
 import { getTagInfo, parseTagName, renderTagTooltip, PVF_BLOCK_TAGS } from "@/utils/pvfTags";
 import { ensureCodeRefLoaded, renderCodeRefTipHtml } from "@/utils/pvfCodeRef";
 import { validatePvfText } from "@/utils/pvfValidator";
@@ -22,6 +37,9 @@ const LARGE_FILE_PREVIEW_LINES = 2000;
 const LARGE_VIRTUAL_LINE_H = 20;
 const LARGE_VIRTUAL_BUFFER = 20;
 const LARGE_ROW_CACHE_LIMIT = 40000;
+// .nut 编辑器装饰（§3.6）字符数上限：超过则仅保留折叠整行底色（矩形数与行数同阶），
+// 关闭缩进辅助线与同类词矩形，避免超大文本构造数万装饰元素（与逐键高亮的大文件阈值同源思路）
+const NUT_DECOR_MAX_CHARS = 200000;
 
 const ENCODINGS = [
     { value: "utf-8", label: "UTF-8" },
@@ -29,6 +47,20 @@ const ENCODINGS = [
     { value: "big5", label: "Big5 (繁體中文)" },
     { value: "euc-kr", label: "EUC-KR (韩文)" }
 ];
+
+// .nut 折叠箭头图标（§3.5 Gutter 版式 / 渲染观感对照）：自绘 SVG chevron，几何取自 VS Code 折叠控件
+// 观感——已折叠为右向、未折叠为下向；16×16 viewBox + currentColor 描边，不内嵌第三方图标字体 / 资产。
+// 图标盒 16px 见方（样式见 .pvf-fold-mark，对齐 VS Code 折叠开启时 +16px 的装饰槽位宽），显隐不改变列宽。
+const NUT_FOLD_ICONS = {
+    collapsed:
+        '<svg class="pvf-fold-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3.5 10.5 8 6 12.5" /></svg>',
+    expanded:
+        '<svg class="pvf-fold-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 6 8 10.5 12.5 6" /></svg>'
+};
+
+function nutFoldIcon(mark) {
+    return NUT_FOLD_ICONS[mark] || "";
+}
 
 // 判断行内第 col 列是否落在反引号引用字符串中；命中返回引用路径（含反引号间原始内容）
 function refInLine(line, col) {
@@ -103,6 +135,22 @@ export default {
             drag: null,
             folds: [],
             isFolding: false,
+            // nut 花括号折叠（纯展示折叠，§3.5）：区间集合 [{ open, close }]（0 基真实行号），
+            // 与 editText 解耦，不共用 PVF 块标签折叠的 folds 状态
+            nutFolds: [],
+            // 折叠标记悬停态：鼠标位于左侧 gutter 时显示未折叠行的下向折叠箭头（VS Code 默认行为）
+            nutGutterHovered: false,
+            // 编辑器装饰（§3.6）：textarea 光标 / 选区原始偏移（0 基字符偏移，经 syncCaret 同步）、
+            // 正文滚动偏移（装饰覆盖层不随 pre 滚动，按滚动偏移反向平移矩形）与几何重算触发位
+            nutCaretStart: 0,
+            nutCaretEnd: 0,
+            // 折叠态 textarea 的光标 / 选区偏移（全文偏移域，经 syncNutFoldCaret 同步；-1 = 未同步，
+            // 进入折叠视图时置 -1，避免沿用编辑态残留光标绘制当前行 / 同类词）
+            nutFoldCaretStart: -1,
+            nutFoldCaretEnd: -1,
+            decorX: 0,
+            decorY: 0,
+            decorTick: 0,
             changeStamp: 0,
             tagColor: localStorage.getItem("pvf-tag-color") || "#ff6b9d"
         };
@@ -239,11 +287,164 @@ export default {
         },
         gutterHtml() {
             const lines = this.editLines;
+            // nut：行号左侧渲染折叠箭头图标（可折叠 = 下向箭头 / 已折叠 = 右向箭头，空标记占位保持对齐）
+            if (this.highlightMode === "nut") return this.nutGutterHtml;
             const parts = [];
             for (let i = 0; i < lines.length; i++) {
                 parts.push(String(i + 1));
             }
             return parts.join("\n");
+        },
+        // ---- nut 花括号折叠（纯展示折叠，docs/pvf-tw-nut-script.md §3.5）----
+        // 可折叠行（编辑态 gutter 标记用）：花括号配对区块的开括号行
+        nutFoldableLines() {
+            if (this.highlightMode !== "nut" || !this.editText) return new Set();
+            return new Set(findNutFoldRanges(this.editText).keys());
+        },
+        // 折叠视图可见行 [{ line, no, folded }]；无折叠时为 null（回编辑态）
+        nutFoldView() {
+            if (this.highlightMode !== "nut" || !this.editText || this.nutFolds.length === 0) return null;
+            return buildNutFoldLines(this.editText, this.nutFolds);
+        },
+        // 编辑态 gutter：行号 + 折叠箭头列（版式为「行号在左、箭头在右」，对齐 VS Code 行号右侧的
+        // 16px 装饰槽位；未折叠行的下向箭头仅鼠标移入 gutter 时显示）
+        nutGutterHtml() {
+            const rows = this.editLines.map((_, i) => ({ line: i, no: i + 1 }));
+            const marks = buildNutGutterMarks(rows, this.nutFoldableLines, [], this.nutGutterHovered);
+            return marks.map(m => `${m.no}<span class="pvf-fold-mark">${nutFoldIcon(m.mark)}</span>`).join("\n");
+        },
+        // 折叠态 gutter：仅可见行、原始行号（跳号）；已折叠起始行常显右向箭头，未折叠可折叠行悬停显下向箭头
+        nutFoldGutterHtml() {
+            const marks = buildNutGutterMarks(this.nutFoldView || [], this.nutFoldableLines, this.nutFolds, this.nutGutterHovered);
+            return marks.map(m => `${m.no}<span class="pvf-fold-mark">${nutFoldIcon(m.mark)}</span>`).join("\n");
+        },
+        // 折叠态 textarea 取值：仅可见行（折叠区间开行 / 闭行保留、隐藏行不输出），
+        // 与高亮正文层同源，保证两层逐行对齐（§3.5「折叠态可编辑」）
+        nutFoldEditableText() {
+            return this.nutFoldView ? buildNutFoldEditableText(this.editText, this.nutFolds) : "";
+        },
+        // 折叠态正文：逐行高亮可见行（纯展示层，占位符由覆盖层 nutFoldMarkers 渲染）
+        nutFoldHtml() {
+            const text = this.nutFoldEditableText;
+            if (!text && !this.nutFoldView) return "";
+            return text
+                .split("\n")
+                .map(line => hljs.highlight(line, { language: "squirrel" }).value)
+                .join("\n");
+        },
+        // 折叠占位符覆盖层：⋯ 定位到折叠起始行行末（锚点列 × 字符宽 + 内边距），
+        // 层容器不接收鼠标事件、仅占位符自身可交互（否则整层遮住折叠态 textarea）。
+        // 锚点列由 buildNutFoldMarkerAnchors 给出（行末之后一格、tab 计 4 列、不做可见性过滤——
+        // 视口外的折叠行同样产出，纵向裁剪由覆盖层的固定视口裁剪层承担）。
+        nutFoldMarkers() {
+            const view = this.nutFoldView;
+            const m = this.getEditorMetrics();
+            if (!view || !m) return [];
+            void this.decorTick; // 依赖：几何缓存失效（挂载 / 切换文件 / 缩放）后重算
+            return buildNutFoldMarkerAnchors(view, this.editLines, 4).map(a => ({
+                key: `fold-${a.line}`,
+                line: a.line,
+                left: m.paddingLeft + (a.column - 1) * m.charWidth,
+                top: m.paddingTop + a.row * m.lineHeight
+            }));
+        },
+        // ---- 编辑器装饰（§3.6）：折叠整行底色 / 缩进辅助线（含活动块）/ 同类词 / 当前行 ----
+        // 可见行 [{ line, row（视图行序，决定矩形纵向位置）, folded }]：编辑态为全部行，折叠态为折叠视图可见行
+        nutDecorRows() {
+            if (this.highlightMode !== "nut" || !this.editText) return [];
+            const view = this.nutFoldView;
+            if (view) return view.map((row, i) => ({ line: row.line, row: i, folded: !!row.folded }));
+            return this.editLines.map((_, i) => ({ line: i, row: i, folded: false }));
+        },
+        // 一级缩进单位（辅助线列几何的一级宽度，与「格式化」同源；层级本身由区块嵌套数给出）
+        nutIndentUnit() {
+            return this.editText ? detectNutIndentUnit(this.editText) : "\t";
+        },
+        // 光标 / 选区（0 基行号、1 基可见列）；偏移越界按文本长度收敛。
+        // 折叠态与编辑态的偏移域不同（折叠态 textarea 只含可见行），分开存放、互不沿用：
+        // 折叠态偏移 < 0（未同步）时不绘制当前行与同类词，避免进入折叠视图即出现残留光标
+        nutDecorCaret() {
+            if (this.highlightMode !== "nut" || !this.editText) return null;
+            const folded = !!this.nutFoldView;
+            const rawStart = folded ? this.nutFoldCaretStart : this.nutCaretStart;
+            const rawEnd = folded ? this.nutFoldCaretEnd : this.nutCaretEnd;
+            if (rawStart < 0 || rawEnd < 0) return null;
+            const text = this.editText;
+            const clamp = v => Math.max(0, Math.min(Number.isFinite(v) ? v : 0, text.length));
+            const start = this._nutOffsetToPosition(clamp(rawStart));
+            const end = this._nutOffsetToPosition(clamp(rawEnd));
+            return {
+                line: start.line,
+                column: start.column,
+                selection: { startLine: start.line, startColumn: start.column, endLine: end.line, endColumn: end.column }
+            };
+        },
+        // 整行矩形（折叠整行底色 / 当前行边框）：仅随纵向滚动平移，横向滚动下左右贯通整行
+        nutDecorRowRects() {
+            const m = this.getEditorMetrics();
+            const rows = this.nutDecorRows;
+            if (!m || rows.length === 0) return [];
+            void this.decorTick; // 依赖：几何缓存失效（挂载 / 切换文件 / 缩放）后重算
+            const caret = this.nutDecorCaret;
+            const rects = [];
+            for (const row of rows) {
+                const top = m.paddingTop + row.row * m.lineHeight;
+                if (row.folded) rects.push({ key: `fold-${row.row}`, cls: "pvf-decor-fold", top });
+                if (caret && caret.line === row.line) rects.push({ key: `current-${row.row}`, cls: "pvf-decor-current", top });
+            }
+            return rects;
+        },
+        // 列锚定矩形（缩进辅助线 / 活动块 / 同类词）：随横向与纵向滚动双向平移
+        nutDecorCellRects() {
+            const m = this.getEditorMetrics();
+            const rows = this.nutDecorRows;
+            const text = this.editText;
+            // 超大文本仅保留整行矩形（折叠底色 / 当前行），辅助线与同类词矩形不构造
+            if (!m || !text || rows.length === 0 || text.length > NUT_DECOR_MAX_CHARS) return [];
+            void this.decorTick;
+            const unitColumns = this.nutIndentUnit === "\t" ? 4 : this.nutIndentUnit.length;
+            // 区块区域辅助线（§3.6）：只对跨行 {} 区块的区域内部行（开括号下一行 ~ 闭括号前一行）绘制
+            const levels = computeNutBlockGuideLevels(text);
+            const caret = this.nutDecorCaret;
+            const active = caret ? findNutActiveIndentGuide(levels, caret.line) : null;
+            const occ = caret ? findNutWordOccurrences(text, caret.line, caret.column, { selection: caret.selection }) : null;
+            const cells = [];
+            for (const row of rows) {
+                const top = m.paddingTop + row.row * m.lineHeight;
+                const level = levels[row.line] || 0;
+                for (let g = 1; g <= level; g++) {
+                    const isActive = !!active && active.indent !== 0 && active.indent === g && row.line >= active.startLine && row.line <= active.endLine;
+                    cells.push({
+                        key: `g-${row.row}-${g}`,
+                        cls: isActive ? "pvf-decor-guide pvf-decor-guide-active" : "pvf-decor-guide",
+                        // 上游同款列几何：辅助线列 = (层级 - 1) × 一级缩进宽 + 1（VS Code
+                        // indentGuide = (indentLvl - 1) * indentSize + 1），深一层不压在文字上；
+                        // 矩形宽 = 一个缩进字符宽，1px 线由 inset box-shadow 画在左沿
+                        left: m.paddingLeft + (g - 1) * unitColumns * m.charWidth,
+                        top,
+                        width: m.charWidth
+                    });
+                }
+            }
+            if (occ) {
+                const rowByLine = new Map(rows.map(r => [r.line, r.row]));
+                for (const hit of occ.matches) {
+                    const row = rowByLine.get(hit.line);
+                    if (row == null) continue;
+                    cells.push({
+                        key: `occ-${hit.line}-${hit.startColumn}`,
+                        cls: occ.kind === "selection" ? "pvf-decor-occurrence pvf-decor-occurrence-selection" : "pvf-decor-occurrence",
+                        left: m.paddingLeft + (hit.startColumn - 1) * m.charWidth,
+                        top: m.paddingTop + row * m.lineHeight,
+                        width: Math.max(1, hit.endColumn - hit.startColumn) * m.charWidth
+                    });
+                }
+            }
+            return cells;
+        },
+        // 装饰覆盖层滚动偏移（CSS 变量）：整行层取纵向、列锚定层取双向
+        decorScroll() {
+            return { "--decor-x": `${this.decorX}px`, "--decor-y": `${this.decorY}px` };
         },
         fileTree() {
             if (!this.archive) return null;
@@ -364,6 +565,13 @@ export default {
         window.addEventListener("click", this.hideContextMenu);
         // 代码引用规则装配（?raw 动态导入，Node 端由测试脚本显式注入）；加载完成前悬浮暂无该区块，无害
         ensureCodeRefLoaded();
+        // 编辑器装饰几何：挂载后 refs 可用时失效缓存并触发重算（首次渲染 computed 早于 refs）
+        this.$nextTick(() => {
+            this._editorMetrics = null;
+            this.decorTick++;
+            this.syncCaret();
+            this.syncDecorScroll();
+        });
     },
     beforeUnmount() {
         window.removeEventListener("keydown", this.onWindowKeydown);
@@ -480,6 +688,8 @@ export default {
         // 仅重排 ASCII 空白与行首缩进，字符串 / 注释内容逐字保留；光标按原行号恢复。
         formatNutClick() {
             if (!this.currentFile || !/\.nut$/i.test(this.currentFile.name || "")) return;
+            // 折叠态 textarea 只承载可见行、字符偏移与全文不一致，先展开回编辑态再按全文重排
+            if (this.nutFolds.length > 0) this.expandAllNutFolds();
             const el = this.$refs.editorEl;
             const sel = el ? el.selectionStart : 0;
             const linesBefore = this.editText.split("\n");
@@ -737,6 +947,14 @@ export default {
             this._editorMetrics = null;
             this._hlCache = null;
             this.folds = [];
+            this.nutFolds = [];
+            this.nutGutterHovered = false;
+            // 装饰层随文件切换复位：光标 / 选区与滚动偏移归零，并失效几何缓存
+            this.nutCaretStart = 0;
+            this.nutCaretEnd = 0;
+            this.decorX = 0;
+            this.decorY = 0;
+            this.decorTick++;
             this.isLargeFile = false;
             this.largeFilePreviewHtml = "";
             this.largeFileLineCount = 0;
@@ -1113,6 +1331,7 @@ export default {
                                 this.folds = [];
                                 this.selectedPath = file.fullpath;
                                 this._editorMetrics = null;
+                                this.decorTick++;
                                 this.$nextTick(() => {
                                     this.updateHighlight();
                                     this.runValidation();
@@ -1287,6 +1506,43 @@ export default {
             if (this.$refs.gutterEl && this.$refs.editorEl) {
                 this.$refs.gutterEl.scrollTop = this.$refs.editorEl.scrollTop;
             }
+            this.syncDecorScroll();
+        },
+        // 装饰覆盖层滚动偏移：高亮层 / 折叠正文层为独立滚动容器，装饰层用反向平移跟随
+        syncDecorScroll() {
+            const src = this.$refs.editorEl || this.$refs.foldEditorEl || this.$refs.foldBodyEl;
+            if (!src) return;
+            this.decorX = src.scrollLeft;
+            this.decorY = src.scrollTop;
+        },
+        // 光标 / 选区同步（textarea selectionStart / selectionEnd → 装饰覆盖层输入）
+        syncCaret() {
+            const ta = this.$refs.editorEl;
+            if (!ta) return;
+            this.nutCaretStart = ta.selectionStart;
+            this.nutCaretEnd = ta.selectionEnd;
+        },
+        // 0 基字符偏移 → { line（0 基）、column（1 基可见列） }
+        _nutOffsetToPosition(offset) {
+            const text = this.editText || "";
+            const pos = Math.max(0, Math.min(Number.isFinite(offset) ? offset : 0, text.length));
+            let line = 0;
+            let lineStart = 0;
+            for (let i = 0; i < pos; i++) {
+                if (text.charCodeAt(i) === 10) {
+                    line++;
+                    lineStart = i + 1;
+                }
+            }
+            const content = this.editLines[line] == null ? "" : this.editLines[line];
+            return { line, column: this._nutVisibleColumn(content, pos - lineStart) };
+        },
+        // 行内原始下标 → 可见列（制表符按 tab-size 4 折算，与装饰矩形线性换算一致）
+        _nutVisibleColumn(lineText, rawIndex) {
+            let column = 1;
+            const end = Math.min(rawIndex, lineText.length);
+            for (let i = 0; i < end; i++) column += lineText[i] === "\t" ? 4 : 1;
+            return column;
         },
         onEditorKeydown(e) {
             if (e.key === "Tab") {
@@ -1783,15 +2039,203 @@ export default {
         },
         onEditorMouseLeave() {
             this.tooltip.show = false;
+            if (this.$refs.gutterEl) this.$refs.gutterEl.style.cursor = "default";
+        },
+        // ---- nut 纯展示折叠：gutter 命中与折叠状态维护（docs/pvf-tw-nut-script.md §3.5）----
+        // 行号 gutter 的垂直坐标 → 文本行号（gutter 与正文同高、同 padding / 行高，scrollTop 同步）
+        _rowFromGutterY(e, el) {
+            const g = el || this.$refs.gutterEl;
+            const m = this.getEditorMetrics();
+            if (!g || !m) return -1;
+            const rect = g.getBoundingClientRect();
+            return Math.floor((e.clientY - rect.top + g.scrollTop - m.paddingTop) / m.lineHeight);
+        },
+        // 编辑态 gutter 点击：命中可折叠行则进入折叠视图（正文点击不触发，避免影响光标定位）
+        onGutterMouseDown(e) {
+            if (this.highlightMode !== "nut" || !this.editText) return;
+            const row = this._rowFromGutterY(e);
+            if (row < 0 || row >= this.editLines.length) return;
+            if (this.nutFoldableLines.has(row)) {
+                e.preventDefault();
+                this.collapseNutFold(row);
+            }
+        },
+        // 折叠态 gutter 点击：右向箭头行展开该区块；可折叠行（悬停下向箭头）可继续折叠其它区块
+        onNutFoldGutterMouseDown(e) {
+            const view = this.nutFoldView;
+            if (!view) return;
+            const row = this._rowFromGutterY(e, this.$refs.foldGutterEl);
+            const target = view[row];
+            if (!target) return;
+            if (target.folded) {
+                e.preventDefault();
+                this.expandNutFold(target.line);
+            } else if (this.nutFoldableLines.has(target.line)) {
+                e.preventDefault();
+                this.collapseNutFold(target.line);
+            }
+        },
+        // gutter 悬停：仅在鼠标位于左侧 gutter 时显示未折叠行的下向箭头（已折叠起始行右向箭头常显）
+        onNutGutterHover(hovered) {
+            if (this.nutGutterHovered === hovered) return;
+            this.nutGutterHovered = hovered;
+        },
+        // 编辑态 gutter hover：可折叠行显示可点击光标；其它模式回落既有悬浮逻辑
+        onGutterMouseMove(e) {
+            const g = this.$refs.gutterEl;
+            if (this.highlightMode === "nut" && this.editText && g) {
+                this.onNutGutterHover(true);
+                const row = this._rowFromGutterY(e);
+                const can = row >= 0 && row < this.editLines.length && this.nutFoldableLines.has(row);
+                g.style.cursor = can ? "pointer" : "default";
+                this.tooltip.show = false;
+                return;
+            }
+            if (g) g.style.cursor = "default";
+            this.onEditorMouseMove(e);
+        },
+        // 折叠态 gutter hover：箭头行显示可点击光标
+        onNutFoldGutterMouseMove(e) {
+            const g = this.$refs.foldGutterEl;
+            const view = this.nutFoldView;
+            if (!g || !view) return;
+            this.onNutGutterHover(true);
+            const target = view[this._rowFromGutterY(e, g)];
+            const can = !!target && (target.folded || this.nutFoldableLines.has(target.line));
+            g.style.cursor = can ? "pointer" : "default";
+            this.tooltip.show = false;
+        },
+        // 折叠占位符点击：命中 ⋯ 则展开该区块（VS Code 占位符可点击）
+        onNutFoldBodyClick(e) {
+            const el = e.target && typeof e.target.closest === "function" ? e.target.closest(".pvf-fold-ellipsis") : null;
+            if (!el) return;
+            const line = Number(el.getAttribute("data-line"));
+            if (Number.isInteger(line)) this.expandNutFold(line);
+        },
+        // 折叠态输入：textarea 只承载可见行，输入结果按行差分并回完整文本、折叠区间按行数差平移；
+        // 跨折叠边界（会把隐藏行纳入替换区、或把新行插入隐藏区）不执行本次输入，改为展开相应区间
+        // 后由用户在展开态继续（§3.5「折叠区间保护」，杜绝隐藏内容被误删）
+        onNutFoldInput(e) {
+            const ta = e.target;
+            const merged = mergeNutFoldEdit(this.editText, this.nutFolds, ta.value);
+            if (merged.blocked) {
+                if (merged.expand.length) {
+                    this.nutFolds = this.nutFolds.filter(f => !merged.expand.includes(f.open));
+                }
+                this.$nextTick(() => {
+                    const el = this.$refs.foldEditorEl;
+                    if (!el) return;
+                    const pos = Math.min(el.selectionStart, this.nutFoldEditableText.length);
+                    el.value = this.nutFoldEditableText;
+                    el.setSelectionRange(pos, pos);
+                });
+                return;
+            }
+            if (merged.text !== this.editText) this.editText = merged.text;
+            if (merged.folds !== this.nutFolds) this.nutFolds = merged.folds;
+        },
+        // 折叠态滚动 → 同步高亮正文层 / gutter / 装饰覆盖层（滚动容器为折叠态 textarea）
+        onNutFoldScroll() {
+            const ta = this.$refs.foldEditorEl;
+            if (!ta) return;
+            if (this.$refs.foldBodyEl) {
+                this.$refs.foldBodyEl.scrollTop = ta.scrollTop;
+                this.$refs.foldBodyEl.scrollLeft = ta.scrollLeft;
+            }
+            if (this.$refs.foldGutterEl) this.$refs.foldGutterEl.scrollTop = ta.scrollTop;
+            this.syncDecorScroll();
+        },
+        // 折叠态光标同步（textarea 偏移 → 全文偏移；与编辑态偏移域分离）
+        syncNutFoldCaret() {
+            const ta = this.$refs.foldEditorEl;
+            if (!ta) return;
+            this.nutFoldCaretStart = this._nutFoldOffsetToDoc(ta.selectionStart);
+            this.nutFoldCaretEnd = this._nutFoldOffsetToDoc(ta.selectionEnd);
+        },
+        // 折叠态 textarea 字符偏移 → 全文字符偏移（按可见行描述映射行号，行内偏移一致）
+        _nutFoldOffsetToDoc(off) {
+            const view = this.nutFoldView;
+            if (!view || view.length === 0) return 0;
+            const value = this.nutFoldEditableText;
+            const pos = Math.max(0, Math.min(Number.isFinite(off) ? off : 0, value.length));
+            let row = 0;
+            let lineStart = 0;
+            for (let i = 0; i < pos; i++) {
+                if (value.charCodeAt(i) === 10) {
+                    row++;
+                    lineStart = i + 1;
+                }
+            }
+            if (row >= view.length) return this.editText.length;
+            const docLine = view[row].line;
+            let docStart = 0;
+            for (let i = 0; i < docLine; i++) docStart += (this.editLines[i] == null ? "" : this.editLines[i]).length + 1;
+            return docStart + (pos - lineStart);
+        },
+        // 折叠 / 展开：仅改 nutFolds 状态（不改 editText，不进入脏态）
+        collapseNutFold(openLine) {
+            const closeLine = findNutFoldRanges(this.editText).get(openLine);
+            if (closeLine == null) return;
+            const anchor = this._nutFoldScrollAnchor();
+            this.nutFolds = toggleNutFoldRange(this.nutFolds, openLine, closeLine);
+            this._afterNutFoldChange(anchor);
+        },
+        expandNutFold(openLine) {
+            const next = this.nutFolds.filter(f => f.open !== openLine);
+            if (next.length === this.nutFolds.length) return;
+            const anchor = this._nutFoldScrollAnchor();
+            this.nutFolds = next;
+            this._afterNutFoldChange(anchor);
+        },
+        expandAllNutFolds() {
+            if (this.nutFolds.length === 0) return;
+            const anchor = this._nutFoldScrollAnchor();
+            this.nutFolds = [];
+            this._afterNutFoldChange(anchor);
+        },
+        // 折叠状态变更前：记录视口锚点（视口顶部真实行号 + 行内偏移）。编辑态与折叠态是 v-if / v-else
+        // 两棵互斥子树，变更会重建滚动容器（scrollTop 归零），必须捕获后在新视图里还原（§3.5）。
+        _nutFoldScrollAnchor() {
+            const m = this.getEditorMetrics();
+            const ta = this.nutFoldView ? this.$refs.foldEditorEl : this.$refs.editorEl;
+            if (!m || !ta) return null;
+            return captureNutScrollAnchor(this.nutFoldView || null, ta.scrollTop, m.paddingTop, m.lineHeight);
+        },
+        // 折叠状态变更后：按锚点把同一真实行还原到视口顶部（先于各层滚动量同步，否则同步会把 0 带过去）
+        _restoreNutFoldScroll(anchor) {
+            if (!anchor) return;
+            const m = this.getEditorMetrics();
+            const view = this.nutFoldView;
+            const ta = view ? this.$refs.foldEditorEl : this.$refs.editorEl;
+            if (!m || !ta) return;
+            ta.scrollTop = resolveNutScrollTop(view || null, anchor, m.paddingTop, m.lineHeight);
+        },
+        // 折叠状态变更后：重置折叠态光标（避免残留），并在视图切换后恢复视口 / 同步滚动与装饰偏移
+        _afterNutFoldChange(anchor) {
+            this.nutFoldCaretStart = -1;
+            this.nutFoldCaretEnd = -1;
+            this.$nextTick(() => {
+                this._restoreNutFoldScroll(anchor);
+                this.syncScroll();
+                this.onNutFoldScroll();
+                this.syncDecorScroll();
+            });
         },
         getEditorMetrics() {
             if (this._editorMetrics) return this._editorMetrics;
-            const ta = this.$refs.editorEl;
+            // 折叠态回落折叠态 textarea / 正文层 / 高亮层（同 padding、字号、行高）
+            const ta = this.$refs.editorEl || this.$refs.foldEditorEl || this.$refs.foldBodyEl || this.$refs.highlightEl;
             if (!ta) return null;
             const cs = getComputedStyle(ta);
             const fontSize = parseFloat(cs.fontSize) || 13;
             let lineHeight = parseFloat(cs.lineHeight);
-            if (isNaN(lineHeight) || lineHeight === 0) lineHeight = fontSize * 1.6;
+            if (isNaN(lineHeight) || lineHeight === 0) {
+                // 回落取行网格变量（§3.6「行坐标约定」：整数固定行高）。不再回落 fontSize × 1.6——
+                // 相对行高为非整数（0.8rem 字号下 20.48px），与浏览器 LayoutUnit 取整后的实际推进
+                // 逐行累积漂移，装饰矩形会随行号偏移。
+                const fromVar = parseFloat(cs.getPropertyValue("--nut-editor-line-height"));
+                lineHeight = Number.isFinite(fromVar) && fromVar > 0 ? fromVar : 20;
+            }
             const paddingTop = parseFloat(cs.paddingTop) || 0;
             const paddingLeft = parseFloat(cs.paddingLeft) || 0;
             const canvas = document.createElement("canvas");
@@ -2183,16 +2627,91 @@ export default {
                                 <span class="pvf-editor-meta">{{ formatBytes(currentFile.dataSize) }}</span>
                                 <span v-if="textDirty || isCurrentModified" class="pvf-mod-badge dirty">已修改</span>
                                 <div class="pvf-editor-spacer"></div>
+                                <button v-if="highlightMode === 'nut' && nutFolds.length" class="pvf-largefile-btn pvf-icon-text-btn" @click="expandAllNutFolds" title="展开全部折叠区块">
+                                    <svg
+                                        class="pvf-btn-icon"
+                                        viewBox="0 0 16 16"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        stroke-width="1.6"
+                                        stroke-linecap="round"
+                                        stroke-linejoin="round"
+                                        aria-hidden="true">
+                                        <path d="M4 2.5 7.5 6 11 2.5M4 13.5 7.5 10 11 13.5M2.5 8h10" />
+                                    </svg>
+                                    展开全部
+                                </button>
                                 <button v-if="highlightMode === 'nut'" class="pvf-largefile-btn" @click="formatNutClick" title="按 Squirrel 花括号层级重排缩进（显式触发，保存后才写入文件）">
                                     格式化
                                 </button>
                             </div>
                             <div v-if="currentFile && isEditable" class="pvf-editor-area">
-                                <div class="pvf-code-editor">
-                                    <div ref="gutterEl" class="pvf-code-gutter" @mousemove="onEditorMouseMove">
+                                <!-- nut 折叠视图（§3.5）：高亮层只读渲染可见行，其上叠加可编辑 textarea（非折叠区照常编辑） -->
+                                <div v-if="nutFoldView" class="pvf-code-editor pvf-fold-editor">
+                                    <div
+                                        ref="foldGutterEl"
+                                        class="pvf-code-gutter"
+                                        @mousedown="onNutFoldGutterMouseDown"
+                                        @mousemove="onNutFoldGutterMouseMove"
+                                        @mouseenter="onNutGutterHover(true)"
+                                        @mouseleave="onNutGutterHover(false)">
+                                        <pre class="pvf-gutter-pre" v-html="nutFoldGutterHtml"></pre>
+                                    </div>
+                                    <div class="pvf-code-main">
+                                        <div class="pvf-code-decor" :style="decorScroll" aria-hidden="true">
+                                            <div class="pvf-decor-vrows">
+                                                <div v-for="r in nutDecorRowRects" :key="r.key" :class="r.cls" :style="{ top: r.top + 'px' }"></div>
+                                            </div>
+                                            <div class="pvf-decor-cells">
+                                                <div v-for="c in nutDecorCellRects" :key="c.key" :class="c.cls" :style="{ top: c.top + 'px', left: c.left + 'px', width: c.width + 'px' }"></div>
+                                            </div>
+                                        </div>
+                                        <pre ref="foldBodyEl" class="pvf-code-highlight" aria-hidden="true" v-html="nutFoldHtml"></pre>
+                                        <textarea
+                                            ref="foldEditorEl"
+                                            :value="nutFoldEditableText"
+                                            class="pvf-code-textarea pvf-fold-input"
+                                            spellcheck="false"
+                                            @input="onNutFoldInput"
+                                            @scroll="onNutFoldScroll"
+                                            @keyup="syncNutFoldCaret"
+                                            @mouseup="syncNutFoldCaret"
+                                            @select="syncNutFoldCaret"></textarea>
+                                        <div class="pvf-fold-markers">
+                                            <div class="pvf-fold-marker-scroll" :style="decorScroll">
+                                                <span
+                                                    v-for="m in nutFoldMarkers"
+                                                    :key="m.key"
+                                                    class="pvf-fold-ellipsis"
+                                                    :data-line="m.line"
+                                                    :style="{ left: m.left + 'px', top: m.top + 'px' }"
+                                                    title="点击展开该区块"
+                                                    @click="onNutFoldBodyClick"
+                                                    >⋯</span
+                                                >
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div v-else class="pvf-code-editor">
+                                    <div
+                                        ref="gutterEl"
+                                        class="pvf-code-gutter"
+                                        @mousedown="onGutterMouseDown"
+                                        @mousemove="onGutterMouseMove"
+                                        @mouseenter="onNutGutterHover(true)"
+                                        @mouseleave="onNutGutterHover(false)">
                                         <pre class="pvf-gutter-pre" v-html="gutterHtml"></pre>
                                     </div>
                                     <div class="pvf-code-main">
+                                        <div class="pvf-code-decor" :style="decorScroll" aria-hidden="true">
+                                            <div class="pvf-decor-vrows">
+                                                <div v-for="r in nutDecorRowRects" :key="r.key" :class="r.cls" :style="{ top: r.top + 'px' }"></div>
+                                            </div>
+                                            <div class="pvf-decor-cells">
+                                                <div v-for="c in nutDecorCellRects" :key="c.key" :class="c.cls" :style="{ top: c.top + 'px', left: c.left + 'px', width: c.width + 'px' }"></div>
+                                            </div>
+                                        </div>
                                         <pre ref="highlightEl" class="pvf-code-highlight" aria-hidden="true" v-html="highlightedHtml"></pre>
                                         <textarea
                                             ref="editorEl"
@@ -2201,7 +2720,10 @@ export default {
                                             spellcheck="false"
                                             @scroll="syncScroll"
                                             @keydown="onEditorKeydown"
+                                            @keyup="syncCaret"
                                             @mousedown="onEditorMouseDown"
+                                            @mouseup="syncCaret"
+                                            @select="syncCaret"
                                             @beforeinput="onEditorBeforeInput"
                                             @mousemove="onEditorMouseMove"
                                             @mouseleave="onEditorMouseLeave"
@@ -3185,6 +3707,11 @@ export default {
 }
 /* ---- Overlay code editor (highlighted pre + transparent textarea) ---- */
 .pvf-code-editor {
+    /* 编辑器行网格：整数固定行高（§3.6「行坐标约定」）。相对行高 1.6 在 0.8rem 字号下为 20.48px，
+       浏览器按 LayoutUnit(1/64px) 取整后实际逐行推进 20.46875px，与装饰覆盖层 JS 换算逐行累积
+       漂移（2000 行约 22px）；整数像素在该网格上精确可表示，正文层 / gutter 层 / 装饰层 / 装饰
+       矩形高度四处共用同值，保证矩形与行盒严格对齐（与大文件虚拟滚动 LARGE_VIRTUAL_LINE_H 一致）。 */
+    --nut-editor-line-height: 20px;
     display: flex;
     flex: 1;
     overflow: hidden;
@@ -3200,19 +3727,140 @@ export default {
 }
 .pvf-gutter-pre {
     margin: 0;
-    padding: 14px 8px 14px 10px;
+    /* 右内边距 8px → 2px（§3.5「折叠箭头列靠右」）：gutter 宽度内容自适应、行内容右对齐，折叠箭头列
+       （16px 槽位）右侧间距只由这里决定，收紧后行号与箭头列整体右移 6px（列间距与槽位宽不变），
+       箭头更贴近正文侧。编辑态与折叠态共用本规则，不按视图区分——否则切换折叠时行号列会横向跳变。 */
+    padding: 14px 2px 14px 10px;
     font-family: "SF Mono", "Cascadia Code", "JetBrains Mono", Consolas, monospace;
     font-size: 0.8rem;
-    line-height: 1.6;
+    line-height: var(--nut-editor-line-height, 20px);
     white-space: pre;
     text-align: right;
     color: var(--text-muted);
     box-sizing: border-box;
 }
+/* nut 折叠箭头列：行号为「行号 + 箭头列」，本列恒为 gutter 最右侧一列（对齐 VS Code 装饰槽位：
+   行号左侧、正文右侧无此槽位——VS Code 的 decorationsLeft = lineNumbersLeft + lineNumbersWidth，
+   折叠开启时槽位宽 +16px）。固定 16px 见方（内联盒高 16px 小于行高，不改变 gutter 行高），
+   使箭头显隐不引起列宽抖动；该列由 v-html 注入，必须经 :deep() 命中 scoped 样式——否则空标记
+   宽度塌缩为 0、有标记时被字形撑开，gutter 为内容自适应宽度，悬停显示箭头即导致列宽变化。 */
+.pvf-code-gutter :deep(.pvf-fold-mark) {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+    vertical-align: middle;
+    color: var(--text-muted);
+    opacity: 0.75;
+}
+.pvf-code-gutter :deep(.pvf-fold-icon) {
+    display: block;
+    width: 16px;
+    height: 16px;
+}
+/* 折叠占位符覆盖层（2026-09-11「折叠态可编辑」修正）：折叠正文层改为纯展示层（.pvf-code-highlight
+   自身 pointer-events: none），输入由覆盖其上的折叠态 textarea 承担，因此 ⋯ 点击改由本层承担——
+   层容器保持 pointer-events: none、仅占位符自身 auto，避免整层遮住 textarea 使非折叠区无法编辑。
+   层随正文滚动反向平移（与装饰列锚定层同款 transform），z-index 高于 textarea（2）。 */
+/* 折叠占位符覆盖层（§3.5 裁剪修正）：外层只做**固定视口裁剪**（inset + overflow: hidden），
+   本身不带滚动跟随的 transform——裁剪窗口因此固定在编辑区；平移交给内层 .pvf-fold-marker-scroll。
+   原实现把 overflow: hidden 与跟随滚动的 transform 放在同一元素，裁剪窗口会随内容移动，只有
+   首屏内容内的 ⋯ 能被绘制（折叠行底色 / gutter 箭头正常、唯独 ⋯ 缺失，见文档 §3.5）。 */
+.pvf-fold-markers {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    pointer-events: none;
+    z-index: 3;
+    font-family: "SF Mono", "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+    font-size: 0.8rem;
+    line-height: var(--nut-editor-line-height, 20px);
+}
+/* 内层：随滚动反向平移（与装饰覆盖层 .pvf-decor-cells 同构），占位符随内容移动、裁剪窗口固定 */
+.pvf-fold-marker-scroll {
+    position: absolute;
+    inset: 0;
+    transform: translate3d(calc(-1 * var(--decor-x, 0px)), calc(-1 * var(--decor-y, 0px)), 0);
+}
+/* 折叠占位符 ⋯（VS Code 同款字符）：仅自身可点击展开该区块 */
+.pvf-fold-markers :deep(.pvf-fold-ellipsis) {
+    position: absolute;
+    padding-left: 6px;
+    color: var(--text-muted);
+    opacity: 0.7;
+    cursor: pointer;
+    pointer-events: auto;
+    white-space: pre;
+}
+.pvf-fold-markers :deep(.pvf-fold-ellipsis:hover) {
+    opacity: 1;
+}
+/* 折叠起始行底色：改由装饰覆盖层的整行矩形承担（VS Code 整行装饰，§3.6），不再使用行内底色包裹元素 */
 .pvf-code-main {
     position: relative;
     flex: 1;
     overflow: hidden;
+    background: var(--bg);
+}
+/* 装饰覆盖层（§3.6）：折叠整行底色 / 缩进辅助线（含活动块）/ 同类词矩形 / 当前行边框。
+   绘制于文字之下（z-index: 0，正文层 z-index: 1 且背景透明），与编辑器同为 pointer-events: none，
+   不夺取 textarea 的鼠标、选区与光标行为；字号 / 行高与正文层一致，行高取 --nut-editor-line-height
+   （整数固定值，见 §3.6「行坐标约定」与 .pvf-code-editor 注释）。
+   整行矩形层仅随纵向滚动平移（横向滚动下仍左右贯通整行），列锚定层双向平移。 */
+.pvf-code-decor {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    pointer-events: none;
+    z-index: 0;
+    font-size: 0.8rem;
+    line-height: var(--nut-editor-line-height, 20px);
+}
+.pvf-decor-vrows {
+    position: absolute;
+    inset: 0;
+    transform: translate3d(0, calc(-1 * var(--decor-y, 0px)), 0);
+}
+.pvf-decor-cells {
+    position: absolute;
+    inset: 0;
+    transform: translate3d(calc(-1 * var(--decor-x, 0px)), calc(-1 * var(--decor-y, 0px)), 0);
+}
+.pvf-decor-vrows > div,
+.pvf-decor-cells > div {
+    position: absolute;
+    height: var(--nut-editor-line-height, 20px);
+}
+.pvf-decor-vrows > div {
+    left: 0;
+    right: 0;
+}
+.pvf-decor-fold {
+    /* 主题强调色半透明（VS Code editor.foldBackground = 选区底色 30%，本仓取强调色低透明度） */
+    background: rgba(91, 140, 255, 0.12);
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.pvf-decor-current {
+    border: 1px solid var(--line-highlight-border, #282828);
+    box-sizing: border-box;
+}
+.pvf-decor-guide {
+    box-shadow: inset 1px 0 0 0 var(--guide-color, rgba(120, 120, 120, 0.4));
+}
+.pvf-decor-guide-active {
+    box-shadow: inset 1px 0 0 0 var(--guide-color-active, rgba(190, 190, 190, 0.65));
+}
+/* 同类词（VS Code editor.wordHighlightBackground 深色默认 #575757B8） */
+.pvf-decor-occurrence {
+    background: var(--word-highlight-bg, rgba(87, 87, 87, 0.72));
+    border-radius: 2px;
+}
+/* 选中词：同底色 + 1px 边框（VS Code wordHighlightStrong 以边框区分） */
+.pvf-decor-occurrence-selection {
+    border: 1px solid var(--word-highlight-strong-border, #575757);
+    box-sizing: border-box;
 }
 .pvf-code-highlight,
 .pvf-code-textarea {
@@ -3223,14 +3871,14 @@ export default {
     border: none;
     font-family: "SF Mono", "Cascadia Code", "JetBrains Mono", Consolas, monospace;
     font-size: 0.8rem;
-    line-height: 1.6;
+    line-height: var(--nut-editor-line-height, 20px);
     tab-size: 4;
     white-space: pre;
     overflow: auto;
     box-sizing: border-box;
 }
 .pvf-code-highlight {
-    background: var(--bg);
+    background: transparent;
     color: var(--text);
     pointer-events: none;
     z-index: 1;
@@ -3420,6 +4068,20 @@ export default {
 .pvf-largefile-btn:disabled {
     opacity: 0.5;
     cursor: not-allowed;
+}
+/* 带图标的文字按钮（折叠「展开全部」等）：图标与文字同一行居中对齐。
+   不复用纯图标方形类 .pvf-icon-btn（其 30×30 尺寸来自返回 / 导出两个方形图标按钮，与本类叠加后
+   内容盒仅剩 8px，会把四字标签压成每行一个汉字并纵向溢出按钮）；图标尺寸由本类作用域选择器给出，
+   特异度（0,2,1）高于 .pvf-icon-btn svg（0,1,1），确保 12px 生效。 */
+.pvf-icon-text-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+.pvf-icon-text-btn .pvf-btn-icon {
+    width: 12px;
+    height: 12px;
+    flex-shrink: 0;
 }
 /* ---- 大文件全量浏览：虚拟滚动（固定行高，见 LARGE_VIRTUAL_LINE_H） ---- */
 /* ---- 大文件全量浏览：搜索工具条 ---- */
