@@ -7,7 +7,7 @@
 import { decodeText, encodeText } from "./encoding.js";
 import { readInt32LE, readUInt32LE, writeInt32LE, pvfDecryptTw, pvfEncryptTw, TW_DECRYPT_KEY, twCreateBuffKey, twFileNameHash, PvfFormat } from "./pvfCodec.js";
 import { encodeEUCKR } from "./euckrEncoder.js";
-import { extractTagFromText, extractNameFromText, extractIntFieldFromText, extractStringFieldFromText, PvfScriptIndenter } from "./pvfTool.js";
+import { extractTagFromText, extractNameFromText, extractIntFieldFromText, extractStringFieldFromText, sanitizeFilename, PvfScriptIndenter } from "./pvfTool.js";
 
 function float32ToString(bits) {
     const dv = new DataView(new ArrayBuffer(4));
@@ -45,6 +45,13 @@ const ITEM_META_TAGS = [
     "[expiration date]",
     "[daily delete item]"
 ];
+
+// 二进制回退占位文本（_twDecodeBinaryText 末级回退，docs/pvf-tw-format.md §12.5）：
+// 解码与导出共用同一定义——导出据此判定该文件须保留原始字节，而非把占位文本写盘。
+const TW_BINARY_PLACEHOLDER_RE = /^\[二进制文件 \d+ 字节\]$/;
+function twBinaryPlaceholder(size) {
+    return "[二进制文件 " + size + " 字节]";
+}
 
 // 通用：读取 token 流，每 5 字节一个 token（1 字节类型 + 4 字节小端 int32）
 function readTokens(data) {
@@ -716,7 +723,7 @@ export class TwPvfArchive {
             const c = data[i];
             if (c === 9 || c === 10 || c === 13 || (c >= 0x20 && c < 0x7f)) printable++;
         }
-        if (printable < n * 0.7) return "[二进制文件 " + data.length + " 字节]";
+        if (printable < n * 0.7) return twBinaryPlaceholder(data.length);
         return this._normalizeLines(decodeText(data, this.twEncoding));
     }
 
@@ -1595,15 +1602,20 @@ export class TwPvfArchive {
         return new Map();
     }
 
+    // 导出契约与 PvfArchive.exportFile 一致：{ filename, blob, size }（docs/pvf-tw-format.md §12.5）。
+    // 文本走权威无缩进 decodeContent（缩进版仅供编辑器展示）；解码落二进制回退占位文本的文件
+    // 保留原始字节——TW 文件树条目 dataType 恒为 1，无法像 JP 侧按 dataType 分流，
+    // 若一律按文本写盘会把占位文本当作文件内容，造成实际数据丢失。
     async exportFile(file) {
-        if (file.isDir) return null;
+        if (!file || file.isDir) return null;
         const data = await this.getFileData(file);
         if (!data) return null;
-        const name =
-            String(file.fullpath || file.name || "file")
-                .split("/")
-                .pop() || "file";
-        return { data, name };
+        const filename = sanitizeFilename(file.name || file.fullpath || "export");
+        const text = this.decodeContent(file, data);
+        if (TW_BINARY_PLACEHOLDER_RE.test(text)) {
+            return { filename, blob: new Blob([data], { type: "application/octet-stream" }), size: data.length };
+        }
+        return { filename, blob: new Blob([text], { type: "text/plain;charset=utf-8" }), size: text.length };
     }
 
     // ---- 编码切换 ----

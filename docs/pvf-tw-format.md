@@ -379,6 +379,7 @@ strlst 文件是明文 `key>text` 行（含韩文等多字节文本时，可打�
 - 解密：`pvfDecryptTw(buf, key, checksum)` 逐 4 字节 `ROR6(dw ^ key ^ checksum)`，文件树与文件数据共用，key = 0x81A79011。
 - 编码：文件树按 §5 哈希排序（`OrderBy(FileNameBytesChecksum)`），条目 = 哈希/长度/文件名/DataLen/Checksum/DataOffset，`fileTreeLength = Σ(FileNameLen+20) + 3 & ~3`。
 - 字符串表按索引引用，**编辑脚本必须同步维护 stringtable.bin**（删除/追加条目）。
+- 导出契约：`TwPvfArchive.exportFile` 与 `PvfArchive.exportFile`（JP/JPL/JPAG/CN）返回**同一形状** `{ filename, blob, size }`，供编辑器唯一消费点（`PvfEditor.vue` `exportNode`）使用；文本分支走权威无缩进 `decodeContent`，二进制回退文件保留原始字节，见 §12.5。
 - 已实测验证：`a70s2精简更新pvf/Script.pvf`（81.5MB，guidLen=36，ver=0x102EA，182903 文件，184375 条字符串）解析全链路正确。
 
 ## 12. ANI / strlst 解析修复记录（2026-08）
@@ -420,4 +421,41 @@ strlst 文件是明文 `key>text` 行（含韩文等多字节文本时，可打�
 - 跨文件对照否决（维持，补实证）：与 `etc/etc.kor.str` 同名 key 仅 235/802（29.3%）交集，同源长度校验仅 137/235 相等（内容不同源），不得以对照文本替换展示。
 - 方案沿革：① 「检测损坏 -> 净化展示」（UTF-8 `�` 输出）；② 「跨文件对照恢复」；③ 「逆净化还原展示」（2026-08-24）。三次均废弃还原；③ 的定性成果（Big5 源编码纠正、checksum 登记、行结构统计、对照否决实证、样本一次性提取机制）保留并登记于 §8.7。
 - 验证：净化损坏 strlst 断言 PASS（样本 + 登记 checksum 独立还原 / EF BF BD 净化特征命中 / 合法 UTF-8 / 行结构完好；归档补核对 checksum 一致与现场还原一致；展示层保持 Big5 直接解码伪中文存在 / key 与 ASCII 保留 / 不误判二进制 /正常 strlst 不受影响）；全量 .ani 回归通过、独立解析器与实现输出逐行一致（§12.3）。
+
+### 12.5 导出文件接口契约修复记录（2026-09）
+
+**问题**：PVF 编辑器对 TW 归档执行「导出文件」失败，控制台报
+`Failed to execute 'createObjectURL' on 'URL': Overload resolution failed.`，无文件落盘。
+
+**原因**：两层归档类的 `exportFile` 返回契约不一致。`PvfArchive.exportFile`（JP/JPL/JPAG/CN）返回
+`{ filename, blob, size }`；`TwPvfArchive.exportFile` 返回 `{ data, name }`。编辑器唯一消费点
+（`PvfEditor.vue` `exportNode`，`URL.createObjectURL(result.blob)` + `a.download = result.filename`）
+按前者取值，故 TW 路径下 `result.blob` 为 `undefined`，传入 `createObjectURL` 触发参数重载解析失败。
+该缺陷与解析/解码语义无关，自 TW 独立层加入起即存在。
+
+**解决**：`TwPvfArchive.exportFile` 改为与 `PvfArchive.exportFile` 同契约、同语义：
+
+| 分支 | 判定 | 返回 |
+|---|---|---|
+| 文本 | `decodeContent(file, data)` 结果非二进制回退占位文本 | `{ filename, blob: Blob(text, "text/plain;charset=utf-8"), size: text.length }` |
+| 二进制 | 解码结果为 `_twDecodeBinaryText` 末级回退占位文本 `[二进制文件 N 字节]` | `{ filename, blob: Blob(data, "application/octet-stream"), size: data.length }`，`data = getFileData(file)` 原始字节 |
+
+- `filename = sanitizeFilename(file.name || file.fullpath || "export")`，复用 `pvfTool.js` 同一实现（含去路径、去控制字符），与 JP 侧逐字一致。
+- 文本分支取权威无缩进方言 `decodeContent`（**非** `decodeContentForEdit`），与 `docs/pvfine-external-reference.md` §4 的版式分层一致：导出输出保持权威明文格式，层级缩进仅为编辑器展示。
+- 分流依据差异：JP 侧以文件树 `dataType`（1/3 文本、其余二进制）分流；TW 侧文件树条目 `dataType` 恒为 1（§3），故二进制分流改以解码回退结果判定——否则该文件将被写盘为占位文本 `[二进制文件 N 字节]`，造成实际数据丢失。
+- 占位文本字面由模块内 `twBinaryPlaceholder(size)` 构造、`TW_BINARY_PLACEHOLDER_RE` 匹配，解码与导出共用同一定义，避免两处字面漂移。
+
+**已知数据特征（非解析错误）**：`PVF/70TW/Script.pvf` 全量 182903 条目中，仅
+`passiveobject/character/fighter/animation/resizer.exe`（90047B，可执行体）落入二进制回退，
+其余文件均为文本路径；该计数作为基线断言。
+
+**验证结果**（`test/tw-export-verify.mjs`，PASS 28 / FAIL 0 / SKIP 0）：
+1. 源码静态守卫：`TwPvfArchive.exportFile` 返回 `filename` / `blob` / `size` 三字段且复用 `sanitizeFilename`；`PvfArchive.exportFile` 同形状（对照基线）；编辑器以 `result.blob` / `result.filename` 消费；导出走 `decodeContent` 而非 `decodeContentForEdit`；占位文本构造与匹配共用同一定义。
+2. 全量契约：70TW 全部 182903 个非目录条目 `exportFile` 均返回 `{ filename, blob, size }`，`blob instanceof Blob`、`filename` 非空且不含路径分隔符、`size` 为数字（异常 0 条）。
+3. 文本内容：`.stk` / `.lst` / `.ani` / `.nut` / `.str` 各取样，导出 blob 文本与 `decodeContent` 逐字一致，`size === text.length`，MIME 为 `text/plain;charset=utf-8`，`filename` 为 `sanitizeFilename` 后的 basename；token 脚本缩进版与权威版不同（`indented≠plain` 成立）时导出仍取权威版。
+4. 二进制保真：`resizer.exe` 判定依据命中（`decodeContent` 输出 `[二进制文件 90047 字节]`），导出 blob 90047 字节与 `getFileData` 原始字节完全一致，MIME 为 `application/octet-stream`，`size` 取字节数（非占位文本长度 16）。
+5. 回归：`test/verify-authoritative-scan.mjs` 0 FAIL、`test/tw-nut-verify.mjs` PASS 148 / FAIL 0、`test/indent-verify.mjs` 全部断言通过（含 70TW / 86JP 基线段）、`test/tag-comment-verify.mjs` 与 `test/tag-code-ref-verify.mjs` 全部断言通过。
+
+**测试脚本**：`test/tw-export-verify.mjs`（本修复项目唯一脚本）。
+运行方式：`node test/tw-export-verify.mjs [TW PVF 路径]`，默认加载 `PVF/70TW/Script.pvf` 固定基线。
 - 样本留存：`test/70TW/event/event.kor.str`——**原始未解密文件流**，自归档数据区原样切片落盘（dataSize = trueLen = 99952B；不解密、不做任何变换），作为脱离完整归档的最小复现与固定回归输入。现场还原所需 checksum = `0x47273696` 登记于 §8.7；样本一次性提取，断言段不读取归档（AGENTS.md「样本一次性提取（门控）」）。
