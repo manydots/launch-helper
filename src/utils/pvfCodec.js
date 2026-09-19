@@ -8,7 +8,8 @@ const PvfFormat = Object.freeze({
     ORIGINAL: "original", // 原版 PVF 包头（无 Guard 加密）
     GUARD: "guard", // Guard 包头（第 24~27 字节 0x55 XOR）
     PROTECTED: "protected", // 新版 protected_nkpi（UTF-16 seed 密钥流）
-    TW: "tw" // 繁体台服归档（ROR6 ^ key ^ checksum，无压缩）
+    TW: "tw", // 繁体台服归档（ROR6 ^ key ^ checksum，无压缩）
+    REPACK: "repack" // 重打包归档（60CN 基线，明文魔数 + 逐 dword ROR6 XOR，只读；docs/pvf-repack-format.md）
 });
 
 // 枚举值 → 显示标签（后续新增格式只需在此追加映射）
@@ -16,7 +17,8 @@ const PvfFormatLabels = Object.freeze({
     [PvfFormat.ORIGINAL]: "JP",
     [PvfFormat.GUARD]: "JPAG",
     [PvfFormat.PROTECTED]: "CN",
-    [PvfFormat.TW]: "TW"
+    [PvfFormat.TW]: "TW",
+    [PvfFormat.REPACK]: "60CN"
 });
 
 // 默认优先尝试的解析格式（original 优先，兼容大多数原版 PVF 文件）
@@ -29,6 +31,10 @@ const MAGIC_DECRYPT2 = 0x269ec9;
 // ---- 繁体 TW 格式常量（协议见 docs/pvf-tw-format.md）----
 const TW_DECRYPT_KEY = 0x81a79011; // 文件树与文件数据共用（加密/解密同 key）
 const TW_TAIL_MARKER = new Uint8Array([0, ...Array.from("This pvf Pack was created by pvfUtility.", c => c.charCodeAt(0))]); // 42 字节尾部标记（部分台服工具保存时附加，文件内真实字节）
+
+// ---- 重打包归档格式常量（docs/pvf-repack-format.md）----
+// 15 字节明文归档魔数（"DNF_SCRIPT_PACK"），识别优先于既有头部探测链
+const REPACK_MAGIC = new Uint8Array([0x44, 0x4e, 0x46, 0x5f, 0x53, 0x43, 0x52, 0x49, 0x50, 0x54, 0x5f, 0x50, 0x41, 0x43, 0x4b]);
 
 // ---- 二进制读写辅助 ----
 
@@ -201,6 +207,26 @@ function pvfEncryptTw(buf, key, checksum) {
     for (let i = 0; i < len; i += 4) {
         const dw = (buf[i] | (buf[i + 1] << 8) | (buf[i + 2] << 16) | (buf[i + 3] << 24)) >>> 0;
         const r = (((dw << 6) | (dw >>> 26)) ^ key ^ checksum) >>> 0;
+        buf[i] = r & 0xff;
+        buf[i + 1] = (r >>> 8) & 0xff;
+        buf[i + 2] = (r >>> 16) & 0xff;
+        buf[i + 3] = (r >>> 24) & 0xff;
+    }
+}
+
+/**
+ * 重打包归档解密（docs/pvf-repack-format.md §2.2）：逐 4 字节小端 dword，
+ * 明文 = ROR6(密文 ^ key)。树区 key 为头部树区校验值，文件数据 key 为条目校验值；
+ * 移位必须走无符号逻辑移位（算术右移的符号扩展会产生坏字节）。
+ * @param {Uint8Array} buf  密文数据（原地修改为明文；长度按 4 对齐截断处理）
+ * @param {number} key     解密密钥（调用方传入的 32 位无符号值）
+ */
+function pvfDecryptRepack(buf, key) {
+    const len = buf.length & ~3;
+    for (let i = 0; i < len; i += 4) {
+        const dw = (buf[i] | (buf[i + 1] << 8) | (buf[i + 2] << 16) | (buf[i + 3] << 24)) >>> 0;
+        const x = (dw ^ key) >>> 0;
+        const r = ((x >>> 6) | (x << 26)) & 0xffffffff;
         buf[i] = r & 0xff;
         buf[i + 1] = (r >>> 8) & 0xff;
         buf[i + 2] = (r >>> 16) & 0xff;
@@ -426,6 +452,7 @@ export {
     MAGIC_DECRYPT2,
     TW_DECRYPT_KEY,
     TW_TAIL_MARKER,
+    REPACK_MAGIC,
     readInt32LE,
     readUInt32LE,
     writeInt32LE,
@@ -435,6 +462,7 @@ export {
     pvfDecryptProtected,
     pvfDecryptTw,
     pvfEncryptTw,
+    pvfDecryptRepack,
     twFileNameHash,
     twCreateBuffKey,
     zlibCompress,

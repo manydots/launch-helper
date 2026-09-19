@@ -3,6 +3,7 @@ import hljs from "highlight.js/lib/core";
 import xmlLang from "highlight.js/lib/languages/xml";
 import { PvfArchive, PvfFormat, formatBytes, buildFileTree, sanitizeFilename } from "@/utils/pvfTool";
 import { TwPvfArchive } from "@/utils/pvfToolTw";
+import { RepackPvfArchive } from "@/utils/pvfToolRepack";
 import { registerPvfLanguage, registerNutLanguage } from "@/utils/pvfHighlight";
 import {
     formatNutText,
@@ -101,6 +102,7 @@ export default {
             saving: false,
             saveProgress: 0,
             saveProgressText: "",
+            readonlyPreviewHtml: "",
             scrollTop: 0,
             containerHeight: 0,
             selectedPath: "",
@@ -197,6 +199,10 @@ export default {
         },
         isEditable() {
             return !this.isLargeFile && this.currentFile && (this.currentFile.dataType === 1 || this.currentFile.dataType === 3);
+        },
+        // 只读归档（REPACK/60CN）：隐藏右键菜单修改类入口，仅保留导出（docs/pvf-repack-format.md §4）
+        isReadonlyArchive() {
+            return !!(this.archive && this.archive.headerFormat === PvfFormat.REPACK);
         },
         highlightMode() {
             const f = this.currentFile;
@@ -602,19 +608,25 @@ export default {
             try {
                 const buffer = await file.arrayBuffer();
                 this.loadingMessage = "正在解析中...";
-                // 先按 JP/JPAG/CN（original/guard/protected）解析，失败则按繁体 TW 解析
+                // 先按重打包归档（60CN 基线）明文魔数探测（27 字节内无歧义），再按
+                // JP/JPAG/CN（original/guard/protected）解析，失败则按繁体 TW 解析
                 let arch = null;
                 let loadError = null;
-                try {
-                    arch = new PvfArchive(buffer);
+                if (RepackPvfArchive.sniff(buffer)) {
+                    arch = new RepackPvfArchive(buffer);
                     await arch.parse();
-                } catch (err) {
-                    loadError = err;
+                } else {
                     try {
-                        arch = new TwPvfArchive(buffer);
+                        arch = new PvfArchive(buffer);
                         await arch.parse();
-                    } catch (twErr) {
-                        throw loadError || twErr;
+                    } catch (err) {
+                        loadError = err;
+                        try {
+                            arch = new TwPvfArchive(buffer);
+                            await arch.parse();
+                        } catch (twErr) {
+                            throw loadError || twErr;
+                        }
                     }
                 }
                 this.archive = arch;
@@ -635,7 +647,7 @@ export default {
                 this.$nextTick(() => this.updateContainerHeight());
                 this.addLog(`加载 ${file.name} 成功：${arch.header.fileCount} 文件，${arch.headerFormatLabel}${arch.header.groupCount ? `，${arch.header.groupCount} 分块` : ""}`, "success");
                 console.info(
-                    `[PVF] 加载 ${file.name} 成功，文件标识：${arch.headerFormat}（${arch.headerFormatLabel}）${arch.headerFormat === PvfFormat.TW ? "" : `，保存导出将使用${arch.headerFormat === PvfFormat.GUARD ? arch.headerFormatLabel + "（0x55 XOR）" : arch.headerFormatLabel}包头加密规则`}`
+                    `[PVF] 加载 ${file.name} 成功，文件标识：${arch.headerFormat}（${arch.headerFormatLabel}）${arch.headerFormat === PvfFormat.TW || arch.headerFormat === PvfFormat.REPACK ? "" : `，保存导出将使用${arch.headerFormat === PvfFormat.GUARD ? arch.headerFormatLabel + "（0x55 XOR）" : arch.headerFormatLabel}包头加密规则`}`
                 );
             } catch (err) {
                 this.loading = false;
@@ -943,6 +955,7 @@ export default {
             this.editText = "";
             this.originalText = "";
             this.highlightedHtml = "";
+            this.readonlyPreviewHtml = "";
             this.textDirty = false;
             this._editorMetrics = null;
             this._hlCache = null;
@@ -1026,6 +1039,20 @@ export default {
                 const formatted = this.applyFormatting(text);
                 this.originalText = formatted;
                 this.editText = formatted;
+                // 只读归档（REPACK/60CN）预览：明文文本按 PVF 语法高亮渲染（标签着色 + lst 名称染灰），
+                // 与 highlightMode 无关（60CN 文件 dataType 恒 0，highlightMode 为 plaintext）；
+                // .str 文件走 TW/CN 同款 key>text 行格式渲染（前缀红 / > 淡蓝 / 内容灰，注释绿）
+                if (this.isReadonlyArchive && !this.isLargeFile) {
+                    try {
+                        if (this.isStrFile || this.isStringTable) {
+                            this.readonlyPreviewHtml = this._renderKeyValueText(formatted);
+                        } else {
+                            this.readonlyPreviewHtml = this.annotateRefs(this.grayLstNames(this.annotateTagSpans(hljs.highlight(formatted, { language: "pvf" }).value), formatted));
+                        }
+                    } catch {
+                        this.readonlyPreviewHtml = this.annotateTagSpans(this.escapeHtml(formatted));
+                    }
+                }
                 this.loading = false;
                 this._loadingFileIndex = null;
                 this.$nextTick(() => {
@@ -1362,6 +1389,11 @@ export default {
         // ---- Save PVF ----
         async downloadPvf() {
             if (!this.archive) return;
+            // 重打包归档（REPACK/60CN）为只读展示层：编辑回写未实现（docs/pvf-repack-format.md §4）
+            if (this.archive.headerFormat === PvfFormat.REPACK) {
+                alertModal({ title: "只读格式", message: "该归档为重打包格式（60CN），暂不支持保存导出。" });
+                return;
+            }
             if (this.folds.length > 0) this.unfoldAll();
             // 自动暂存当前文件的未保存编辑
             if (this.textDirty && this.isEditable) {
@@ -2041,6 +2073,38 @@ export default {
             this.tooltip.show = false;
             if (this.$refs.gutterEl) this.$refs.gutterEl.style.cursor = "default";
         },
+        // 只读归档（REPACK/60CN）文本预览的标签悬浮：按行高换算行号，标签可与参数同行
+        // （明文形态 `[rarity] 2`，不锚定行尾），追加「代码引用」区块（docs/pvf-tag-code-ref-rules.md）
+        onReadonlyMouseMove(e) {
+            if (!this.isReadonlyArchive || !this.editText) {
+                this.tooltip.show = false;
+                return;
+            }
+            const pre = e.currentTarget;
+            const cs = getComputedStyle(pre);
+            const lineHeight = parseFloat(cs.lineHeight) || 18;
+            const paddingTop = parseFloat(cs.paddingTop) || 0;
+            const rect = pre.getBoundingClientRect();
+            const row = Math.floor((e.clientY - rect.top + pre.scrollTop - paddingTop) / lineHeight);
+            const lines = this.editLines;
+            if (row < 0 || row >= lines.length) {
+                this.tooltip.show = false;
+                return;
+            }
+            const mm = /^\s*(\[\/?[^\]\[`{}]+\])/.exec(lines[row]);
+            if (mm) {
+                let html = renderTagTooltip(mm[1]);
+                const refHtml = renderCodeRefTipHtml(this.currentFile && this.currentFile.name, mm[1]);
+                if (refHtml) html += refHtml;
+                if (html) {
+                    this.tooltip.show = true;
+                    this.tooltip.html = html;
+                    this.positionTooltip(e);
+                    return;
+                }
+            }
+            this.tooltip.show = false;
+        },
         // ---- nut 纯展示折叠：gutter 命中与折叠状态维护（docs/pvf-tw-nut-script.md §3.5）----
         // 行号 gutter 的垂直坐标 → 文本行号（gutter 与正文同高、同 padding / 行高，scrollTop 同步）
         _rowFromGutterY(e, el) {
@@ -2386,7 +2450,7 @@ export default {
                             <span>导出文件</span>
                         </button>
                         <button
-                            v-if="!contextMenu.node.isDir"
+                            v-if="!contextMenu.node.isDir && !isReadonlyArchive"
                             class="pvf-ctx-item"
                             @click="
                                 triggerImport(contextMenu.node);
@@ -2400,6 +2464,7 @@ export default {
                             <span>导入替换</span>
                         </button>
                         <button
+                            v-if="!isReadonlyArchive"
                             class="pvf-ctx-item"
                             @click="
                                 renameNode(contextMenu.node);
@@ -2412,7 +2477,7 @@ export default {
                             <span>重命名</span>
                         </button>
                         <button
-                            v-if="!contextMenu.node.isDir && contextMenu.node.file && archive.isFileModified(contextMenu.node.file.index)"
+                            v-if="!isReadonlyArchive && !contextMenu.node.isDir && contextMenu.node.file && archive.isFileModified(contextMenu.node.file.index)"
                             class="pvf-ctx-item"
                             @click="
                                 selectedPath = contextMenu.node.path;
@@ -2428,6 +2493,7 @@ export default {
                         </button>
                         <div class="pvf-ctx-divider"></div>
                         <button
+                            v-if="!isReadonlyArchive"
                             class="pvf-ctx-item danger"
                             @click="
                                 deleteNode(contextMenu.node);
@@ -2563,7 +2629,7 @@ export default {
                                             <path d="M10 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-2z" />
                                         </svg>
                                         <svg
-                                            v-else-if="item.node.file.dataType === 1"
+                                            v-else-if="item.node.file.dataType === 1 || isReadonlyArchive"
                                             class="pvf-tree-ico pvf-ico-script"
                                             viewBox="0 0 24 24"
                                             fill="none"
@@ -2817,7 +2883,15 @@ export default {
                                 </div>
                             </div>
                             <div v-else-if="currentFile" class="pvf-editor-area">
-                                <div class="pvf-readonly">
+                                <!-- 只读归档（REPACK/60CN）文本预览：PVF 语法高亮 + 标签/代码引用悬浮
+                                     （docs/pvf-repack-format.md §4，归档内为明文文本） -->
+                                <pre
+                                    v-if="isReadonlyArchive && readonlyPreviewHtml"
+                                    class="pvf-ro-preview"
+                                    v-html="readonlyPreviewHtml"
+                                    @mousemove="onReadonlyMouseMove"
+                                    @mouseleave="onEditorMouseLeave"></pre>
+                                <div v-else class="pvf-readonly">
                                     <p>该文件类型 (Type {{ currentFile.dataType }}) 不支持文本编辑。</p>
                                     <p class="pvf-readonly-hint">可使用右键导出原始字节。</p>
                                 </div>
@@ -3155,6 +3229,11 @@ export default {
     color: #b57ef0;
     border-color: #b57ef055;
     background: #b57ef018;
+}
+.pvf-format-repack {
+    color: #3ecf8e;
+    border-color: #3ecf8e55;
+    background: #3ecf8e18;
 }
 .pvf-topbar-right {
     display: flex;
@@ -3900,78 +3979,95 @@ export default {
 }
 /* ---- highlight.js token colors (VS Code Dark+ inspired) ---- */
 .pvf-code-highlight :deep(.hljs-comment),
-.pvf-largefile-preview :deep(.hljs-comment) {
+.pvf-largefile-preview :deep(.hljs-comment),
+.pvf-ro-preview :deep(.hljs-comment) {
     color: #6a9955;
-    font-style: italic;
 }
 .pvf-code-highlight :deep(.hljs-string),
-.pvf-largefile-preview :deep(.hljs-string) {
+.pvf-largefile-preview :deep(.hljs-string),
+.pvf-ro-preview :deep(.hljs-string) {
     color: #ce9178;
 }
 .pvf-code-highlight :deep(.hljs-keyword),
-.pvf-largefile-preview :deep(.hljs-keyword) {
+.pvf-largefile-preview :deep(.hljs-keyword),
+.pvf-ro-preview :deep(.hljs-keyword) {
     color: #c586c0;
     font-weight: 500;
 }
 .pvf-code-highlight :deep(.hljs-type),
-.pvf-largefile-preview :deep(.hljs-type) {
+.pvf-largefile-preview :deep(.hljs-type),
+.pvf-ro-preview :deep(.hljs-type) {
     color: var(--pvf-tag-color);
 }
 .pvf-code-highlight :deep(.hljs-number),
-.pvf-largefile-preview :deep(.hljs-number) {
+.pvf-largefile-preview :deep(.hljs-number),
+.pvf-ro-preview :deep(.hljs-number) {
     color: #b5cea8;
 }
 .pvf-code-highlight :deep(.hljs-title),
-.pvf-largefile-preview :deep(.hljs-title) {
+.pvf-largefile-preview :deep(.hljs-title),
+.pvf-ro-preview :deep(.hljs-title) {
     color: #9cdcfe;
 }
 /* ---- .nut Squirrel token 覆盖扩充（docs/pvf-tw-nut-script.md §3.3）---- */
 .pvf-code-highlight :deep(.hljs-constant),
-.pvf-largefile-preview :deep(.hljs-constant) {
+.pvf-largefile-preview :deep(.hljs-constant),
+.pvf-ro-preview :deep(.hljs-constant) {
     color: #d7ba7d;
 }
 .pvf-code-highlight :deep(.hljs-title.function_),
-.pvf-largefile-preview :deep(.hljs-title.function_) {
+.pvf-largefile-preview :deep(.hljs-title.function_),
+.pvf-ro-preview :deep(.hljs-title.function_) {
     color: #dcdcaa;
 }
 .pvf-code-highlight :deep(.hljs-title.class_),
-.pvf-largefile-preview :deep(.hljs-title.class_) {
+.pvf-largefile-preview :deep(.hljs-title.class_),
+.pvf-ro-preview :deep(.hljs-title.class_) {
     color: #4ec9b0;
 }
 .pvf-code-highlight :deep(.hljs-property),
-.pvf-largefile-preview :deep(.hljs-property) {
+.pvf-largefile-preview :deep(.hljs-property),
+.pvf-ro-preview :deep(.hljs-property) {
     color: #9cdcfe;
 }
 .pvf-code-highlight :deep(.hljs-variable),
-.pvf-largefile-preview :deep(.hljs-variable) {
+.pvf-largefile-preview :deep(.hljs-variable),
+.pvf-ro-preview :deep(.hljs-variable) {
     color: #9cdcfe;
 }
 .pvf-code-highlight :deep(.hljs-literal),
-.pvf-largefile-preview :deep(.hljs-literal) {
+.pvf-largefile-preview :deep(.hljs-literal),
+.pvf-ro-preview :deep(.hljs-literal) {
     color: #569cd6;
 }
 .pvf-code-highlight :deep(.hljs-operator),
-.pvf-largefile-preview :deep(.hljs-operator) {
+.pvf-largefile-preview :deep(.hljs-operator),
+.pvf-ro-preview :deep(.hljs-operator) {
     color: #9a9a9a;
 }
 .pvf-code-highlight :deep(.hljs-pvf-name),
-.pvf-largefile-preview :deep(.hljs-pvf-name) {
+.pvf-largefile-preview :deep(.hljs-pvf-name),
+.pvf-ro-preview :deep(.hljs-pvf-name) {
     color: #9a9a9a;
 }
 .pvf-code-highlight :deep(.hljs-pvf-bin-id),
-.pvf-largefile-preview :deep(.hljs-pvf-bin-id) {
+.pvf-largefile-preview :deep(.hljs-pvf-bin-id),
+.pvf-ro-preview :deep(.hljs-pvf-bin-id) {
     color: #f92672;
 }
 .pvf-code-highlight :deep(.hljs-pvf-bin-sep),
-.pvf-largefile-preview :deep(.hljs-pvf-bin-sep) {
+.pvf-largefile-preview :deep(.hljs-pvf-bin-sep),
+.pvf-ro-preview :deep(.hljs-pvf-bin-sep) {
     color: #4d4756;
 }
 .pvf-code-highlight :deep(.hljs-pvf-bin-text),
-.pvf-largefile-preview :deep(.hljs-pvf-bin-text) {
+.pvf-largefile-preview :deep(.hljs-pvf-bin-text),
+.pvf-ro-preview :deep(.hljs-pvf-bin-text) {
     color: #9a9a9a;
 }
 .pvf-code-highlight :deep(.hljs-pvf-ref),
-.pvf-largefile-preview :deep(.hljs-pvf-ref) {
+.pvf-largefile-preview :deep(.hljs-pvf-ref),
+.pvf-ro-preview :deep(.hljs-pvf-ref) {
     cursor: pointer;
     text-decoration: underline;
     text-decoration-color: rgba(206, 145, 120, 0.45);
@@ -3986,29 +4082,35 @@ export default {
     font-size: 0.72rem;
 }
 .pvf-code-highlight :deep(.hljs-char.escape),
-.pvf-largefile-preview :deep(.hljs-char.escape) {
+.pvf-largefile-preview :deep(.hljs-char.escape),
+.pvf-ro-preview :deep(.hljs-char.escape) {
     color: #d7ba7d;
 }
 /* ---- XML (.xui) token colors ---- */
 .pvf-code-highlight :deep(.hljs-meta),
-.pvf-largefile-preview :deep(.hljs-meta) {
+.pvf-largefile-preview :deep(.hljs-meta),
+.pvf-ro-preview :deep(.hljs-meta) {
     color: #808080;
     font-style: italic;
 }
 .pvf-code-highlight :deep(.hljs-tag),
-.pvf-largefile-preview :deep(.hljs-tag) {
+.pvf-largefile-preview :deep(.hljs-tag),
+.pvf-ro-preview :deep(.hljs-tag) {
     color: #808080;
 }
 .pvf-code-highlight :deep(.hljs-tag .hljs-name),
-.pvf-largefile-preview :deep(.hljs-tag .hljs-name) {
+.pvf-largefile-preview :deep(.hljs-tag .hljs-name),
+.pvf-ro-preview :deep(.hljs-tag .hljs-name) {
     color: #569cd6;
 }
 .pvf-code-highlight :deep(.hljs-tag .hljs-attr),
-.pvf-largefile-preview :deep(.hljs-tag .hljs-attr) {
+.pvf-largefile-preview :deep(.hljs-tag .hljs-attr),
+.pvf-ro-preview :deep(.hljs-tag .hljs-attr) {
     color: #9cdcfe;
 }
 .pvf-code-highlight :deep(.hljs-tag .hljs-string),
-.pvf-largefile-preview :deep(.hljs-tag .hljs-string) {
+.pvf-largefile-preview :deep(.hljs-tag .hljs-string),
+.pvf-ro-preview :deep(.hljs-tag .hljs-string) {
     color: #ce9178;
 }
 .pvf-readonly {
@@ -4024,6 +4126,21 @@ export default {
 .pvf-readonly-hint {
     font-size: 0.72rem;
     opacity: 0.7;
+}
+/* 只读归档（REPACK/60CN）文本预览：与编辑器正文同款等宽字体与行高，独立滚动 */
+.pvf-ro-preview {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    margin: 0;
+    padding: 12px 16px;
+    font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
+    font-size: 0.78rem;
+    line-height: 18px;
+    white-space: pre;
+    tab-size: 4;
+    color: var(--text-primary);
+    user-select: text;
 }
 .pvf-largefile {
     overflow: hidden;

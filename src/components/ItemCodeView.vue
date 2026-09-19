@@ -4,6 +4,7 @@ import { useRouter } from "vue-router";
 import { ElCascader, ElInput, ElSelect, ElOption, ElInputNumber } from "element-plus";
 import { PvfArchive, firstTypeTag, stackSegment, equipSpecial, classifyItemExpiration } from "@/utils/pvfTool.js";
 import { TwPvfArchive } from "@/utils/pvfToolTw.js";
+import { RepackPvfArchive } from "@/utils/pvfToolRepack.js";
 
 const ROW_H = 30;
 const ROW_BUFFER = 10;
@@ -376,19 +377,24 @@ async function loadPvf(file) {
     try {
         const buffer = await file.arrayBuffer();
         loadingMessage.value = "正在解析 PVF 归档...";
-        // 先按 JP/JPAG/CN 解析，失败则按繁体 TW 解析
+        // 先按重打包归档（60CN 基线）明文魔数探测，再按 JP/JPAG/CN 解析，失败则按繁体 TW 解析
         let arch = null;
         let loadError = null;
-        try {
-            arch = new PvfArchive(buffer);
+        if (RepackPvfArchive.sniff(buffer)) {
+            arch = new RepackPvfArchive(buffer);
             await arch.parse();
-        } catch (err) {
-            loadError = err;
+        } else {
             try {
-                arch = new TwPvfArchive(buffer);
+                arch = new PvfArchive(buffer);
                 await arch.parse();
-            } catch (twErr) {
-                throw loadError || twErr;
+            } catch (err) {
+                loadError = err;
+                try {
+                    arch = new TwPvfArchive(buffer);
+                    await arch.parse();
+                } catch (twErr) {
+                    throw loadError || twErr;
+                }
             }
         }
         const allItems = [];
@@ -653,6 +659,11 @@ async function loadPvf(file) {
     color: #b57ef0;
     border-color: #b57ef055;
     background: #b57ef018;
+}
+.ivc-format-repack {
+    color: #3ecf8e;
+    border-color: #3ecf8e55;
+    background: #3ecf8e18;
 }
 .ivc-file-name {
     flex: 1;
